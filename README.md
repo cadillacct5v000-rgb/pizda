@@ -1,7 +1,8 @@
 # Kadro.Gen — исходный код
 
-Эта рабочая версия адаптирована для macOS / Apple Silicon (включая M4).
-Инструкция установки: [MACOS.md](MACOS.md). Проверки и ограничения: [VALIDATION.md](VALIDATION.md).
+Версия 1.8.0: общие исправления для Windows и macOS / Apple Silicon (включая M4).
+Windows: [WINDOWS.md](WINDOWS.md), Mac: [MACOS.md](MACOS.md). Проверки: [VALIDATION.md](VALIDATION.md).
+Новый режим YouTube сохраняет ход полного рассказа и использует анализ выборочных кадров исходного видео для визуального стиля новых сцен.
 Исходная информация о Windows ниже сохранена; на Mac используйте инструкции из MACOS.md.
 
 Kadro.Gen — бесплатная программа для Windows: из mp3-озвучки, текста сценария или ссылки на YouTube делает готовое видео 1920×1080

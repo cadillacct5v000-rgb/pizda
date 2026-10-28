@@ -81,6 +81,13 @@ class ModelUnavailable(RewriteError):
     pass
 
 
+def completion_text(response):
+    choice = response["choices"][0]
+    if choice.get("finish_reason") in ("length", "content_filter"):
+        raise RewriteError("Модель не завершила текст. Обрезанный результат не принят; повторите рерайт меньшими частями.")
+    return choice["message"]["content"]
+
+
 # ---------- YouTube ----------
 from youtube_source import video_id, YouTubeError
 from youtube_source import transcript as youtube_transcript
@@ -126,7 +133,7 @@ def chat_text(engine, key, model, prompt, max_tokens):
                 raise RewriteError(f"retry {r.status_code}: {r.text[:150]}")
             if r.status_code >= 400:
                 raise RewriteError(f"ChatGPT {r.status_code}: {r.text[:200]}")
-            return r.json()["choices"][0]["message"]["content"]
+            return completion_text(r.json())
         return _retry(go)
     if engine == "anthropic":
         def go():
@@ -177,7 +184,7 @@ def chat_text(engine, key, model, prompt, max_tokens):
                 raise RewriteError(f"retry {r.status_code}: {r.text[:150]}")
             if r.status_code >= 400:
                 raise RewriteError(f"fast-gen chat {r.status_code}: {r.text[:200]}")
-            return r.json()["choices"][0]["message"]["content"]
+            return completion_text(r.json())
         try:
             return _retry(go, tries=2)
         except ModelUnavailable:
@@ -213,8 +220,11 @@ def rewrite_key(source_text, words, language, engine):
     return hashlib.sha1(f"v2|{engine}|{language}|{words}|{source_text.strip()}".encode("utf-8")).hexdigest()[:10]
 
 
-def rewrite(source_text, engine, key, model, words, language, cache_dir, progress=None):
+def rewrite(source_text, engine, key, model, words, language, cache_dir, progress=None, *, source_profile=None, preserve_structure=False):
     """Возвращает переписанный сценарий; результат кэшируется по содержимому исходника."""
+    if preserve_structure:
+        from faithful_rewrite import rewrite_full
+        return rewrite_full(source_text, engine, key, model, words, language, cache_dir, progress, source_profile)
     words = max(100, int(words or 1500))
     language = (language or "польском").strip()
     os.makedirs(cache_dir, exist_ok=True)

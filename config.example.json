@@ -30,7 +30,8 @@
   "tts_voice": "",
   "theme": "dark",
   "lang": "ru",
-  "auto_update": true,
+  "auto_update": false,
   "youtube_browser": "",
-  "youtube_cookie_file": ""
+  "youtube_cookie_file": "",
+  "youtube_analyze_video": true
 }

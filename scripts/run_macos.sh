@@ -5,6 +5,6 @@ if [[ ! -x .venv/bin/python ]]; then
   echo "Сначала выполните: bash scripts/setup_macos.sh" >&2
   exit 1
 fi
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+export PATH="/opt/homebrew/opt/ffmpeg-full/bin:/usr/local/opt/ffmpeg-full/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 .venv/bin/python scripts/check_environment.py
 exec .venv/bin/python app.py "$@"

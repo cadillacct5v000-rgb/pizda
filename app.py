@@ -29,10 +29,10 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.7.1"
-# Публичная папка Google Диска с архивами VideoGen-x.y.z.zip. Программа при запуске смотрит список файлов
-# и предлагает скачать самую свежую версию. Пусто — проверка выключена.
-UPDATE_FOLDER_ID = "1DJlVHa2POqkMals38boXjoKQlMxTUiNv"
+VERSION = "1.8.0"
+# Для этой исправленной версии канал автообновления ещё не настроен.
+# Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
+UPDATE_FOLDER_ID = ""
 
 CONFIG_PATH = os.path.join(data_dir(), "config.json")
 RES_DIR = getattr(sys, "_MEIPASS", app_dir())
@@ -249,7 +249,7 @@ def apply_update(target, pid):
     """Режим помощника: `KadroGen.exe --apply-update <папка программы> <pid старой копии>`, запущен из папки обновления.
     Ждёт выхода старой копии, копирует свою папку поверх программы (config.json, jobs, output не трогает), запускает её."""
     if not platform_support.windows_updates_supported():
-        raise RuntimeError("Автообновление доступно только для сборки Windows.")
+        raise RuntimeError("Для этой версии автообновление отключено. Скачайте новую сборку из репозитория проекта.")
     import ctypes
     k32 = ctypes.windll.kernel32
     try:
@@ -347,7 +347,7 @@ def _phase(**kw):
 def launch_helper(src):
     """Новая версия из папки обновления запускается как помощник: дождётся нашего выхода, скопирует себя на место, запустит программу."""
     if not platform_support.windows_updates_supported():
-        raise RuntimeError("Автообновление доступно только для сборки Windows.")
+        raise RuntimeError("Для этой версии автообновление отключено. Скачайте новую сборку из репозитория проекта.")
     helper = os.path.join(src, "KadroGen.exe")
     subprocess.Popen([helper, "--apply-update", app_dir(), str(os.getpid())], cwd=src, close_fds=True,
                      creationflags=0x00000008 | 0x00000200)
@@ -388,7 +388,7 @@ def run_update(url, version):
 def download_update(url, version, phase):
     """Скачать архив новой версии и распаковать в папку обновления. Возвращает папку с KadroGen.exe."""
     if not platform_support.windows_updates_supported():
-        raise RuntimeError("Автообновление доступно только для сборки Windows.")
+        raise RuntimeError("Для этой версии автообновление отключено. Скачайте новую сборку из репозитория проекта.")
     upd = os.path.join(data_dir(), "update")
     if True:
         shutil.rmtree(upd, ignore_errors=True)
@@ -568,9 +568,12 @@ def run_rewrite(rw):
     """Только рерайт: результат кладётся в STATE["script"], пользователь смотрит и правит его на экране проверки."""
     try:
         apply_engine(None)
-        text = pipeline.rewrite_script(load_cfg(), rw, progress_cb)
+        profiles = []
+        text = pipeline.rewrite_script(load_cfg(), rw, progress_cb, profiles.append)
         with LOCK:
             STATE["script"] = text
+            STATE["source_profile"] = profiles[-1] if profiles else None
+            STATE["source_profile_id"] = uuid.uuid4().hex if profiles else None
     except pipeline.Cancelled:
         with LOCK:
             STATE["cancelled"] = True
@@ -624,7 +627,7 @@ def keep_awake(on):
         traceback.print_exc()
 
 
-def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False):
+def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None):
     keep_awake(True)
     try:
         apply_engine(provider)
@@ -633,7 +636,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
             STATE["job_dir"] = d
         out = pipeline.make_video(audio, progress_cb=progress_cb, provider=provider, mode=mode, style_key=style,
                                   use_refs=use_refs, subtitles=subtitles, motion=motion, script_text=script, rewrite=rewrite,
-                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd)
+                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile)
         with LOCK:
             STATE["result"] = out
     except pipeline.Cancelled:
@@ -718,6 +721,7 @@ class Api:
             "tts_recent": cfg.get("tts_recent", []), "data_dir": data_dir(), "portable": data_dir() == app_dir(), "updates_supported": platform_support.windows_updates_supported(),
             "source": cfg.get("source", "mp3"), "tts_service": cfg.get("tts_service", "voicegen"), "tts_voice": cfg.get("tts_voice", ""),
             "rewrite": bool(cfg.get("rewrite", False)), "rewrite_engine": cfg.get("rewrite_engine", "fastgen"), "rewrite_source": cfg.get("rewrite_source", "youtube"),
+            "youtube_analyze_video": cfg.get("youtube_analyze_video", True),
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
             "openai": mask(cfg.get("openai_api_key", "")),
@@ -835,6 +839,8 @@ class Api:
             cfg["rewrite_engine"] = data["rewrite_engine"]
         if data.get("rewrite_source") in ("youtube", "text"):
             cfg["rewrite_source"] = data["rewrite_source"]
+        if "youtube_analyze_video" in data:
+            cfg["youtube_analyze_video"] = bool(data["youtube_analyze_video"])
         if "youtube_browser" in data:
             browser = data.get("youtube_browser") or ""
             if browser not in ("", "chrome", "firefox", "safari", "edge", "brave"):
@@ -1027,7 +1033,7 @@ class Api:
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+        return {"on": True, "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or "польском").strip()}
 
     def _validate(self, opts, providers):
@@ -1145,7 +1151,7 @@ class Api:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Программа уже занята."}
             STATE.update({"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
-                          "log": [], "result": None, "error": None, "script": None, "cancelled": False, "started_at": time.time()})
+                          "log": [], "result": None, "error": None, "script": None, "source_profile": None, "source_profile_id": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_rewrite, args=(rw,), daemon=True).start()
         return {"ok": True}
 
@@ -1153,6 +1159,13 @@ class Api:
         with LOCK:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Программа уже занята."}
+        source_profile = None
+        profile_id = opts.get("source_profile_id")
+        if profile_id:
+            with LOCK:
+                if profile_id != STATE.get("source_profile_id") or not STATE.get("source_profile"):
+                    return {"ok": False, "error": "Анализ исходного ролика устарел. Повторите подготовку."}
+                source_profile = STATE["source_profile"]
         audio = (opts.get("audio") or "").strip().strip('"')
         provider = pipeline.normalize_providers(opts.get("providers"))
         mode, style, subtitles = opts.get("mode", "images"), style_key(opts.get("style"), pipeline.DEFAULT_STYLE), bool(opts.get("subtitles"))
@@ -1186,7 +1199,7 @@ class Api:
             rec.insert(0, {"id": voice, "service": tts})
             cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
-        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd), daemon=True).start()
+        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile), daemon=True).start()
         return {"ok": True}
 
     # ---------- очередь заданий ----------
@@ -1450,7 +1463,7 @@ class Api:
     def install_update(self, url, version):
         """Автообновление: только если программа лежит в папке, куда можно писать."""
         if not platform_support.windows_updates_supported():
-            return {"ok": False, "error": "Автообновление доступно только для сборки Windows."}
+            return {"ok": False, "error": "Для этой версии автообновление отключено. Скачайте новую сборку из репозитория проекта."}
         if data_dir() != app_dir():
             return {"ok": False, "error": "noport"}
         with LOCK:

@@ -570,6 +570,7 @@ const RW_PH = {fastgen:'ключ fast-gen (тот же, что для карти
 const QA_ENGINES = [['gemini','Gemini'],['anthropic','Claude'],['openai','OpenAI'],['openrouter','OpenRouter']];
 const QA_DEFAULT = {gemini:'gemini-3.6-flash', anthropic:'claude-haiku-5-5', openai:'gpt-4.1-mini', openrouter:'google/gemini-2.5-flash'};
 let youtubeBrowser = '', youtubeCookieFile = '';
+let analyzeVideo = true, reviewProfileId = null, reviewSourceProfile = null;
 let rwEngine = 'fastgen', rwSrc = 'youtube'; const rwKeys = {};
 function rwOn() { return $('use_rw').checked; }
 $('use_rw').addEventListener('change', () => { if (rwOn()) setSource('script'); mark(); pywebview.api.save_config({rewrite: rwOn()}); });
@@ -645,6 +646,7 @@ async function startAll() {
     queueMode = true; renderReview(null); go(5); return;
   }
   queueMode = false;
+  reviewProfileId = null; reviewSourceProfile = null;
   const o = opts();
   if (!rwOn() && source === 'script' && !o.script.trim()) { $('s_prep').textContent = t('err_script'); return; }
   if (!rwOn() && source !== 'script' && !audioPath) { $('s_prep').textContent = t('err_audio'); return; }
@@ -664,6 +666,7 @@ async function pollRewrite() {
   if (st.preparing) { if (st.message) $('scan_sub').textContent = st.message; return setTimeout(pollRewrite, 1200); }
   $('scan').style.display = 'none'; $('review').classList.remove('busy');
   if (st.error || !st.script) { $('s_prep2').textContent = t('error') + (st.error || t('err_rw_empty')); return; }
+  reviewProfileId = st.source_profile_id || null; reviewSourceProfile = st.source_profile || null;
   renderReview(st.script); $('btn_go').disabled = false;
 }
 function renderReview(script) {
@@ -671,9 +674,14 @@ function renderReview(script) {
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
   row(t('rv_services'), p.map(k => SVC_TITLES[k]).join(', ') || t('rv_none'));
+  if (reviewSourceProfile) {
+    row(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style', reviewSourceProfile.visual_style.description);
+    const sample = reviewSourceProfile.sampling;
+    row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? `Весь исходный текст; ${sample.frame_count} кадров по всей длительности. Точные переходы и звук не анализировались.` : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
+  }
   row(t('regime'), sel('rv_mode', [['images', t('m_images')], ['mixed', t('m_mixed')], ['video', t('m_video')]], mode()), true);
   row(t('speed') + ' / ' + t('quality'), sw('rv_fgq', fgq() === 'quality', ['quality', 'speed']), true);
-  row(t('style_lbl'), sel('rv_style', styleOpts(false), styleKey) + (styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
+  row(t('style_lbl'), (reviewSourceProfile ? `<select id="rv_style" disabled><option>${L === 'ru' ? 'Стиль исходного ролика' : 'Source video style'}</option></select>` : sel('rv_style', styleOpts(false), styleKey)) + (styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
   if (mode() !== 'video') row(t('rv_vf'), (vf() ? plural(vf(), t('vf_scenes')) : t('vf_none')) + (mode() === 'mixed' ? ' ' + t('rv_vf_mixed') : ''));
   row(t('o_rw'), rwOn() ? (rwSrc === 'youtube' ? F.rwUrl : t('rw_text_src')) + ` · ${F.rwWords} ${t('rv_words')} · ${langName(F.rwLang)}` : t('rv_no'));
   if (queueMode) { const q = queueItems.filter(x => x.status === 'queued'); rows.push(`<div class="qfull"><span>${t('rv_queue')} · ${q.length}</span><div class="qlist">${q.map((x, i) => `<div><span>${i + 1}. ${esc(x.title)}</span><span>${queueStyles && x.style ? esc(styleName(x.style)) + ' · ' : ''}${esc(x.voice || t('q_default'))}</span></div>`).join('')}</div></div>`); }
@@ -889,6 +897,7 @@ async function loadConfig(keepScreen) {
   setKeysFromConfig(c);
   for (const k of ['voicegen','voicer','lumean']) if (c['has_' + k]) ttsKeys[k] = c[k];
   for (const k of ['fastgen','openai','anthropic','gemini']) rwKeys[k] = c['has_' + k] ? (k === 'fastgen' ? (c.keys.fastgen[0] || '') : c[k]) : '';
+  analyzeVideo = c.youtube_analyze_video !== false;
   youtubeBrowser = c.youtube_browser || ''; youtubeCookieFile = c.youtube_cookie_file || '';
   rwEngine = c.rewrite_engine || 'fastgen'; rwSrc = c.rewrite_source || 'youtube'; $('use_rw').checked = !!c.rewrite;
   if (!keepScreen) { F.rwUrl = c.rewrite_url || ''; F.rwWords = c.rewrite_words || 1500; F.rwLang = c.rewrite_lang || 'польском'; }
@@ -974,13 +983,16 @@ function renderAccess() {
       + (rwSrc === 'youtube' ? `<input type="text" id="rw_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false" autocomplete="off">`
                              : `<textarea id="rw_text" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.rwText)}</textarea>`)));
     if (rwSrc === 'youtube') {
+      H.push(row(L === 'ru' ? 'Обработка ролика' : 'Video processing', '',
+        sel('youtube_mode', [['full', L === 'ru' ? 'Полный сценарий + стиль ролика' : 'Full narrative + video style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? 'full' : 'text')
+        + `<span class="note">${L === 'ru' ? 'Полный режим сохраняет ход рассказа и анализирует кадры по всей длительности. Использует модель с поддержкой изображений; у fast-gen нужен доступ chat.multimodal.' : 'Full mode preserves the narrative and samples frames across the entire video. Requires an image-capable model; fast-gen needs chat.multimodal access.'}</span>`));
       H.push(row(L === 'ru' ? 'Доступ к YouTube' : 'YouTube access', '',
         sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
         + `<button id="youtube_cookies" class="ghost">${L === 'ru' ? 'Выбрать cookies.txt' : 'Choose cookies.txt'}</button>`
         + `<button id="youtube_clear" class="ghost">${L === 'ru' ? 'Сбросить доступ' : 'Clear access'}</button>`
         + `<span class="note">${esc(youtubeCookieFile || (L === 'ru' ? 'Если YouTube требует вход, выберите браузер, где вы вошли в аккаунт. Данные входа используются локально для YouTube.' : 'If YouTube requires sign-in, choose your signed-in browser. Login data is used locally for YouTube.'))}</span>`));
     }
-    H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
+    H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
     const rk = (rwEngine === 'fastgen' && fg) ? `<span class="note">${t('same_key')}</span>` : keyIn('k_rw', rwEngine, 0, rwKeys[rwEngine] || '', RW_PH[rwEngine]) + eye('k_rw') + chk(rwEngine, 0, 's_rw');
     H.push(row(t('rw_llm'), RW_LINKS[rwEngine], sel('rw_eng', [['fastgen','fast-gen'],['openai','ChatGPT'],['anthropic','Claude'],['gemini','Gemini']], rwEngine) + rk, 's_rw'));
   }
@@ -1056,6 +1068,7 @@ function bindAccess() {
   on('rw_src', 'change', () => { syncAll(); rwSrc = $('rw_src').value; pywebview.api.save_config({rewrite_source: rwSrc}); renderAccess(); });
   on('rw_eng', 'change', () => { syncAll(); rwEngine = $('rw_eng').value; pywebview.api.save_config({rewrite_engine: rwEngine}); renderAccess(); });
   for (const m of Object.keys(MODEL_OPTS)) on(m, 'change', () => { models[m] = $(m).value; pywebview.api.save_config({[m]: models[m]}); });
+  on('youtube_mode', 'change', async () => { syncAll(); analyzeVideo = $('youtube_mode').value === 'full'; await pywebview.api.save_config({youtube_analyze_video: analyzeVideo}); reviewProfileId = null; reviewSourceProfile = null; renderAccess(); });
   on('youtube_browser', 'change', async () => { syncAll(); youtubeBrowser = $('youtube_browser').value; youtubeCookieFile = ''; await pywebview.api.save_config({youtube_browser: youtubeBrowser, youtube_cookie_file: ''}); renderAccess(); });
   on('youtube_cookies', 'click', async () => { syncAll(); const p = await pywebview.api.pick_youtube_cookies(); if (p) { youtubeCookieFile = p; youtubeBrowser = ''; renderAccess(); } });
   on('youtube_clear', 'click', async () => { syncAll(); await pywebview.api.save_config({youtube_browser: '', youtube_cookie_file: ''}); youtubeBrowser = ''; youtubeCookieFile = ''; renderAccess(); });
@@ -1154,7 +1167,8 @@ async function loadVoices() {
   if (st) { st.textContent = r.voices.length ? t('voices_n').replace('{n}', r.voices.length) : t('voices_none'); st.className = 'status st ok'; }
 }
 function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
-  rewrite: {on: rwOn(), source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
+  source_profile_id: rwOn() && analyzeVideo && rwSrc === 'youtube' ? reviewProfileId : null,
+  rewrite: {on: rwOn(), analyze_video: analyzeVideo, source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
 // ===== фоновая музыка: плейлист из папки music, ползунок 0..100 (середина — тихо, низ — выключено),
 // треки по кругу с паузой полторы минуты, стрелка — следующий трек сразу =====

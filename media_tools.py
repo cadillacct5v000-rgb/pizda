@@ -15,6 +15,10 @@ def ffmpeg_bin(name="ffmpeg"):
     executable = name + (".exe" if sys.platform == "win32" else "")
     roots = [getattr(sys, "_MEIPASS", app_dir()), app_dir()]
     candidates = [Path(root) / "ffmpeg" / executable for root in roots]
+    if sys.platform == "darwin":
+        # Current Homebrew's base ffmpeg omits libass; full is keg-only.
+        candidates.extend(Path(root) / name for root in
+                          ("/opt/homebrew/opt/ffmpeg-full/bin", "/usr/local/opt/ffmpeg-full/bin"))
     found = shutil.which(executable)
     if found:
         candidates.append(Path(found))

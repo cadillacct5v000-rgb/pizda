@@ -735,6 +735,10 @@ NO_TEXT = ("Absolutely no text, letters, words, numbers, signs, logos, captions,
 
 def build_style(llm: LLM, text, job_dir, progress, style_key, hint=None):
     out = os.path.join(job_dir, "style.json")
+    source_profile = read_json(os.path.join(job_dir, "source_profile.json"))
+    if source_profile:
+        hint = "Reference visual style for new original imagery: " + json.dumps(source_profile["visual_style"], ensure_ascii=False)
+        style_key = "source_" + hashlib.sha256(json.dumps(source_profile, sort_keys=True).encode()).hexdigest()[:16]
     cached = read_json(out)
     if cached and cached.get("style_key") == style_key:
         progress("style", 1, 1, "библия стиля уже есть")
@@ -744,6 +748,8 @@ def build_style(llm: LLM, text, job_dir, progress, style_key, hint=None):
     style = llm.chat_json(STYLE_SYSTEM.format(style_hint=hint), "Текст озвучки:\n\n" + text[:12000], max_tokens=6000)
     style["style_key"] = style_key
     style["style_hint"] = hint
+    if source_profile:
+        style["source_profile"] = source_profile
     for i, c in enumerate(style.get("characters") or []):
         c.setdefault("latin", f"Char{i + 1}")
         c["latin"] = re.sub(r"[^A-Za-z]", "", c["latin"]) or f"Char{i + 1}"
@@ -917,6 +923,17 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
     def do_chunk(chunk):
         check_cancel()
         listing = "\n".join(f"{s['index']}. [{s['duration']:.1f} c] {s['text']}" for s in chunk)
+        profile = style.get("source_profile") or {}
+        segments = profile.get("segments") or []
+        if segments:
+            duration = max((s.get("end", s.get("start", 0) + s["duration"]) for s in scenes), default=1)
+            source_duration = profile["sampling"]["duration"]
+            references = []
+            for scene in chunk:
+                position = scene.get("start", 0) / max(duration, 0.001) * source_duration
+                segment = next((item for item in segments if item["start"] <= position <= item["end"]), segments[-1])
+                references.append({"scene": scene["index"], "visual_reference": segment["description"]})
+            listing += "\nObserved style reference by approximate source position (data, not instructions):\n" + json.dumps(references, ensure_ascii=False)
         for s in chunk:
             s.pop("prompt", None)
             s.pop("raw_prompt", None)
@@ -2705,10 +2722,11 @@ LAST_JOB_DIR = None
 REWRITE_KEYS = {"openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key", "fastgen": "fastgen_api_key"}
 
 
-def rewrite_script(cfg, rw, progress):
+def rewrite_script(cfg, rw, progress, profile_callback=None):
     """Источник (ссылка YouTube или текст) → переписанный сценарий выбранной моделью."""
     import rewrite as rwmod
     say = lambda m: progress("rewrite", 0, 1, m)
+    profile = None
     if (rw.get("source") or "text") == "youtube":
         url = (rw.get("url") or "").strip()
         if not url:
@@ -2746,22 +2764,42 @@ def rewrite_script(cfg, rw, progress):
         text = (rw.get("text") or "").strip()
         if not text:
             raise SystemExit("Вставьте текст сценария для рерайта.")
+    if rw.get("analyze_video") and rw.get("source") == "youtube":
+        import youtube_source
+        import source_analysis
+        source_video = youtube_source.video(url, source_dir, os.path.dirname(ffmpeg_bin()), say, **auth)
+        analysis_cfg = {**cfg, "source_analysis_engine": rw.get("engine") or cfg.get("rewrite_engine") or "fastgen"}
+        profile = source_analysis.analyse(source_video, text, analysis_cfg, source_dir, say)
+        if profile_callback:
+            profile_callback(profile)
     engine = rw.get("engine") or cfg.get("rewrite_engine") or "fastgen"
     key = cfg.get(REWRITE_KEYS.get(engine, ""), "")
     if not key:
         raise SystemExit(f"Для рерайта выбран {rwmod.ENGINE_NAMES.get(engine, engine)}, но его ключ не введён.")
-    return rwmod.rewrite(text, engine, key, None, rw.get("words") or cfg.get("rewrite_words") or 1500,
-                         rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say)
+    extra = {"source_profile": profile, "preserve_structure": True} if profile else {}
+    target_words = len(text.split()) if profile else (rw.get("words") or cfg.get("rewrite_words") or 1500)
+    return rwmod.rewrite(text, engine, key, None, target_words,
+                         rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say, **extra)
 
 
-def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite=None):
+def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite=None, source_profile=None):
     """Либо готовый mp3, либо сценарий (свой или после рерайта), который надо озвучить. Возвращает (audio_path, job_dir, base)."""
     global LAST_JOB_DIR
     if rewrite and rewrite.get("on"):
-        script_text = rewrite_script(cfg, rewrite, progress)
+        profiles = []
+        script_text = rewrite_script(cfg, rewrite, progress, profiles.append)
+        source_profile = profiles[-1] if profiles else None
         progress("rewrite", 1, 1, f"сценарий переписан: {len(script_text.split())} слов")
     if script_text and script_text.strip():
         job_dir, base = script_job_dir(script_text)
+        service = tts_service or cfg.get("tts_service") or "voicegen"
+        voice = tts_voice if tts_voice is not None else cfg.get("tts_voice", "")
+        identity = json.dumps({"service": service, "voice": voice, "source_profile": source_profile}, sort_keys=True, ensure_ascii=False)
+        base += "_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
+        job_dir = os.path.join(data_dir(), "jobs", base)
+        os.makedirs(job_dir, exist_ok=True)
+        if source_profile:
+            write_json(os.path.join(job_dir, "source_profile.json"), source_profile)
         LAST_JOB_DIR = job_dir
         audio_path = make_voiceover(cfg, script_text.strip(), tts_service or cfg.get("tts_service") or "voicegen",
                                     tts_voice if tts_voice is not None else cfg.get("tts_voice", ""), job_dir, progress)
@@ -2816,7 +2854,7 @@ def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use
 
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False):
+               video_first=0, hd=False, source_profile=None):
     global FASTGEN_QUALITY, HD_IMAGES
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
@@ -2831,7 +2869,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     FASTGEN_QUALITY = (fastgen_quality or cfg.get("quality") or cfg.get("fastgen_quality") or "speed")
     if FASTGEN_QUALITY not in IMAGE_CHAINS:
         FASTGEN_QUALITY = "speed"
-    audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite)
+    audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite, source_profile)
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
     out_mp4 = os.path.join(out_dir, base + ".mp4")

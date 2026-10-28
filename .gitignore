@@ -20,3 +20,5 @@ update/
 test-results/
 cookies.txt
 *.cookies.txt
+runtime/*.exe
+runtime/*.dll

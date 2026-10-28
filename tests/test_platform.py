@@ -19,7 +19,7 @@ class DataDirectoryTests(unittest.TestCase):
         self.addCleanup(setattr, fastgen_api, "_DATA_DIR", self.old_data)
 
     def test_mac_data_outside_bundle(self):
-        with patch.dict(os.environ, {"HOME": self.tmp.name, "KADROGEN_DATA_DIR": ""}), \
+        with patch.dict(os.environ, {"HOME": self.tmp.name, "USERPROFILE": self.tmp.name, "KADROGEN_DATA_DIR": ""}), \
                 patch.object(sys, "platform", "darwin"), \
                 patch.object(fastgen_api, "app_dir", return_value="/Applications/KadroGen.app/Contents/MacOS"):
             data = fastgen_api.data_dir()
@@ -46,7 +46,7 @@ class DataDirectoryTests(unittest.TestCase):
 
 class NativeDesktopTests(unittest.TestCase):
     def test_mac_open_and_reveal_preserve_unicode_spaces(self):
-        path = "/tmp/Видео с пробелами.mp4"
+        path = os.path.join(tempfile.gettempdir(), "Видео с пробелами.mp4")
         with patch.object(sys, "platform", "darwin"), patch.object(native.subprocess, "Popen") as run:
             native.open_path(path)
             run.assert_called_with(["open", path])
@@ -72,9 +72,9 @@ class NativeDesktopTests(unittest.TestCase):
             process.wait.assert_called_once_with(timeout=5)
             self.assertIsNone(native._awake_process)
 
-    def test_windows_updates_require_windows_binary(self):
+    def test_legacy_updates_disabled_on_every_platform(self):
         for system, frozen, expected in [("darwin", True, False), ("linux", True, False),
-                                         ("win32", False, False), ("win32", True, True)]:
+                                         ("win32", False, False), ("win32", True, False)]:
             with self.subTest(system=system, frozen=frozen), \
                     patch.object(sys, "platform", system), patch.object(sys, "frozen", frozen, create=True):
                 self.assertEqual(native.windows_updates_supported(), expected)

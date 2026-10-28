@@ -34,7 +34,7 @@ function setup(api) {
   };
   const context = vm.createContext({pywebview: {api}, $: getElement,
     document: {querySelectorAll: () => []}, t: k => k, ORDER: {},
-    console: {warn() {}}, known: new Set(), total: 0, lastQueueId: null,
+    console: {warn() {}}, known: new Set(), total: 0, lastQueueId: null, reviewProfileId: null, reviewSourceProfile: null,
     animatePct() {}, showWait() {}, buildFrames() {}, markRedo() {},
     renderReview() {}, fmt: String, setTimeout: (fn, ms) => {timers.push({fn, ms});},
   });

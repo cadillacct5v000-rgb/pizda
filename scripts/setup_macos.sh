@@ -14,7 +14,7 @@ if ! command -v brew >/dev/null; then
   echo "Установите Homebrew по инструкции https://brew.sh и повторите запуск." >&2
   exit 1
 fi
-brew install python@3.12 ffmpeg deno
+brew install python@3.12 ffmpeg-full deno
 PYTHON="$(brew --prefix python@3.12)/bin/python3.12"
 if [[ "$(uname -m)" == arm64 ]] && [[ "$("$PYTHON" -c 'import platform; print(platform.machine())')" != arm64 ]]; then
   echo "Для Apple Silicon нужен Python arm64. Запустите Terminal без Rosetta и используйте /opt/homebrew." >&2

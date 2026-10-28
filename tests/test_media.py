@@ -38,7 +38,7 @@ class ToolTests(unittest.TestCase):
     def test_finder_homebrew_discovery(self):
         with patch.object(media_tools.sys, "platform", "darwin"), \
              patch.object(media_tools.shutil, "which", return_value=None), \
-             patch.object(Path, "is_file", lambda p: str(p) == "/opt/homebrew/bin/ffmpeg"), \
+             patch.object(Path, "is_file", lambda p: p.as_posix() == "/opt/homebrew/bin/ffmpeg"), \
              patch.object(media_tools.os, "access", return_value=True):
             self.assertEqual(media_tools.ffmpeg_bin(), str(Path("/opt/homebrew/bin/ffmpeg").resolve()))
 
@@ -153,7 +153,7 @@ class MediaTests(unittest.TestCase):
     def test_subtitles_special_filename_render_pixels(self):
         src = str(self.root / "source.mp4")
         pipeline.render_scene_clip(str(self.img), 0, 1.2, src)
-        srt = self.root / "суб'титры: [1],.srt"
+        srt = self.root / ("суб'титры [1],.srt" if sys.platform == "win32" else "суб'титры: [1],.srt")
         subtitles.write_srt([{"text": "HELLO", "start": 0, "end": 1.2}], str(srt))
         out = str(self.root / "subtitled.mp4")
         subtitles.burn(media_tools.ffmpeg_bin(), src, str(srt), out)

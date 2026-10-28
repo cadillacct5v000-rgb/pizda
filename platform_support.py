@@ -9,8 +9,13 @@ import threading
 
 
 def windows_updates_supported():
-    """The existing update feed contains Windows executables only."""
-    return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+    """This fork has no compatible automatic update channel yet.
+
+    The inherited Google Drive feed belongs to the original distribution. Its
+    Windows executable would replace this fork and remove the fixes, even when
+    an old config.json still contains auto_update=true.
+    """
+    return False
 
 
 def load_webview():
