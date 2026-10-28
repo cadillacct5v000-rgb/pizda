@@ -23,7 +23,7 @@ class DataDirectoryTests(unittest.TestCase):
                 patch.object(sys, "platform", "darwin"), \
                 patch.object(fastgen_api, "app_dir", return_value="/Applications/KadroGen.app/Contents/MacOS"):
             data = fastgen_api.data_dir()
-        self.assertEqual(data, os.path.join(self.tmp.name, "Library", "Application Support", "KadroGen"))
+        self.assertEqual(Path(data), Path(self.tmp.name, "Library", "Application Support", "KadroGen"))
         Path(data, "config.json").write_text("{}")
         self.assertEqual(Path(data, "config.json").read_text(), "{}")
 

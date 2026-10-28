@@ -6,8 +6,12 @@ if (-not $Python) { $Python = Join-Path (Get-Location) '.venv\Scripts\python.exe
 if ($LASTEXITCODE -ne 0) { throw 'Environment check failed.' }
 & $Python -m pytest -q --junitxml=test-results/windows.xml
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed. The build has been stopped.' }
-& $Python -m PyInstaller --noconfirm KadroGen.spec
-if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
+& $Python -m PyInstaller --noconfirm KadroGen.spec 2>&1 | Tee-Object -FilePath test-results/build.log
+if ($LASTEXITCODE -ne 0) {
+    $details = ((Get-Content test-results/build.log -Tail 35) -join "`n").Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Output "::error title=PyInstaller::$details"
+    throw 'PyInstaller failed.'
+}
 Copy-Item KadroGen.exe.config dist/KadroGen/KadroGen.exe.config -Force
 Copy-Item WINDOWS.md dist/KadroGen/WINDOWS.md -Force
 foreach ($relative in @('KadroGen.exe', '_internal/ffmpeg/ffmpeg.exe', '_internal/ffmpeg/ffprobe.exe', '_internal/runtime/deno.exe')) {

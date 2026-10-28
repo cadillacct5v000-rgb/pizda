@@ -213,8 +213,10 @@ class APIRegressionTests(unittest.TestCase):
 
     def test_assemblyai_word_timestamps_are_seconds(self):
         client = llm_api.AssemblyAI('test-key')
-        with tempfile.NamedTemporaryFile() as audio, patch.object(client.s, 'post', side_effect=[response(body={'upload_url': 'https://unused'}), response(body={'id': 'task'})]), patch.object(client.s, 'get', return_value=response(body={'status': 'completed', 'text': 'Hi.', 'words': [{'text': 'Hi.', 'start': 500, 'end': 1250}]})):
-            result = client.transcribe(audio.name)
+        with tempfile.TemporaryDirectory() as directory, patch.object(client.s, 'post', side_effect=[response(body={'upload_url': 'https://unused'}), response(body={'id': 'task'})]), patch.object(client.s, 'get', return_value=response(body={'status': 'completed', 'text': 'Hi.', 'words': [{'text': 'Hi.', 'start': 500, 'end': 1250}]})):
+            audio = pathlib.Path(directory) / 'audio.wav'
+            audio.write_bytes(b'audio fixture')
+            result = client.transcribe(str(audio))
         self.assertEqual(result['words'], [{'text': 'Hi.', 'start': 0.5, 'end': 1.25}])
 
     def test_custom_endpoints_trim_and_reset(self):
