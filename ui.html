@@ -987,7 +987,7 @@ function renderAccess() {
         sel('youtube_mode', [['full', L === 'ru' ? 'Полный сценарий + стиль ролика' : 'Full narrative + video style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? 'full' : 'text')
         + `<span class="note">${L === 'ru' ? 'Полный режим сохраняет ход рассказа и анализирует кадры по всей длительности. Использует модель с поддержкой изображений; у fast-gen нужен доступ chat.multimodal.' : 'Full mode preserves the narrative and samples frames across the entire video. Requires an image-capable model; fast-gen needs chat.multimodal access.'}</span>`));
       H.push(row(L === 'ru' ? 'Доступ к YouTube' : 'YouTube access', '',
-        sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
+        sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['chromium','Chromium'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
         + `<button id="youtube_cookies" class="ghost">${L === 'ru' ? 'Выбрать cookies.txt' : 'Choose cookies.txt'}</button>`
         + `<button id="youtube_clear" class="ghost">${L === 'ru' ? 'Сбросить доступ' : 'Clear access'}</button>`
         + `<span class="note">${esc(youtubeCookieFile || (L === 'ru' ? 'Если YouTube требует вход, выберите браузер, где вы вошли в аккаунт. Данные входа используются локально для YouTube.' : 'If YouTube requires sign-in, choose your signed-in browser. Login data is used locally for YouTube.'))}</span>`));

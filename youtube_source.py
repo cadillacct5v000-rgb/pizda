@@ -115,7 +115,7 @@ def options(cookie_file=None, browser=None):
             raise YouTubeError("Файл cookies не найден. Выберите его заново в настройке доступа к YouTube.")
         opts["cookiefile"] = str(path)
     elif browser:
-        if browser not in ("chrome", "firefox", "safari", "edge", "brave"):
+        if browser not in ("chrome", "chromium", "firefox", "safari", "edge", "brave"):
             raise YouTubeError("Неподдерживаемый браузер для доступа к YouTube.")
         opts["cookiesfrombrowser"] = (browser,)
     runtime = javascript_runtime()

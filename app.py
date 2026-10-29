@@ -843,7 +843,7 @@ class Api:
             cfg["youtube_analyze_video"] = bool(data["youtube_analyze_video"])
         if "youtube_browser" in data:
             browser = data.get("youtube_browser") or ""
-            if browser not in ("", "chrome", "firefox", "safari", "edge", "brave"):
+            if browser not in ("", "chrome", "chromium", "firefox", "safari", "edge", "brave"):
                 return {"ok": False, "error": "Неизвестный браузер YouTube"}
             cfg["youtube_browser"] = browser
             if browser:

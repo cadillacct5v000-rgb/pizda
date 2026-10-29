@@ -21,18 +21,30 @@ function Install-Package([string]$Id) {
     Refresh-ToolPath
 }
 
+function Get-Python312Path([string]$Command, [string[]]$PythonArgs = @()) {
+    try {
+        # PowerShell 5.1 and Python may use different encodings for native stdout.
+        # ASCII JSON preserves Unicode paths without changing console settings.
+        $encoded = & $Command @PythonArgs -c 'import json, sys; print(json.dumps(sys.executable)); sys.exit(sys.version_info[:2] != (3, 12))' 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $encoded) { return $null }
+        $found = ConvertFrom-Json -InputObject ($encoded -join "`n")
+        if ($found -is [string] -and (Test-Path -LiteralPath $found -PathType Leaf)) {
+            return $found
+        }
+    } catch { }
+    return $null
+}
+
 function Find-Python312 {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        try {
-            $found = & py -3.12 -c 'import sys; print(sys.executable)' 2>$null
-            if ($LASTEXITCODE -eq 0 -and $found) { return $found.Trim() }
-        } catch { }
+        $found = Get-Python312Path -Command 'py' -PythonArgs @('-3.12')
+        if ($found) { return $found }
     }
     foreach ($candidate in @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe", 'python')) {
         $command = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($command -and $command.Source -notmatch '\\WindowsApps\\') {
-            $found = & $candidate -c 'import sys; print(sys.executable if sys.version_info[:2] == (3, 12) else "")' 2>$null
-            if ($LASTEXITCODE -eq 0 -and $found) { return $found.Trim() }
+            $found = Get-Python312Path -Command $candidate
+            if ($found) { return $found }
         }
     }
     return $null

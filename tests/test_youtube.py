@@ -42,7 +42,8 @@ def test_failed_first_track_tries_next_and_accepts_short_captions(monkeypatch):
     assert yt.transcript(URL) == "Короткий сценарий."
 
 
-def test_yt_dlp_caption_fallback_uses_explicit_browser(monkeypatch):
+@pytest.mark.parametrize("browser", ["chrome", "chromium", "firefox"])
+def test_yt_dlp_caption_fallback_uses_explicit_browser(monkeypatch, browser):
     monkeypatch.setattr(youtube_transcript_api, "YouTubeTranscriptApi", lambda **kwargs: SimpleNamespace(list=Mock(side_effect=RuntimeError("blocked"))))
     seen = {}
     class Downloader:
@@ -55,8 +56,8 @@ def test_yt_dlp_caption_fallback_uses_explicit_browser(monkeypatch):
         def urlopen(self, url):
             return io.BytesIO(json.dumps({"events": [{"segs": [{"utf8": "Первый текст"}]}, {"segs": [{"utf8": "Второй текст"}]}]}).encode())
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
-    assert yt.transcript(URL, browser="chrome") == "Первый текст Второй текст"
-    assert seen["cookiesfrombrowser"] == ("chrome",)
+    assert yt.transcript(URL, browser=browser) == "Первый текст Второй текст"
+    assert seen["cookiesfrombrowser"] == (browser,)
 
 
 def test_auth_is_opt_in_and_missing_cookie_file_explained(tmp_path):
@@ -142,11 +143,12 @@ def test_pipeline_reports_both_caption_and_audio_failure(monkeypatch, tmp_path):
         pipeline.rewrite_script({}, {"source": "youtube", "url": URL}, lambda *args: None)
 
 
-def test_youtube_settings_roundtrip_and_reset(monkeypatch, tmp_path):
+@pytest.mark.parametrize("browser", ["chrome", "chromium", "firefox"])
+def test_youtube_settings_roundtrip_and_reset(monkeypatch, tmp_path, browser):
     monkeypatch.setattr(app, "CONFIG_PATH", str(tmp_path / 'config.json'))
     api = app.Api()
-    api.save_config({"youtube_browser": "chrome"})
-    assert app.load_cfg()["youtube_browser"] == "chrome"
+    api.save_config({"youtube_browser": browser})
+    assert app.load_cfg()["youtube_browser"] == browser
     api.save_config({"youtube_cookie_file": "/local/cookies.txt"})
     assert app.load_cfg()["youtube_browser"] == ""
     assert app.load_cfg()["youtube_cookie_file"] == "/local/cookies.txt"
