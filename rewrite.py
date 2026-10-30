@@ -81,10 +81,16 @@ class ModelUnavailable(RewriteError):
     pass
 
 
+class IncompleteRewrite(RewriteError):
+    """The provider exhausted its output limit before finishing the narration."""
+
+
 def completion_text(response):
     choice = response["choices"][0]
-    if choice.get("finish_reason") in ("length", "content_filter"):
-        raise RewriteError("Модель не завершила текст. Обрезанный результат не принят; повторите рерайт меньшими частями.")
+    if choice.get("finish_reason") == "content_filter" or choice["message"].get("refusal"):
+        raise RewriteError("Модель отклонила запрос по правилам сервиса; результат не принят.")
+    if choice.get("finish_reason") == "length":
+        raise IncompleteRewrite("Модель достигла лимита ответа. Обрезанный результат не принят; нужна меньшая часть сценария.")
     return choice["message"]["content"]
 
 
@@ -145,13 +151,19 @@ def chat_text(engine, key, model, prompt, max_tokens):
                 raise RewriteError(f"retry {r.status_code}: {r.text[:150]}")
             if r.status_code >= 400:
                 raise RewriteError(f"Claude {r.status_code}: {r.text[:200]}")
-            return "".join(b.get("text", "") for b in r.json().get("content", []))
+            payload = r.json()
+            reason = payload.get("stop_reason")
+            if reason == "max_tokens":
+                raise IncompleteRewrite("Claude достиг лимита ответа. Обрезанный результат не принят; нужна меньшая часть сценария.")
+            if reason and reason not in ("end_turn", "stop_sequence"):
+                raise RewriteError(f"Claude не завершил рерайт (stop_reason={reason}); результат не принят.")
+            return "".join(b.get("text", "") for b in payload.get("content", []) if b.get("type") in (None, "text"))
         return _retry(go)
     if engine == "gemini":
-        limit = [max_tokens + 4000]  # у Gemini 2.5 «размышления» съедают лимит ответа — даём запас и режем бюджет размышлений
+        limit = max_tokens + 4000  # у Gemini 2.5 «размышления» съедают лимит ответа — даём запас и режем бюджет размышлений
 
         def go():
-            gen = {"temperature": 0.8, "maxOutputTokens": limit[0]}
+            gen = {"temperature": 0.8, "maxOutputTokens": limit}
             if "2.5-flash" in model:
                 gen["thinkingConfig"] = {"thinkingBudget": 0}
             elif "2.5-pro" in model:
@@ -168,11 +180,14 @@ def chat_text(engine, key, model, prompt, max_tokens):
             if block:
                 raise RewriteError(f"Gemini отклонил запрос: {block}")
             cand = (j.get("candidates") or [{}])[0]
-            text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts") or [])
+            reason = cand.get("finishReason")
+            if reason == "MAX_TOKENS":
+                raise IncompleteRewrite("Gemini достиг лимита ответа. Обрезанный результат не принят; нужна меньшая часть сценария.")
+            if reason and reason != "STOP":
+                raise RewriteError(f"Gemini не завершил рерайт (finishReason={reason}); результат не принят.")
+            text = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts") or [] if not p.get("thought"))
             if not text.strip():
-                if cand.get("finishReason") == "MAX_TOKENS" and limit[0] < 60000:
-                    limit[0] = min(60000, limit[0] * 2)
-                raise RewriteError(f"retry пустой ответ Gemini, finishReason={cand.get('finishReason')}")
+                raise RewriteError(f"retry пустой ответ Gemini, finishReason={reason}")
             return text
         return _retry(go)
     if engine == "fastgen":
