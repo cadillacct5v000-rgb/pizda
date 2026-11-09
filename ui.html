@@ -207,7 +207,7 @@
   .lrow .ctl button { flex:0 0 auto; padding:0 20px; background:transparent; color:var(--ink2); font-size:12px; }
   .lrow .ctl button:hover { background:var(--bg2); color:var(--ink); }
   .lrow .ctl button.eye { width:54px; padding:0; }
-  .lrow .ctl .note { display:flex; align-items:center; flex:1; font-size:14px; color:var(--ink2); padding:0 16px; }
+  .lrow .ctl .note { font-weight:400; letter-spacing:normal; line-height:1.4; text-transform:none; overflow:auto; display:flex; align-items:center; flex:1; font-size:14px; color:var(--ink2); padding:0 16px; }
   .lrow .ctl .note.unit { flex:0 0 auto; border-left:0; padding:0 18px 0 0; font:500 12px/1 "Exo 2", sans-serif; letter-spacing:.14em; text-transform:uppercase; }
   .lrow .ctl input[type=number] + .note.unit { margin-left:-6px; }
   .lrow .ctl.tall { height:auto; align-items:stretch; }
@@ -561,7 +561,7 @@ const I18N = {
 };
 let L = 'ru';
 const t = k => I18N[L][k];
-const TTS_PH = {voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
+const TTS_PH = {elevenlabs:'ElevenLabs API key (xi-api-key)',voicegen:'VoiceGen key (Telegram bot)', voicer:'Voicer token', lumean:'Lumean key'};
 let audioPath = "", cur = 1, known = new Set(), total = 0, scanTimer = null, source = 'mp3';
 const ORDER = {start:0, rewrite:0, tts:0, transcribe:1, scenes:1, style:2, prompts:2, refs:3, images:4, videos:5, render:6, subtitles:7, done:8};
 const STAGE_KEYS = ['rewrite','tts','transcribe','prompts','refs','images','videos','render','subtitles','done'];
@@ -570,11 +570,11 @@ const RW_PH = {fastgen:'ключ fast-gen (тот же, что для карти
 const QA_ENGINES = [['gemini','Gemini'],['anthropic','Claude'],['openai','OpenAI'],['openrouter','OpenRouter']];
 const QA_DEFAULT = {gemini:'gemini-3.6-flash', anthropic:'claude-haiku-5-5', openai:'gpt-4.1-mini', openrouter:'google/gemini-2.5-flash'};
 let youtubeBrowser = '', youtubeCookieFile = '';
-let analyzeVideo = true, reviewProfileId = null, reviewSourceProfile = null;
+let analyzeVideo = true, sourceMontage = true, analysisEngine = 'fastgen', reviewProfileId = null, reviewSourceProfile = null;
 let rwEngine = 'fastgen', rwSrc = 'youtube'; const rwKeys = {};
 function rwOn() { return $('use_rw').checked; }
 $('use_rw').addEventListener('change', () => { if (rwOn()) setSource('script'); mark(); pywebview.api.save_config({rewrite: rwOn()}); });
-const LINKS = {whisper:'https://platform.openai.com/api-keys', assemblyai:'https://www.assemblyai.com/app', openai:'https://platform.openai.com/api-keys', anthropic:'https://console.anthropic.com/settings/keys', gemini:'https://aistudio.google.com/apikey', openrouter:'https://openrouter.ai/settings/keys', voicegen:'https://qw1voicegencore.pro', voicer:'https://voicer.mat3u.com/docs', lumean:'https://lumean.app/developers/docs'};
+const LINKS = {elevenlabs:'https://elevenlabs.io/app/settings/api-keys',whisper:'https://platform.openai.com/api-keys', assemblyai:'https://www.assemblyai.com/app', openai:'https://platform.openai.com/api-keys', anthropic:'https://console.anthropic.com/settings/keys', gemini:'https://aistudio.google.com/apikey', openrouter:'https://openrouter.ai/settings/keys', voicegen:'https://qw1voicegencore.pro', voicer:'https://voicer.mat3u.com/docs', lumean:'https://lumean.app/developers/docs'};
 let stt = 'whisper', llm = 'openai', tts = 'voicegen', recent = [], autoStart = false;
 const IMG = ['fastgen','nonstop','yougen','royal','slider','google'];
 const KPH = {nonstop:'veo_...', yougen:'sf_...', royal:'rt_live_...', google:'AIza...'};
@@ -670,6 +670,8 @@ async function pollRewrite() {
   renderReview(st.script); $('btn_go').disabled = false;
 }
 function renderReview(script) {
+  const montageMode = !!(reviewSourceProfile && reviewSourceProfile.montage);
+  if (montageMode) { const radio = document.querySelector('input[name=mode][value=video]'); if (radio) radio.checked = true; $('use_motion').checked = false; }
   const p = provs(), rows = [];
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
@@ -677,7 +679,7 @@ function renderReview(script) {
   if (reviewSourceProfile) {
     row(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style', reviewSourceProfile.visual_style.description);
     const sample = reviewSourceProfile.sampling;
-    row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? `Весь исходный текст; ${sample.frame_count} кадров по всей длительности. Точные переходы и звук не анализировались.` : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
+    row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? (montageMode ? `Планов исходника: ${reviewSourceProfile.montage.shots.length}. Ритм найденных склеек; движение оценено по трём кадрам на план. Плавные переходы и звук не переносятся.` : `Весь исходный текст; ${sample.frame_count} выборочных кадров. Монтаж и звук не переносятся.`) : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
   }
   row(t('regime'), sel('rv_mode', [['images', t('m_images')], ['mixed', t('m_mixed')], ['video', t('m_video')]], mode()), true);
   row(t('speed') + ' / ' + t('quality'), sw('rv_fgq', fgq() === 'quality', ['quality', 'speed']), true);
@@ -895,9 +897,10 @@ async function loadConfig(keepScreen) {
   if (!keepScreen) { setTracks(c.tracks); $('vol').value = (c.music === undefined || c.music === null) ? 50 : c.music; applyMusic(+$('vol').value); }
   for (const k of ['openai','anthropic','gemini','assemblyai','openrouter']) single[k] = c['has_' + k] ? c[k] : '';
   setKeysFromConfig(c);
-  for (const k of ['voicegen','voicer','lumean']) if (c['has_' + k]) ttsKeys[k] = c[k];
+  for (const k of ['voicegen','voicer','lumean','elevenlabs']) if (c['has_' + k]) ttsKeys[k] = c[k];
   for (const k of ['fastgen','openai','anthropic','gemini']) rwKeys[k] = c['has_' + k] ? (k === 'fastgen' ? (c.keys.fastgen[0] || '') : c[k]) : '';
   analyzeVideo = c.youtube_analyze_video !== false;
+  sourceMontage = c.source_montage !== false; analysisEngine = c.source_analysis_engine || 'fastgen';
   youtubeBrowser = c.youtube_browser || ''; youtubeCookieFile = c.youtube_cookie_file || '';
   rwEngine = c.rewrite_engine || 'fastgen'; rwSrc = c.rewrite_source || 'youtube'; $('use_rw').checked = !!c.rewrite;
   if (!keepScreen) { F.rwUrl = c.rewrite_url || ''; F.rwWords = c.rewrite_words || 1500; F.rwLang = c.rewrite_lang || 'польском'; }
@@ -937,7 +940,7 @@ const SVC_HUMAN = {openai:'OpenAI', anthropic:'Claude', gemini:'Gemini'};
 const baseRow = svc => row(t('base_url') + ' · ' + SVC_HUMAN[svc], '', `<input type="text" class="base" data-svc="${svc}" value="${esc(baseUrls[svc] || '')}" placeholder="${esc(baseDefaults[svc])}" spellcheck="false" autocomplete="off"><span class="note">${t('base_note')}</span>`);
 const SVC_LINKS = {fastgen:'https://fast-gen.ai/', nonstop:'https://t.me/veononstop', yougen:'https://yougen.io/', royal:'https://t.me/royaltechno_ai_bot', slider:'https://secretslider.com', google:'https://aistudio.google.com/apikey'};
 const SVC_TITLES = {fastgen:'fast-gen', nonstop:'veononstop', yougen:'yougen', royal:'royaltechno', slider:'secretslider', google:'Google AI Studio'};
-const TTS_SVCS = ['voicegen','voicer','lumean'];
+const TTS_SVCS = ['voicegen','voicer','lumean','elevenlabs'];
 const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 const row = (label, link, controls, status) => `<div class="lrow"><div class="lab">${label}${link ? `<span class="lk" data-url="${link}">${t('what')}</span>` : ''}</div><div class="ctl${controls.includes('<textarea') ? ' tall' : ''}">${controls}</div>${status ? `<div class="status st" id="${status}"></div>` : ''}</div>`;
 const keyIn = (id, k, i, val, ph) => `<input type="password" class="key" id="${id}" data-k="${k}" data-i="${i}" value="${esc(val)}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false">`;
@@ -984,23 +987,28 @@ function renderAccess() {
                              : `<textarea id="rw_text" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.rwText)}</textarea>`)));
     if (rwSrc === 'youtube') {
       H.push(row(L === 'ru' ? 'Обработка ролика' : 'Video processing', '',
-        sel('youtube_mode', [['full', L === 'ru' ? 'Полный сценарий + стиль ролика' : 'Full narrative + video style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? 'full' : 'text')
+        sel('youtube_mode', [['montage', L === 'ru' ? 'Редизайн видео + ритм склеек (эксперимент)' : 'Video redesign + cut rhythm (experimental)'], ['full', L === 'ru' ? 'Полный сценарий + стиль кадров' : 'Full narrative + image style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? (sourceMontage ? 'montage' : 'full') : 'text')
         + `<span class="note">${L === 'ru' ? 'Полный режим сохраняет ход рассказа и анализирует кадры по всей длительности. Использует модель с поддержкой изображений; у fast-gen нужен доступ chat.multimodal.' : 'Full mode preserves the narrative and samples frames across the entire video. Requires an image-capable model; fast-gen needs chat.multimodal access.'}</span>`));
       H.push(row(L === 'ru' ? 'Доступ к YouTube' : 'YouTube access', '',
-        sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['chromium','Chromium'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
+        sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
         + `<button id="youtube_cookies" class="ghost">${L === 'ru' ? 'Выбрать cookies.txt' : 'Choose cookies.txt'}</button>`
         + `<button id="youtube_clear" class="ghost">${L === 'ru' ? 'Сбросить доступ' : 'Clear access'}</button>`
         + `<span class="note">${esc(youtubeCookieFile || (L === 'ru' ? 'Если YouTube требует вход, выберите браузер, где вы вошли в аккаунт. Данные входа используются локально для YouTube.' : 'If YouTube requires sign-in, choose your signed-in browser. Login data is used locally for YouTube.'))}</span>`));
+    }
+    if (rwSrc === 'youtube' && analyzeVideo) {
+      H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<span class="note">chat.multimodal</span>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis'))));
+      H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника, все сцены — видео. Сохраняются найденные склейки и их ритм под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
     }
     H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
     const rk = (rwEngine === 'fastgen' && fg) ? `<span class="note">${t('same_key')}</span>` : keyIn('k_rw', rwEngine, 0, rwKeys[rwEngine] || '', RW_PH[rwEngine]) + eye('k_rw') + chk(rwEngine, 0, 's_rw');
     H.push(row(t('rw_llm'), RW_LINKS[rwEngine], sel('rw_eng', [['fastgen','fast-gen'],['openai','ChatGPT'],['anthropic','Claude'],['gemini','Gemini']], rwEngine) + rk, 's_rw'));
   }
   if (source === 'script') {
-    const ttsSel = sel('tts_sel', [['edge', t('tts_edge')],['fastgen','fast-gen · Gemini'],['royal','royaltechno · ElevenLabs'],['voicegen','VoiceGen'],['voicer','Voicer'],['lumean','Lumean']], tts);
+    const ttsSel = sel('tts_sel', [['edge', t('tts_edge')],['fastgen','fast-gen · Gemini'],['elevenlabs', L === 'ru' ? 'ElevenLabs напрямую' : 'ElevenLabs direct'],['royal','royaltechno · ElevenLabs'],['voicegen','VoiceGen'],['voicer','Voicer'],['lumean','Lumean']], tts);
     const hasRoyal = (keyRows.royal || []).some(r => r && r.value);
-    const ttsCtl = tts === 'edge' ? `<span class="note">${t('tts_edge_note')}</span>` : tts === 'fastgen' ? `<span class="note">${fg ? t('tts_fg_note') : t('tts_fg_nokey')}</span>` : tts === 'royal' ? `<span class="note">${hasRoyal ? t('tts_royal_note') : t('tts_royal_nokey')}</span>` : keyIn('k_tts', tts, 0, ttsKeys[tts] || '', TTS_PH[tts]) + eye('k_tts');
+    const ttsCtl = tts === 'edge' ? `<span class="note">${t('tts_edge_note')}</span>` : tts === 'fastgen' ? `<span class="note">${fg ? t('tts_fg_note') : t('tts_fg_nokey')}</span>` : tts === 'royal' ? keyIn('k_tts_royal', 'royal', 0, (keyRows.royal[0] || {}).value || '', 'RoyalTechno API key · rt_live_...') + eye('k_tts_royal') + `<span class="note">${t('tts_royal_note')}</span>` : keyIn('k_tts', tts, 0, ttsKeys[tts] || '', TTS_PH[tts]) + eye('k_tts');
     H.push(row(t('ttskey'), LINKS[tts] || SVC_LINKS[tts] || '', ttsSel + ttsCtl + chk(tts, 0, 's_tts'), 's_tts'));
+    if (tts === 'elevenlabs') H.push(`<div class="note">${L === 'ru' ? 'Ваш API-ключ ElevenLabs. Модель Multilingual v2. Нажмите «Список» и выберите голос.' : 'Your ElevenLabs API key. Multilingual v2. Use List to choose a voice.'}</div>`);
     H.push(row(t('voiceid'), 'https://elevenlabs.io/voice-library', `<input type="text" id="tts_voice" list="voice_list" value="${esc(F.voice)}" placeholder="${esc(t('ph_voice'))}" spellcheck="false" autocomplete="off"><button class="ghost" onclick="loadVoices()">${t('list')}</button>`, 's_voice'));
     if (!rwOn()) H.push(row(t('script'), '', `<textarea id="script" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.script)}</textarea>`));
   } else {
@@ -1057,18 +1065,19 @@ function bindAccess() {
     const k = inp.dataset.k, v = inp.value.trim();
     if (IMG.includes(k)) { keyRows[k][+inp.dataset.i].value = v; saveKeys(); return; }
     if (TTS_SVCS.includes(k)) ttsKeys[k] = v; else if (inp.id === 'k_rw') rwKeys[k] = v; else single[k] = v;
-    if (v && !v.includes('•')) pywebview.api.save_config({[k]: v});
+    if (!v.includes('•')) pywebview.api.save_config({[k]: v});
   }));
   on('stt_sel', 'change', () => { syncAll(); stt = $('stt_sel').value; pywebview.api.save_config({stt_engine: stt}); renderAccess(); });
   on('llm_sel', 'change', () => { syncAll(); llm = $('llm_sel').value; pywebview.api.save_config({llm_engine: llm}); renderAccess(); });
   document.querySelectorAll('input.base').forEach(el => el.addEventListener('change', () => { const s = el.dataset.svc, v = el.value.trim(); baseUrls[s] = v; pywebview.api.save_config({[s + '_base_url']: v}); }));
-  on('tts_sel', 'change', () => { syncAll(); tts = $('tts_sel').value; pywebview.api.save_config({tts_service: tts}); renderAccess(); });
+  on('tts_sel', 'change', async () => { syncAll(); await saveKeys(); tts = $('tts_sel').value; F.voice = (recent.find(v => v.service === tts) || {}).id || ''; await pywebview.api.save_config({tts_service: tts, tts_voice: F.voice}); renderAccess(); });
   on('qa_eng', 'change', () => { syncAll(); qaEngine = $('qa_eng').value; qaModel = ''; pywebview.api.save_config({qa_engine: qaEngine, qa_model: ''}); renderAccess(); });
   on('qa_model', 'change', () => { qaModel = $('qa_model').value; pywebview.api.save_config({qa_model: qaModel}); });
   on('rw_src', 'change', () => { syncAll(); rwSrc = $('rw_src').value; pywebview.api.save_config({rewrite_source: rwSrc}); renderAccess(); });
   on('rw_eng', 'change', () => { syncAll(); rwEngine = $('rw_eng').value; pywebview.api.save_config({rewrite_engine: rwEngine}); renderAccess(); });
   for (const m of Object.keys(MODEL_OPTS)) on(m, 'change', () => { models[m] = $(m).value; pywebview.api.save_config({[m]: models[m]}); });
-  on('youtube_mode', 'change', async () => { syncAll(); analyzeVideo = $('youtube_mode').value === 'full'; await pywebview.api.save_config({youtube_analyze_video: analyzeVideo}); reviewProfileId = null; reviewSourceProfile = null; renderAccess(); });
+  on('youtube_mode', 'change', async () => { syncAll(); analyzeVideo = $('youtube_mode').value !== 'text'; sourceMontage = $('youtube_mode').value === 'montage'; await pywebview.api.save_config({youtube_analyze_video: analyzeVideo, source_montage: sourceMontage}); reviewProfileId = null; reviewSourceProfile = null; renderAccess(); });
+  on('analysis_engine', 'change', async () => { syncAll(); await saveKeys(); analysisEngine = $('analysis_engine').value; await pywebview.api.save_config({source_analysis_engine: analysisEngine}); reviewProfileId = null; reviewSourceProfile = null; renderAccess(); });
   on('youtube_browser', 'change', async () => { syncAll(); youtubeBrowser = $('youtube_browser').value; youtubeCookieFile = ''; await pywebview.api.save_config({youtube_browser: youtubeBrowser, youtube_cookie_file: ''}); renderAccess(); });
   on('youtube_cookies', 'click', async () => { syncAll(); const p = await pywebview.api.pick_youtube_cookies(); if (p) { youtubeCookieFile = p; youtubeBrowser = ''; renderAccess(); } });
   on('youtube_clear', 'click', async () => { syncAll(); await pywebview.api.save_config({youtube_browser: '', youtube_cookie_file: ''}); youtubeBrowser = ''; youtubeCookieFile = ''; renderAccess(); });
@@ -1111,6 +1120,11 @@ async function checkRow(k, i, sid) {
   await saveKeys();
   put(t('checking'), '');
   let r = {};
+  if (sid === 's_tts') {
+    try { const result = await pywebview.api.check_tts(k); put(result.message || result.error, result.ok ? 'ok' : 'err'); }
+    catch (err) { put(t('error') + err, 'err'); }
+    return;
+  }
   try { r = await pywebview.api.check_keys([k]); } catch (err) { r = {[k]: t('error') + err}; }
   const v = Array.isArray(r[k]) ? (r[k][i] ?? r[k][0]) : r[k];
   put(v || '', String(v || '').startsWith('OK') ? 'ok' : 'err');
@@ -1131,15 +1145,16 @@ async function saveKeys() {
   syncAll();
   const p = provs(), fg = p.includes('fastgen');
   const data = {...models, keys: {}};
-  for (const k of IMG) if (p.includes(k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
+  for (const k of IMG) if (p.includes(k) || (source === 'script' && tts === k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
+  if (rwOn() && analyzeVideo && analysisEngine !== 'fastgen' && single[analysisEngine] && !single[analysisEngine].includes('•')) data[analysisEngine] = single[analysisEngine];
   if (!fg) for (const k of [stt === 'assemblyai' ? 'assemblyai' : 'openai', llm]) if (single[k] && !single[k].includes('•')) data[k] = single[k];
-  if (source === 'script') { if (ttsKeys[tts] && !ttsKeys[tts].includes('•')) data[tts] = ttsKeys[tts]; data.tts_voice = F.voice; }
+  if (source === 'script') { if (TTS_SVCS.includes(tts) && !(ttsKeys[tts] || '').includes('•')) data[tts] = ttsKeys[tts] || ''; data.tts_voice = F.voice; }
   if (rwOn()) { const v = rwKeys[rwEngine] || ''; if (v && !v.includes('•')) data[rwEngine] = v; Object.assign(data, {rewrite_engine: rwEngine, rewrite_source: rwSrc, rewrite_url: F.rwUrl, rewrite_words: F.rwWords, rewrite_lang: F.rwLang}); }
   await pywebview.api.save_config(data);
   const c = (await pywebview.api.get_state()).config;
   setKeysFromConfig(c);
   for (const k of ['openai','anthropic','gemini','assemblyai','openrouter']) single[k] = c['has_' + k] ? c[k] : '';
-  for (const k of TTS_SVCS) if (c['has_' + k]) ttsKeys[k] = c[k];
+  for (const k of TTS_SVCS) ttsKeys[k] = c['has_' + k] ? c[k] : '';
   for (const k of ['fastgen','openai','anthropic','gemini']) rwKeys[k] = c['has_' + k] ? (k === 'fastgen' ? (c.keys.fastgen[0] || '') : c[k]) : '';
   if (cur === 4 && !(document.activeElement && document.activeElement.closest('#dropzone'))) renderAccess();
 }
@@ -1168,7 +1183,7 @@ async function loadVoices() {
 }
 function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   source_profile_id: rwOn() && analyzeVideo && rwSrc === 'youtube' ? reviewProfileId : null,
-  rewrite: {on: rwOn(), analyze_video: analyzeVideo, source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
+  rewrite: {on: rwOn(), montage: sourceMontage, analyze_video: analyzeVideo, source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
 // ===== фоновая музыка: плейлист из папки music, ползунок 0..100 (середина — тихо, низ — выключено),
 // треки по кругу с паузой полторы минуты, стрелка — следующий трек сразу =====

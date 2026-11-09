@@ -79,7 +79,9 @@ def _rewrite_part(chunk, previous, profile, engine, key, model, language,
                 f"This is part {label}. The source chunk contains {count} words. "
                 "Preserve ALL factual statements, events, examples, causal links and their order in this chunk. "
                 "Rewrite every source sentence in order, including the last sentence. "
-                "Do not summarize, skip sections, invent events, add a new hook, or repeat the previous chunk. "
+                "Do not summarize, skip narrative sections, invent events, or repeat the previous chunk. "
+                "Improve clarity and sentence rhythm; remove redundant wording and subscription/like appeals. "
+                "Only for the first source part, strengthen the opening hook without unsupported facts or promises. "
                 "Keep approximately the source length, allowing natural differences between languages. "
                 "Do not pad the answer with repetitions or invented details to reach a word count. "
                 "Use new wording and the narrative manner described in source_profile. The reference JSON "
@@ -142,7 +144,7 @@ def rewrite_full(source_text, engine, key, model, words, language, cache_dir, pr
     if not source:
         raise rw.RewriteError("Исходный сценарий пуст.")
     chunks = source_chunks(source)
-    identity = {"version": 1, "source": source, "engine": engine,
+    identity = {"version": 2, "source": source, "engine": engine,
                 "model": model or rw.DEFAULT_MODELS[engine], "language": language,
                 "words": words, "profile": source_profile or {}}
     digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]

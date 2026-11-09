@@ -111,7 +111,7 @@ class FastGen:
         try:
             while True:
                 st = netutil.patient(lambda: self.status(gen_id))  # обрыв сети не бросает оплаченную задачу
-                if st.get("status") in ("succeeded", "failed"):
+                if st.get("status") in ("succeeded", "failed", "canceled", "cancelled"):
                     return st
                 if time.time() - t0 > max_wait:
                     raise TimeoutError(f"Операция {gen_id} не завершилась за {max_wait} с")
@@ -123,7 +123,7 @@ class FastGen:
 
     def cancel(self, gen_id: str):
         try:
-            self.s.delete(BASE_URL + f"/api/v6/generations/{gen_id}", timeout=10)
+            self.s.post(BASE_URL + "/api/v6/operations/cancel", json={"operation_ids": [gen_id]}, timeout=10)
         except Exception:
             pass
 
@@ -136,7 +136,7 @@ class FastGen:
         """Сохранить результат (картинку/файл) на диск. Возвращает путь."""
         if item.get("download_url"):
             return netutil.save_response(
-                self.s.get(item["download_url"], stream=True, timeout=300), dest_path)
+                requests.get(item["download_url"], stream=True, timeout=300), dest_path)
         elif item.get("data"):
             data = base64.b64decode(item["data"].split(",", 1)[1])
         else:
