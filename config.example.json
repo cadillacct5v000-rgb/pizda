@@ -12,6 +12,7 @@
   "voicegen_api_key": "",
   "voicer_api_key": "",
   "lumean_api_key": "",
+  "elevenlabs_api_key": "",
   "openai_base_url": "",
   "anthropic_base_url": "",
   "gemini_base_url": "",
@@ -33,5 +34,7 @@
   "auto_update": false,
   "youtube_browser": "",
   "youtube_cookie_file": "",
-  "youtube_analyze_video": true
+  "youtube_analyze_video": true,
+  "source_montage": true,
+  "source_analysis_engine": "fastgen"
 }

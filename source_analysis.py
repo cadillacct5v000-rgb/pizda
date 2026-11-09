@@ -19,13 +19,13 @@ import netutil
 from media_tools import ffmpeg_bin, run_media
 
 
-VERSION = 1
+VERSION = 2
 FRAME_INTERVAL = 30.0
 MAX_FRAMES = 120
 BATCH_SIZE = 6
 TRANSCRIPT_CHARS = 12000
 DEFAULT_MODELS = {
-    "fastgen": "google/gemini-3.6-flash",
+    "fastgen": "google/gemini-auto",
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-5-5",
     "gemini": "gemini-3.6-flash",
@@ -146,9 +146,26 @@ def _http(method, url, **kwargs):
                     if attempt == 2:
                         raise SourceAnalysisError(f"Сервис анализа видео временно недоступен (HTTP {response.status_code}).")
                 elif response.status_code >= 400:
+                    try:
+                        details = response.json()
+                        details = details.get("error", details.get("detail", details))
+                        if isinstance(details, dict):
+                            details = ": ".join(str(details.get(k) or "") for k in ("code", "type", "message"))
+                        details = str(details)
+                    except (ValueError, AttributeError):
+                        details = "Ответ сервиса не содержит JSON с причиной ошибки."
+                    # Responses can echo credentials or query strings. Never expose them.
+                    secrets = list((kwargs.get("headers") or {}).values()) + list((kwargs.get("params") or {}).values())
+                    for secret in secrets:
+                        if isinstance(secret, str) and len(secret) >= 8:
+                            details = details.replace(secret, "[скрыто]")
+                    import re
+                    details = re.sub(r"https?://[^\s\"']+", "[URL]", details)
+                    details = re.sub(r"(?:sk-|rt_live_)[A-Za-z0-9_-]+", "[ключ скрыт]", details)
                     raise SourceAnalysisError(
-                        f"Сервис отклонил анализ видео (HTTP {response.status_code}). "
-                        "Проверьте ключ, доступ к выбранной модели и поддержку изображений.")
+                        f"Сервис отклонил анализ видео (HTTP {response.status_code}): {details[:500]}. "
+                        "Для fast-gen нужны Gemini и доступ chat.multimodal; можно выбрать отдельный "
+                        "Gemini/OpenAI/Claude в настройке анализа исходника.")
                 else:
                     return response.json()
             finally:
@@ -191,8 +208,10 @@ def _query(engine, key, model, prompt, image_path=None):
         content = [{"type": "text", "text": prompt}]
         if image:
             content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}})
-        payload = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}],
-                   "max_tokens": 6000}
+        payload = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]}
+        if engine == "openai":
+            from openai_api import _chat_params
+            payload.update(_chat_params(model, 6000, 0.3))
         response = _http("POST", base + "/chat/completions", headers=headers, json=payload)
         try:
             choice = response["choices"][0]
@@ -249,7 +268,8 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
     timestamps = sample_times(duration)
     signature = {"version": VERSION, "video": _hash_file(video_path),
                  "transcript": hashlib.sha256(transcript.encode("utf-8")).hexdigest(),
-                 "engine": engine, "model": model, "timestamps": timestamps}
+                 "engine": engine, "model": model, "timestamps": timestamps,
+                 "montage": bool(cfg.get("source_montage"))}
     digest = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:24]
     directory = Path(cache_dir) / ("analysis_" + digest)
     directory.mkdir(parents=True, exist_ok=True)
@@ -324,5 +344,9 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
                                      "Голос, музыка и звуковые эффекты не анализировались."]},
         "engine": engine, "model": model, "signature": signature,
     }
+    if cfg.get("source_montage"):
+        import montage
+        result["montage"] = montage.analyse(video_path, directory, duration, engine, key, model, progress)
+        result["sampling"]["limitations"] = result["montage"]["limitations"]
     _atomic_json(result_path, result)
     return result

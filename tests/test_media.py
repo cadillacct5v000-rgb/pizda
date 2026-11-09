@@ -1,3 +1,4 @@
+import wave
 """Offline media regression tests; FFmpeg outputs are probed and decoded."""
 import json
 import os
@@ -78,7 +79,11 @@ class ToolTests(unittest.TestCase):
         class FakeTTS:
             def synthesize(self, text, voice_id, out, progress=None):
                 calls.append((text, voice_id))
-                Path(out).write_bytes(b"audio" * 300)
+                with wave.open(str(out), "wb") as recording:
+                    recording.setnchannels(1)
+                    recording.setsampwidth(2)
+                    recording.setframerate(16000)
+                    recording.writeframes(b"\0\0" * 1600)
         with tempfile.TemporaryDirectory() as directory, patch.object(pipeline, "make_tts", return_value=FakeTTS()):
             def make(text, voice):
                 return pipeline.make_voiceover({}, text, "edge", voice, directory, lambda *a: None)

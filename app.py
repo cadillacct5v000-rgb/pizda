@@ -5,6 +5,7 @@
 Скрытый режим без окна: VideoGen.exe --run файл.mp3 [--provider ...] [--mode images|video] [--style ...] [--refs]
 """
 import json
+import functools
 import math
 import os
 import platform
@@ -29,7 +30,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.8.0"
+VERSION = "1.8.1-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -173,6 +174,12 @@ def estimate_plan(opts):
     if not duration:
         return {"ok": False}
     scenes = max(1, round(duration / 5.7))
+    with LOCK:
+        profile = STATE.get("source_profile") if opts.get("source_profile_id") and opts.get("source_profile_id") == STATE.get("source_profile_id") else None
+    if profile and profile.get("montage"):
+        import montage
+        scenes = len(montage.map_scenes(profile, [], duration, pipeline.FPS))
+        mode = "video"
     fg = "fastgen" in providers
     limit, threads, vlimit = fg_limits(cfg.get("fastgen_api_key", "")) if fg and cfg.get("fastgen_api_key") else (0, 0, 0)
     vf = _vf(opts.get("video_first", cfg.get("video_first", 0)))
@@ -483,6 +490,7 @@ def save_cfg(cfg):
     cfg.setdefault("voicegen_api_key", "")
     cfg.setdefault("voicer_api_key", "")
     cfg.setdefault("lumean_api_key", "")
+    cfg.setdefault("elevenlabs_api_key", "")
     cfg.setdefault("stt_engine", "fastgen")
     cfg.setdefault("llm_engine", "fastgen")
     cfg.setdefault("anthropic_model", "claude-sonnet-5-5")
@@ -525,6 +533,14 @@ def save_cfg(cfg):
                 time.sleep(0.15 * (attempt + 1))
 
 
+def config_transaction(method):
+    @functools.wraps(method)
+    def wrapped(*args, **kwargs):
+        with CFG_LOCK:
+            return method(*args, **kwargs)
+    return wrapped
+
+
 def music_tracks():
     """Фоновые треки из папки music (в сборке — рядом с ui.html)."""
     try:
@@ -544,6 +560,8 @@ def mask(key):
 def progress_cb(stage, done, total, message):
     with LOCK:
         STATE.update({"stage": stage, "done": done, "total": total, "message": message})
+        if pipeline.LAST_JOB_DIR:
+            STATE["job_dir"] = pipeline.LAST_JOB_DIR
         STATE["log"].append(f"{time.strftime('%H:%M:%S')}  {message}" + (f"  {done}/{total}" if total else ""))
         STATE["log"] = STATE["log"][-400:]
 
@@ -583,6 +601,7 @@ def run_rewrite(rw):
         with LOCK:
             STATE["error"] = str(e)
     except Exception as e:
+        pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
             STATE["log"].append(traceback.format_exc()[-1500:])
@@ -597,7 +616,7 @@ def run_prepare(audio, provider, mode, use_refs, script=None, rewrite=None):
         d = None if rewrite else (pipeline.script_job_dir(script)[0] if script else pipeline.job_dir_for(audio)[0])
         with LOCK:
             STATE["job_dir"] = d
-        est = pipeline.prepare(audio, progress_cb=progress_cb, provider=provider, mode=mode, use_refs=use_refs, script_text=script, rewrite=rewrite)
+        est = pipeline.prepare(audio, progress_cb=progress_cb, provider=provider, mode=mode, use_refs=use_refs, script_text=script, rewrite=rewrite, reset_cancel=False)
         with LOCK:
             STATE["estimate"] = est
             STATE["job_dir"] = est.get("job_dir") or d
@@ -611,6 +630,7 @@ def run_prepare(audio, provider, mode, use_refs, script=None, rewrite=None):
         with LOCK:
             STATE["error"] = str(e)
     except Exception as e:
+        pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
             STATE["log"].append(traceback.format_exc()[-1500:])
@@ -636,7 +656,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
             STATE["job_dir"] = d
         out = pipeline.make_video(audio, progress_cb=progress_cb, provider=provider, mode=mode, style_key=style,
                                   use_refs=use_refs, subtitles=subtitles, motion=motion, script_text=script, rewrite=rewrite,
-                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile)
+                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile, reset_cancel=False)
         with LOCK:
             STATE["result"] = out
     except pipeline.Cancelled:
@@ -647,6 +667,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
         with LOCK:
             STATE["error"] = str(e)
     except Exception as e:
+        pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
             STATE["log"].append(traceback.format_exc()[-1500:])
@@ -714,6 +735,7 @@ class Api:
             "voicegen": mask(cfg.get("voicegen_api_key", "")), "has_voicegen": bool(cfg.get("voicegen_api_key")),
             "voicer": mask(cfg.get("voicer_api_key", "")), "has_voicer": bool(cfg.get("voicer_api_key")),
             "lumean": mask(cfg.get("lumean_api_key", "")), "has_lumean": bool(cfg.get("lumean_api_key")),
+            "elevenlabs": mask(cfg.get("elevenlabs_api_key", "")), "has_elevenlabs": bool(cfg.get("elevenlabs_api_key")),
             "stt_engine": cfg.get("stt_engine", "fastgen"), "llm_engine": cfg.get("llm_engine", "fastgen"),
             "anthropic_model": cfg.get("anthropic_model", "claude-sonnet-5-5"), "gemini_model": cfg.get("gemini_model", "gemini-3.6-flash"),
             "base_urls": {k: cfg.get(k + "_base_url", "") for k in ("openai", "anthropic", "gemini")}, "base_defaults": dict(endpoints.DEFAULTS),
@@ -722,6 +744,7 @@ class Api:
             "source": cfg.get("source", "mp3"), "tts_service": cfg.get("tts_service", "voicegen"), "tts_voice": cfg.get("tts_voice", ""),
             "rewrite": bool(cfg.get("rewrite", False)), "rewrite_engine": cfg.get("rewrite_engine", "fastgen"), "rewrite_source": cfg.get("rewrite_source", "youtube"),
             "youtube_analyze_video": cfg.get("youtube_analyze_video", True),
+            "source_montage": cfg.get("source_montage", True), "source_analysis_engine": cfg.get("source_analysis_engine", "fastgen"),
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
             "openai": mask(cfg.get("openai_api_key", "")),
@@ -750,12 +773,13 @@ class Api:
         st["version"] = VERSION
         return st
 
+    @config_transaction
     def save_config(self, data):
         cfg = load_cfg()
         for field, key in (("fastgen", "fastgen_api_key"), ("nonstop", "veononstop_api_key"), ("yougen", "yougen_api_key"),
                            ("openai", "openai_api_key"), ("royal", "royaltechno_api_key"), ("slider", "secretslider_api_key"), ("google", "google_api_key"),
                            ("anthropic", "anthropic_api_key"), ("gemini", "gemini_api_key"), ("assemblyai", "assemblyai_api_key"), ("openrouter", "openrouter_api_key"),
-                           ("voicegen", "voicegen_api_key"), ("voicer", "voicer_api_key"), ("lumean", "lumean_api_key")):
+                           ("voicegen", "voicegen_api_key"), ("voicer", "voicer_api_key"), ("lumean", "lumean_api_key"), ("elevenlabs", "elevenlabs_api_key")):
             if field in data:
                 v = (data.get(field) or "").strip()
                 if v and "•" not in v:
@@ -811,7 +835,7 @@ class Api:
             cfg["theme"] = data["theme"]
         for k, allowed in (("stt_engine", ("fastgen", "whisper", "assemblyai")), ("llm_engine", ("fastgen", "openai", "anthropic", "gemini")),
                            ("quality", ("speed", "quality")), ("source", ("mp3", "script")),
-                           ("tts_service", ("voicegen", "voicer", "lumean", "edge", "fastgen", "royal"))):
+                           ("tts_service", ("voicegen", "voicer", "lumean", "elevenlabs", "edge", "fastgen", "royal"))):
             if data.get(k) in allowed:
                 cfg[k] = data[k]
         for k in ("anthropic_model", "gemini_model"):
@@ -839,6 +863,10 @@ class Api:
             cfg["rewrite_engine"] = data["rewrite_engine"]
         if data.get("rewrite_source") in ("youtube", "text"):
             cfg["rewrite_source"] = data["rewrite_source"]
+        if data.get("source_analysis_engine") in ("fastgen", "gemini", "openai", "anthropic"):
+            cfg["source_analysis_engine"] = data["source_analysis_engine"]
+        if "source_montage" in data:
+            cfg["source_montage"] = bool(data["source_montage"])
         if "youtube_analyze_video" in data:
             cfg["youtube_analyze_video"] = bool(data["youtube_analyze_video"])
         if "youtube_browser" in data:
@@ -870,7 +898,26 @@ class Api:
         save_cfg(cfg)
         return {"ok": True}
 
+    @staticmethod
+    def _reset_idle_cancel():
+        with LOCK:
+            if not (STATE["running"] or STATE["preparing"] or STATE.get("queue_active")):
+                pipeline.CANCEL.clear()
+
+    def check_tts(self, service):
+        self._reset_idle_cancel()
+        cfg = load_cfg()
+        key = cfg.get(pipeline.SINGLE_KEY.get(service, f"{service}_api_key"))
+        if not key and service != "edge":
+            return {"ok": False, "error": self._tts_key_error(service)}
+        try:
+            from tts_api import make_tts
+            return {"ok": True, "message": make_tts(service, key).check()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:500]}
+
     def check_keys(self, which):
+        self._reset_idle_cancel()
         cfg = load_cfg()
         out = {}
 
@@ -988,7 +1035,7 @@ class Api:
                 out["edge"] = make_tts("edge", "").check()
             except Exception as e:
                 out["edge"] = f"Ошибка: {str(e)[:100]}"
-        for name in ("voicegen", "voicer", "lumean"):
+        for name in ("voicegen", "voicer", "lumean", "elevenlabs"):
             if name in which:
                 if cfg.get(f"{name}_api_key"):
                     try:
@@ -1033,11 +1080,18 @@ class Api:
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+        return {"on": True, "montage": bool(rw.get("montage", load_cfg().get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or "польском").strip()}
 
     def _validate(self, opts, providers):
         return self._validate_source(opts) or self._validate_common(providers)
+
+    @staticmethod
+    def _tts_key_error(service):
+        if service == "royal":
+            return ("Выбран royaltechno · ElevenLabs: нужен ключ RoyalTechno в строке royaltechno. "
+                    "Если у вас ключ самого ElevenLabs, выберите «ElevenLabs напрямую» и вставьте ключ в поле озвучки.")
+        return f"Для озвучки выбран {service}, но его ключ не введён."
 
     def _validate_source(self, opts):
         cfg = load_cfg()
@@ -1051,13 +1105,13 @@ class Api:
                 return "Для рерайта выбран " + {"openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."
             tts = opts.get("tts") or cfg.get("tts_service")
             if not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
-                return f"После рерайта сценарий озвучивается ({tts}), введите ключ озвучки."
+                return self._tts_key_error(tts)
         elif opts.get("source") == "script":
             if not (opts.get("script") or "").strip():
                 return "Вставьте текст сценария."
             tts = opts.get("tts") or cfg.get("tts_service")
             if not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
-                return f"Для озвучки выбран {tts}, но его ключ не введён."
+                return self._tts_key_error(tts)
         elif not os.path.isfile(opts.get("audio") or ""):
             return "Файл озвучки не найден. Выберите mp3 или перетащите его в окно."
         return None
@@ -1124,6 +1178,11 @@ class Api:
         with LOCK:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Программа уже занята."}
+            pipeline.CANCEL.clear()
+            pipeline.LAST_JOB_DIR = None
+            STATE["job_dir"] = None
+            STATE["ended_at"] = None
+            pipeline.clear_wait()
             STATE.update({"preparing": True, "stage": "prepare", "done": 0, "total": 0, "message": "распознаю речь",
                           "log": [], "result": None, "error": None, "estimate": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_prepare, args=(audio, provider, mode, use_refs, script, rw), daemon=True).start()
@@ -1150,6 +1209,11 @@ class Api:
         with LOCK:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Программа уже занята."}
+            pipeline.CANCEL.clear()
+            pipeline.LAST_JOB_DIR = None
+            STATE["job_dir"] = None
+            STATE["ended_at"] = None
+            pipeline.clear_wait()
             STATE.update({"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
                           "log": [], "result": None, "error": None, "script": None, "source_profile": None, "source_profile_id": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_rewrite, args=(rw,), daemon=True).start()
@@ -1186,6 +1250,11 @@ class Api:
         with LOCK:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Уже идёт создание видео."}
+            pipeline.CANCEL.clear()
+            pipeline.LAST_JOB_DIR = None
+            STATE["job_dir"] = None
+            STATE["ended_at"] = None
+            pipeline.clear_wait()
             STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "message": "запуск",
                           "log": [], "result": None, "error": None, "cancelled": False, "started_at": time.time()})
         cfg = load_cfg()
@@ -1292,7 +1361,7 @@ class Api:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
                 return {"ok": False, "error": "Уже идёт создание видео."}
             if any(x.get("source") in ("script", "rewrite") for x in todo) and not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
-                return {"ok": False, "error": f"Для озвучки выбран {tts}, но его ключ не введён."}
+                return {"ok": False, "error": self._tts_key_error(tts)}
             for x in todo:
                 if x.get("source") == "rewrite" and not cfg.get(pipeline.REWRITE_KEYS.get((x.get("rewrite") or {}).get("engine", "fastgen"), "fastgen_api_key")):
                     return {"ok": False, "error": "Для рерайта не введён ключ выбранной модели."}
@@ -1300,6 +1369,11 @@ class Api:
             custom_style = " ".join(str(opts.get("custom_style") or "").split())
             if not custom_style and (style == pipeline.CUSTOM_STYLE or any(x.get("style") == pipeline.CUSTOM_STYLE for x in todo)):
                 return {"ok": False, "error": "Для «Своего стиля» опишите его на экране «Режим» или выберите стиль из списка."}
+            pipeline.CANCEL.clear()
+            pipeline.LAST_JOB_DIR = None
+            STATE["job_dir"] = None
+            STATE["ended_at"] = None
+            pipeline.clear_wait()
             STATE.update({"queue_active": True, "running": True, "stage": "start", "message": "очередь: запуск", "log": [], "result": None, "error": None, "cancelled": False})
             QUEUE_STOP = False
         common = {"provider": provider, "mode": opts.get("mode", "images"), "style": style, "use_refs": cfg.get("quality") == "quality",
@@ -1381,10 +1455,11 @@ class Api:
             return keys[idx] if isinstance(idx, int) and 0 <= idx < len(keys) else ""
         key = {"fastgen": "fastgen_api_key", "nonstop": "veononstop_api_key", "yougen": "yougen_api_key", "royal": "royaltechno_api_key",
                "slider": "secretslider_api_key", "google": "google_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key",
-               "assemblyai": "assemblyai_api_key", "voicegen": "voicegen_api_key", "voicer": "voicer_api_key", "lumean": "lumean_api_key"}.get(name)
+               "assemblyai": "assemblyai_api_key", "voicegen": "voicegen_api_key", "voicer": "voicer_api_key", "lumean": "lumean_api_key", "elevenlabs": "elevenlabs_api_key"}.get(name)
         return cfg.get(key, "") if key else ""
 
     def tts_voices(self, service):
+        self._reset_idle_cancel()
         cfg = load_cfg()
         key = cfg.get(f"{service}_api_key")
         if service in ("fastgen", "royal") and not key:

@@ -413,7 +413,7 @@ class FastGenTTS:
     def _one(self, text, voice):
         payload = {"operation": self.OP, "prompt": text}
         if voice:
-            payload["options"] = {"voice": voice}
+            payload["voice"] = voice
         for attempt in range(12):
             try:
                 st = self.api.run(payload, poll=3, max_wait=900)
@@ -488,10 +488,8 @@ class RoyalTTS:
     def voices(self):
         out = []
         for lang in ("ru", "en"):
-            try:
-                rows = self.api.voices(language=lang)
-            except Exception:
-                rows = []
+            netutil.check_cancel()
+            rows = self.api.voices(language=lang)
             for v in rows:
                 if not v.get("id") or any(x["id"] == v["id"] for x in out):
                     continue
@@ -544,4 +542,7 @@ class RoyalTTS:
 
 
 def make_tts(name, key):
+    if name == "elevenlabs":
+        from elevenlabs_api import ElevenLabs
+        return ElevenLabs(key)
     return {"voicegen": VoiceGen, "voicer": Voicer, "lumean": Lumean, "edge": EdgeTTS, "fastgen": FastGenTTS, "royal": RoyalTTS}[name](key)
