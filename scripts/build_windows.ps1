@@ -33,6 +33,6 @@ $process = Start-Process -FilePath (Join-Path (Get-Location) 'dist/KadroGen/Kadr
 if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Bundled unified self-test timed out.' }
 if ($process.ExitCode -ne 0 -or -not (Test-Path $Report)) { throw 'Bundled unified self-test failed.' }
 $Result = Get-Content -Raw $Report | ConvertFrom-Json
-if (-not $Result.ok -or $Result.version -ne '1.9.3-dev') { throw 'Bundled unified self-test returned invalid version.' }
+if (-not $Result.ok -or $Result.version -ne '1.9.4-dev') { throw 'Bundled unified self-test returned invalid version.' }
 Compress-Archive -Path dist/KadroGen -DestinationPath dist/KadroGen-Windows-x64.zip -Force
 Write-Host 'Build complete: dist/KadroGen-Windows-x64.zip'

@@ -36,63 +36,116 @@ def detect_shots(video_path, duration):
             for index, (start, end) in enumerate(zip(boundaries, boundaries[1:]))]
 
 
-def analyse(video_path, directory, duration, engine, key, model, progress=None):
+def analyse(video_path, directory, duration, engine, key, model, progress=None, batch_size=6):
     import source_analysis as sa
+    if type(batch_size) is not int or not 1 <= batch_size <= 6:
+        raise ValueError('Размер пакета анализа: от 1 до 6 планов')
     directory = Path(directory) / "montage"
     directory.mkdir(exist_ok=True)
     shots = detect_shots(video_path, duration)
-    analysed = []
+    identities = {shot['index']: {'version': VERSION, 'shot': shot, 'engine': engine, 'model': model} for shot in shots}
+    analysed = {}
+
     def validate_description(response):
-        for field in ("description", "redesign_prompt", "motion"):
+        for field in ('description', 'redesign_prompt', 'motion'):
             if not isinstance(response.get(field), str) or not response[field].strip():
-                raise sa.SourceAnalysisError(f"Не получено описание плана: {field}.")
+                raise sa.SourceAnalysisError(f'Не получено описание плана: {field}.')
+
+    def restore(record):
+        try:
+            item = record['shot']
+            index = item['index']
+            if type(index) is int and index not in analysed and record.get('identity') == identities.get(index) and Path(item['reference_frame']).is_file():
+                if any(item.get(field) != identities[index]['shot'][field] for field in ('start', 'end', 'duration')):
+                    return
+                validate_description(item)
+                analysed[index] = item
+        except (KeyError, TypeError, ValueError, sa.SourceAnalysisError):
+            return
+
+    # Preserve individual results produced by earlier versions.
     for shot in shots:
         netutil.check_cancel()
-        index = shot["index"]
-        if progress:
-            progress(f"монтаж: план {index + 1}/{len(shots)}, {shot['start']:.1f}–{shot['end']:.1f} с")
-        identity = {"version": VERSION, "shot": shot, "engine": engine, "model": model}
-        cache = directory / f"shot_{index:05d}.json"
         try:
-            cached = json.loads(cache.read_text(encoding="utf-8"))
-            if cached.get("identity") == identity and Path(cached["shot"]["reference_frame"]).is_file():
-                analysed.append(cached["shot"])
-                continue
-        except (OSError, ValueError, KeyError, TypeError):
+            restore(json.loads((directory / f"shot_{shot['index']:05d}.json").read_text(encoding='utf-8')))
+        except (OSError, ValueError):
             pass
-        margin = min(0.08, shot["duration"] * 0.1)
-        times = [shot["start"] + margin + (shot["duration"] - 2 * margin) * f for f in (0.0, 0.5, 1.0)]
-        frames = sa.extract_frames(video_path, directory / f"shot_{index:05d}", times)
-        sheet = directory / f"shot_{index:05d}.jpg"
-        sa._contact_sheet(frames, times, sheet)
+    # A batch checkpoint is committed before individual files, so an interrupted materialization never rebills the batch.
+    for checkpoint in directory.glob('batch_*_shots.json'):
+        netutil.check_cancel()
+        try:
+            for record in json.loads(checkpoint.read_text(encoding='utf-8')).get('records', []):
+                restore(record)
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+    pending = [shot for shot in shots if shot['index'] not in analysed]
+    batches = math.ceil(len(pending) / batch_size)
+    if progress:
+        progress(f'монтаж: найдено {len(shots)} планов; сохранено {len(analysed)}; осталось {batches} пакетов, до {batch_size} планов в запросе')
+    for offset in range(0, len(pending), batch_size):
+        netutil.check_cancel()
+        batch = pending[offset:offset + batch_size]
+        indexes = [shot['index'] for shot in batch]
+        if progress:
+            progress(f"монтаж: пакет {offset // batch_size + 1}/{batches}, планы {', '.join(str(index + 1) for index in indexes)}; по 3 кадра на план")
+        frames, timestamps, references, manifest = [], [], {}, []
+        for row, shot in enumerate(batch, 1):
+            margin = min(0.08, shot['duration'] * 0.1)
+            times = [shot['start'] + margin + (shot['duration'] - 2 * margin) * fraction for fraction in (0., .5, 1.)]
+            samples = sa.extract_frames(video_path, directory / f"shot_{shot['index']:05d}", times)
+            frames.extend(samples)
+            timestamps.extend(times)
+            references[shot['index']] = str(samples[1].resolve())
+            manifest.append({'row': row, 'index': shot['index'], 'start': shot['start'], 'end': shot['end']})
+        batch_id = hashlib.sha256(json.dumps([identities[index] for index in indexes], sort_keys=True).encode()).hexdigest()[:24]
+        sheet = directory / f'batch_{batch_id}.jpg'
+        sa._contact_sheet(frames, timestamps, sheet)
         prompt = (
-            "These three frames are chronological samples INSIDE ONE detected shot, not separate shots. "
-            f"Source time {shot['start']:.3f}–{shot['end']:.3f} seconds. "
-            "Describe the visible subjects, composition, palette, materials, light, graphics, and action. "
-            "Infer camera/action only when changes between these frames support it; otherwise use static/unknown. "
-            "Give an English prompt for NEW footage with a small visual redesign (different details/props, "
-            "same broad aesthetic and composition); preserve narrative meaning, no copied logos or text. "
-            "Do not invent audible events. Transition at the START cannot be inferred from these inside-shot frames: "
-            "it is handled as a measured cut. Return JSON: "
-            '{"description":"Russian visual description","redesign_prompt":"English new shot prompt",'
-            '"motion":"English camera and subject motion, or static",'
-            '"motion_confidence":"low|medium|high"}.')
-        response = sa.cached_query(directory, engine, key, model, prompt, sheet, validate=validate_description, progress=progress)
-        for field in ("description", "redesign_prompt", "motion"):
-            if not isinstance(response.get(field), str) or not response[field].strip():
-                raise sa.SourceAnalysisError(f"Не получено описание плана {index + 1}: {field}.")
-        item = {**shot, **{k: response[k] for k in ("description", "redesign_prompt", "motion")},
-                "motion_confidence": response.get("motion_confidence", "low"),
-                "reference_frame": str(frames[1].resolve()),
-                "transition_in": {"type": "cut", "duration": 0.0}}
-        sa._atomic_json(cache, {"identity": identity, "shot": item})
-        analysed.append(item)
-    return {"version": VERSION, "duration": duration, "shots": analysed,
-            "cut_detection": {"method": "ffmpeg_scene_score", "threshold": SCENE_THRESHOLD,
-                              "minimum_shot_seconds": MIN_SHOT},
-            "limitations": ["Автодетектор склеек может пропустить плавные переходы или принять вспышку за склейку.",
-                            "Движение оценивается по трём кадрам плана; траектория камеры не измеряется.",
-                            "Музыка, звуковые акценты и анимация надписей не переносятся."]}
+            'Analyse EVERY row of this contact sheet. Each row contains THREE chronological frames INSIDE ONE shot. '
+            'The three columns are early, middle and late in that same shot, not three separate shots. '
+            'Rows correspond exactly to the following manifest. Return each original integer index, never assign by position. '
+            'For EACH shot describe visible subjects, composition, palette, materials, lighting, graphics and action. '
+            'Infer camera/action only when differences between its three frames support that; otherwise static/unknown. '
+            'Provide an English prompt for NEW footage with a small redesign: different details/props, same broad aesthetic '
+            'and composition. Preserve narrative meaning, no copied logos or text. Do not invent sound or transitions. '
+            'Keep each description to 40-80 words, redesign_prompt to 60-100 words and motion to 20-35 words. '
+            'Return JSON {"shots":[{"index":0,"description":"Russian description","redesign_prompt":"English prompt",'
+            '"motion":"English motion or static","motion_confidence":"low|medium|high"}]}. '
+            'Return exactly one complete object per manifest index. Reference manifest JSON:\n' + json.dumps(manifest)
+        )
+
+        def validate_batch(response):
+            entries = response.get('shots') if isinstance(response, dict) else None
+            if not isinstance(entries, list) or len(entries) != len(indexes):
+                raise sa.SourceAnalysisError('Модель вернула неполный пакет планов. Готовые пакеты сохранены.')
+            seen = set()
+            for entry in entries:
+                index = entry.get('index') if isinstance(entry, dict) else None
+                if type(index) is not int or index not in indexes or index in seen:
+                    raise sa.SourceAnalysisError('Модель перепутала ID планов в пакете. Результат не применён.')
+                seen.add(index)
+                validate_description(entry)
+
+        response = sa.cached_query(directory, engine, key, model, prompt, sheet, validate=validate_batch, progress=progress)
+        descriptions = {entry['index']: entry for entry in response['shots']}
+        records = []
+        for shot in batch:
+            description = descriptions[shot['index']]
+            item = {**shot, **{field: description[field] for field in ('description', 'redesign_prompt', 'motion')},
+                    'motion_confidence': description.get('motion_confidence') if description.get('motion_confidence') in ('low', 'medium', 'high') else 'low',
+                    'reference_frame': references[shot['index']], 'transition_in': {'type': 'cut', 'duration': 0.}}
+            records.append({'identity': identities[shot['index']], 'shot': item})
+        sa._atomic_json(directory / f'batch_{batch_id}_shots.json', {'records': records})
+        for record in records:
+            item = record['shot']
+            sa._atomic_json(directory / f"shot_{item['index']:05d}.json", record)
+            analysed[item['index']] = item
+    return {'version': VERSION, 'duration': duration, 'shots': [analysed[shot['index']] for shot in shots],
+            'analysis': {'method': 'batched_temporal_contact_sheets', 'shots_per_request': batch_size, 'frames_per_shot': 3},
+            'cut_detection': {'method': 'ffmpeg_scene_score', 'threshold': SCENE_THRESHOLD, 'minimum_shot_seconds': MIN_SHOT},
+            'limitations': ['Автодетектор склеек может пропустить плавные переходы или принять вспышку за склейку.',
+                           'Движение оценивается по трём кадрам плана; траектория камеры не измеряется.',
+                           'Музыка, звуковые акценты и анимация надписей не переносятся.']}
 
 
 def map_scenes(profile, words, total_duration, fps=25, max_clip_seconds=10):

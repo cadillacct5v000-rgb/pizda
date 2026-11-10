@@ -184,13 +184,17 @@ def test_montage_timeline_scales_and_splits_long_shots(tmp_path):
 
 
 def test_montage_describes_every_shot_and_resumes(source_video, tmp_path, monkeypatch):
-    query = Mock(return_value={'description':'red/blue', 'redesign_prompt':'New design', 'motion':'static', 'motion_confidence':'high'})
+    def respond(engine, key, model, prompt, image_path=None):
+        manifest = json.loads(prompt.split('Reference manifest JSON:\n')[1])
+        assert len(manifest) == 2
+        return {'shots': [{'index': item['index'], 'description': 'red/blue', 'redesign_prompt': 'New design', 'motion': 'static', 'motion_confidence': 'high'} for item in reversed(manifest)]}
+    query = Mock(side_effect=respond)
     monkeypatch.setattr(sa, '_query', query)
     data = montage.analyse(source_video, tmp_path, 3., 'fastgen', 'test', 'google/gemini-auto')
     assert len(data['shots']) == 2
-    assert query.call_count == 2
+    assert query.call_count == 1
     montage.analyse(source_video, tmp_path, 3., 'fastgen', 'test', 'google/gemini-auto')
-    assert query.call_count == 2
+    assert query.call_count == 1
     assert all(Path(s['reference_frame']).exists() for s in data['shots'])
 
 

@@ -13,6 +13,7 @@ import io
 import requests
 import netutil
 import endpoints
+import quota_info
 
 
 def image_b64(path, max_side=1024):
@@ -136,8 +137,16 @@ class GeminiClient:
     def check(self):
         r = requests.get(self.BASE + "/models", params={"key": self.key}, timeout=30)
         if r.status_code >= 400:
-            raise LLMError(f"Gemini: {r.status_code} {r.text[:150]}")
+            raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 150)}")
         return "OK"
+
+    def _limit(self, response, attempt, attempts):
+        quota = quota_info.from_response(response, self.model, (self.key,))
+        delay = quota['retry_seconds']
+        if quota['kind'] in ('daily', 'zero') or attempt == attempts - 1 or (delay is not None and delay > 60):
+            raise LLMError('Gemini: ' + quota['message'])
+        netutil.pause(max(10 * (attempt + 1), delay or 0))
+        return quota['message']
 
     def chat_json(self, system, user, max_tokens=4000):
         """Gemini 2.5 по умолчанию «думает», и размышления съедают maxOutputTokens — ответ приходил пустым
@@ -154,12 +163,15 @@ class GeminiClient:
                 "contents": [{"role": "user", "parts": [{"text": user}]}],
                 "generationConfig": gen,
             }, timeout=300)
-            if r.status_code in (429, 500, 502, 503):
-                last = f"{r.status_code} {r.text[:150]}"
+            if r.status_code == 429:
+                last = self._limit(r, attempt, 4)
+                continue
+            if r.status_code in (500, 502, 503):
+                last = f"{r.status_code} {quota_info.clean(r.text, (self.key,), 150)}"
                 netutil.pause(10 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Gemini: {r.status_code} {r.text[:200]}")
+                raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 200)}")
             try:
                 j = r.json()
                 block = (j.get("promptFeedback") or {}).get("blockReason")
@@ -194,12 +206,15 @@ class GeminiClient:
                 "contents": [{"role": "user", "parts": [{"inline_data": {"mime_type": "image/jpeg", "data": data}}, {"text": user}]}],
                 "generationConfig": gen,
             }, timeout=120)
-            if r.status_code in (429, 500, 502, 503):
-                last = f"{r.status_code} {r.text[:150]}"
+            if r.status_code == 429:
+                last = self._limit(r, attempt, 3)
+                continue
+            if r.status_code in (500, 502, 503):
+                last = f"{r.status_code} {quota_info.clean(r.text, (self.key,), 150)}"
                 netutil.pause(5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Gemini: {r.status_code} {r.text[:200]}")
+                raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 200)}")
             try:
                 j = r.json()
                 cand = (j.get("candidates") or [{}])[0]

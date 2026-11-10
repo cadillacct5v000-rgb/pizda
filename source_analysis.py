@@ -19,6 +19,7 @@ import requests
 
 import endpoints
 import netutil
+import quota_info
 from media_tools import ffmpeg_bin, run_media
 
 
@@ -168,9 +169,19 @@ def _http(method, url, **kwargs):
             response = requests.request(method, url, timeout=(15, 180), **kwargs)
             try:
                 if response.status_code == 429 or response.status_code >= 500:
+                    quota = None
+                    if response.status_code == 429:
+                        secrets = list((kwargs.get('headers') or {}).values()) + list((kwargs.get('params') or {}).values())
+                        quota = quota_info.from_response(response, secrets=secrets)
+                        if quota['kind'] in ('daily', 'zero'):
+                            raise SourceAnalysisError(quota['message'], 429)
                     if attempt == attempts - 1:
+                        if quota:
+                            raise SourceAnalysisError(quota['message'], 429)
                         raise SourceAnalysisError(f"Сервис анализа видео временно недоступен (HTTP {response.status_code}). Повторите подготовку позже.", response.status_code)
                     delay = _retry_seconds(response, attempt)
+                    if quota and quota['retry_seconds'] is not None:
+                        delay = max(delay, quota['retry_seconds'])
                     if delay > 60:
                         raise SourceAnalysisError(f"Сервис анализа видео просит подождать {delay} с (HTTP {response.status_code}). Повторите подготовку после этого времени.", response.status_code)
                     progress = _REQUEST_PROGRESS.get()
