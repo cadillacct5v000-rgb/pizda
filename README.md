@@ -1,6 +1,6 @@
-# KadroGen 1.9.1 — единое настольное приложение
+# KadroGen 1.9.2 — единое настольное приложение
 
-Скачайте **KadroGen-1.9.1-Windows-x64** в Artifacts в [Windows-сборке](https://github.com/cadillacct5v000-rgb/pizda/actions/workflows/windows.yml), распакуйте и запустите **KadroGen.exe**. Отдельный Video Flow и Node.js не требуются.
+Скачайте **KadroGen-1.9.2-Windows-x64** в Artifacts в [Windows-сборке](https://github.com/cadillacct5v000-rgb/pizda/actions/workflows/windows.yml), распакуйте и запустите **KadroGen.exe**. Отдельный Video Flow и Node.js не требуются.
 
 В одном окне: YouTube и рерайт, визуальные ориентиры и ритм склеек, редактируемая раскадровка, 20/30-секундный предпросмотр, FastGen/SYNTX, ElevenLabs/RoyalTechno, 25/30/60 FPS, SQLite-проекты и импорт DOCX. [Как запустить](docs/UNIFIED_WINDOWS_RU.txt).
 
@@ -8,7 +8,7 @@
 
 # KadroGen Next
 
-Готовая Windows-программа появится в [Releases](../../releases) после успешных проверок. Скачайте **KadroGen-1.9.1-Windows-x64** в Artifacts, распакуйте и запустите KadroGen.exe. Дополнительный модуль Video Flow поставляется отдельным ZIP.
+Готовая Windows-программа появится в [Releases](../../releases) после успешных проверок. Скачайте **KadroGen-1.9.2-Windows-x64** в Artifacts, распакуйте и запустите KadroGen.exe. Дополнительный модуль Video Flow поставляется отдельным ZIP.
 
 # Kadro.Gen — исходный код
 

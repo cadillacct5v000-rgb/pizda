@@ -179,14 +179,25 @@ def _http(method, url, **kwargs):
     raise SourceAnalysisError("Сервис анализа видео не ответил.")
 
 
+def fastgen_vision_access(usage):
+    """Only an explicit JSON boolean proves permission or denial; absence is unknown."""
+    capabilities = usage.get('capabilities') if isinstance(usage, dict) else None
+    value = capabilities.get('chat.multimodal') if isinstance(capabilities, dict) else None
+    return value if isinstance(value, bool) else None
+
+
 def _preflight(engine, key):
     if engine == "fastgen":
         usage = _http("GET", "https://api.fast-gen.ai/api/v6/usage", headers={"X-API-Key": key})
-        if (usage.get("capabilities") or {}).get("chat.multimodal") is not True:
+        access = fastgen_vision_access(usage)
+        if access is False:
             raise SourceAnalysisError(
-                "Этот ключ fast-gen не подтверждает доступ chat.multimodal. Для анализа кадров нужен "
-                "тариф fast-gen с этой возможностью либо отдельный ключ Gemini/OpenAI/Claude. "
-                "Рерайт текста доступен отдельно; визуальный стиль без просмотра кадров не определяется.")
+                "Fast-gen вернул chat.multimodal=false: этот ключ не разрешает отправлять кадры в чат. "
+                "На экране «Доступ» в строке «Анализ исходника» выберите Gemini API, OpenAI API или Claude API "
+                "и введите ключ выбранного сервиса. Либо уточните у fast-gen доступ chat.multimodal для этого ключа. "
+                "Доступ к генерации картинок и видео сам по себе не подтверждает доступ к анализу изображений.")
+        # Missing capability metadata is not a prohibition. The real image request decides access.
+        return access
 
 
 def _json(text):

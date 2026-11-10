@@ -1038,7 +1038,7 @@ function renderAccess() {
         + `<span class="note">${esc(youtubeCookieFile || (L === 'ru' ? 'Если YouTube требует вход, выберите браузер, где вы вошли в аккаунт. Данные входа используются локально для YouTube.' : 'If YouTube requires sign-in, choose your signed-in browser. Login data is used locally for YouTube.'))}</span>`));
     }
     if (rwSrc === 'youtube' && analyzeVideo) {
-      H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<span class="note">chat.multimodal</span>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis'))));
+      H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<button class="ghost" id="analysis_access_check" onclick="checkSourceAnalysisAccess()">${L === 'ru' ? 'Проверить доступ к кадрам' : 'Check image access'}</button>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis')), 's_analysis'));
       H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника, все сцены — видео. Сохраняются найденные склейки и их ритм под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
     }
     H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
@@ -1154,6 +1154,22 @@ async function toggle(id) {
   } else {
     e.type = 'password'; if (btn) btn.classList.remove('on');
   }
+}
+let analysisAccessBusy = false;
+async function checkSourceAnalysisAccess() {
+  if (analysisAccessBusy) return;
+  analysisAccessBusy = true;
+  const engine = analysisEngine;
+  const put = (message, kind = '') => { const target = $('s_analysis'); if (target && analysisEngine === engine) { target.textContent = message; target.className = 'status st ' + kind; } };
+  const setBusy = value => { const button = $('analysis_access_check'); if (button) button.disabled = value; };
+  try {
+    setBusy(true); await saveKeys(); setBusy(true);
+    put('Проверяю доступ без запуска генерации…');
+    const result = await pywebview.api.source_analysis_access();
+    if (!result.ok) throw new Error(result.error);
+    put(result.message, result.state === 'denied' ? 'err' : result.state === 'allowed' ? 'ok' : '');
+  } catch (error) { put(String(error), 'err'); }
+  finally { analysisAccessBusy = false; setBusy(false); }
 }
 async function checkRow(k, i, sid) {
   if (sid === 's_tts') k = tts; else if (sid === 's_rw') k = rwEngine; else if (sid === 's_llm') k = llm;  // проверяем то, что выбрано сейчас

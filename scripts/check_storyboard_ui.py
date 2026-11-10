@@ -14,6 +14,7 @@ os.environ['KADROGEN_DATA_DIR']=TEST_DATA.name
 from PIL import Image
 import app
 import pipeline
+import source_analysis
 from playwright.sync_api import sync_playwright
 
 root=Path(os.environ['KADROGEN_DATA_DIR']);root.mkdir(exist_ok=True)
@@ -47,6 +48,13 @@ with zipfile.ZipFile(docx_file,'w') as archive:
  archive.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>S01.01</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Imported narration for the forest scene.</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Original cinematic forest.</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
 app.webview=SimpleNamespace(OPEN_DIALOG='open')
 app.WINDOW=SimpleNamespace(create_file_dialog=lambda *args,**kwargs:[str(docx_file)])
+vision_access_response={'capabilities':{'chat.multimodal':False}}
+access_requests=[]
+def capability_request(method,url,**kwargs):
+ assert method=='GET'
+ access_requests.append(method)
+ return vision_access_response
+source_analysis._http=capability_request
 def call(name,args):
  return getattr(api,name)(*args)
 
@@ -112,6 +120,18 @@ with sync_playwright() as p:
  page.wait_for_selector('#screen5.active')
  assert page.evaluate('boardState.script')=='Imported narration for the forest scene.'
  assert page.locator('input[name=prov][value=syntx]').count()==1
+ page.evaluate("() => { $('use_rw').checked=true; rwSrc='youtube'; analyzeVideo=true; analysisEngine='fastgen'; go(4); }")
+ page.wait_for_selector('#screen4.active #analysis_access_check')
+ page.locator('#analysis_access_check').click()
+ try:
+  page.wait_for_function('document.getElementById("s_analysis").textContent.includes("chat.multimodal=false")', timeout=10000)
+ except Exception:
+  print('Diagnostic UI:',page.locator('#s_analysis').text_content(),'GET requests:',access_requests,'JS errors:',errors)
+  raise
+ vision_access_response['capabilities']={}
+ page.locator('#analysis_access_check').click()
+ page.wait_for_function('document.getElementById("s_analysis").textContent.includes("не сообщил")')
+ assert access_requests==['GET','GET']
  assert not errors,errors
  b.close()
 print('Browser E2E passed: semantic selection, real API save, per-plan take, invalid preview guard, preview launch, full launch, return, stale-script invalidation.')

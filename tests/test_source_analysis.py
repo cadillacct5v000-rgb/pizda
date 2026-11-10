@@ -61,6 +61,29 @@ def test_fastgen_multimodal_access_required(monkeypatch):
         analysis._preflight("fastgen", "fixture")
 
 
+@pytest.mark.parametrize('usage', [{}, {'capabilities': {}}, {'capabilities': None}, {'capabilities': {'video.generate': True}}, {'capabilities': {'chat.multimodal': None}}])
+def test_missing_capability_does_not_block_real_image_request(monkeypatch, usage):
+    monkeypatch.setattr(analysis, '_http', lambda *args, **kwargs: usage)
+    assert analysis._preflight('fastgen', 'fixture') is None
+
+
+def test_fastgen_explicit_vision_permission(monkeypatch):
+    monkeypatch.setattr(analysis, '_http', lambda *args, **kwargs: {'capabilities': {'chat.multimodal': True}})
+    assert analysis._preflight('fastgen', 'fixture') is True
+
+
+def test_read_only_access_diagnostic_does_not_create_chat(monkeypatch):
+    import app
+    monkeypatch.setattr(app, 'load_cfg', lambda: {'fastgen_api_key': 'private-test-key', 'gemini_api_key': 'private-other-key'})
+    http = Mock(return_value={'capabilities': {'chat.multimodal': False}})
+    monkeypatch.setattr(analysis, '_http', http)
+    result = app.Api().source_analysis_access()
+    assert result['ok'] and result['state'] == 'denied'
+    assert result['alternatives'] == ['gemini']
+    assert 'private-' not in json.dumps(result)
+    assert http.call_count == 1 and http.call_args.args[0] == 'GET'
+
+
 def test_fastgen_vision_sends_image_payload(monkeypatch, tmp_path):
     image = tmp_path / "image.jpg"
     image.write_bytes(b"jpeg fixture")

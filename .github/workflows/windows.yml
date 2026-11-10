@@ -33,7 +33,7 @@ jobs:
         run: python scripts/ci_test_report.py
       - uses: actions/upload-artifact@v4
         with:
-          name: KadroGen-1.9.1-Windows-x64
+          name: KadroGen-1.9.2-Windows-x64
           path: dist/KadroGen/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4

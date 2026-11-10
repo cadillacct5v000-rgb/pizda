@@ -31,7 +31,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.9.1-dev"
+VERSION = "1.9.2-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -771,6 +771,28 @@ def check_update():
 
 
 class Api:
+    def source_analysis_access(self):
+        """Read-only capability check; never creates a paid chat/generation."""
+        import source_analysis as analysis
+        cfg = load_cfg()
+        try:
+            engine, key, _ = analysis._provider(cfg)
+            alternatives = [name for name in ('gemini', 'openai', 'anthropic') if cfg.get(name + '_api_key')]
+            if engine != 'fastgen':
+                return {'ok': True, 'state': 'unverified', 'message': 'Ключ выбранного сервиса сохранён. Доступ к изображениям проверяется при самом анализе.', 'alternatives': alternatives}
+            usage = analysis._http('GET', 'https://api.fast-gen.ai/api/v6/usage', headers={'X-API-Key': key})
+            access = analysis.fastgen_vision_access(usage)
+            state = 'allowed' if access is True else 'denied' if access is False else 'unknown'
+            message = {'allowed': 'Fast-gen: chat.multimodal=true — отправка кадров разрешена.',
+                       'denied': 'Fast-gen: chat.multimodal=false — этот ключ не разрешает анализ кадров. Выберите Gemini/OpenAI/Claude в строке «Анализ исходника» или уточните доступ у fast-gen.',
+                       'unknown': 'Fast-gen не сообщил chat.multimodal. Анализ не заблокирован: доступ проверится настоящим запросом с кадрами.'}[state]
+            if access is False and alternatives:
+                labels = {'gemini': 'Gemini', 'openai': 'OpenAI', 'anthropic': 'Claude'}
+                message += ' Уже сохранены ключи: ' + ', '.join(labels[name] for name in alternatives) + '.'
+            return {'ok': True, 'state': state, 'message': message, 'alternatives': alternatives}
+        except Exception as error:
+            return {'ok': False, 'error': str(error)}
+
     def list_projects(self):
         from native_projects import ProjectStore
         try:
