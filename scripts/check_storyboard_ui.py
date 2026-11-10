@@ -7,6 +7,8 @@ import time
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 import tempfile
+import zipfile
+from types import SimpleNamespace
 TEST_DATA=tempfile.TemporaryDirectory(prefix='kadrogen-ui-')
 os.environ['KADROGEN_DATA_DIR']=TEST_DATA.name
 from PIL import Image
@@ -40,6 +42,11 @@ def run_job(*args):
   app.STATE.update(running=False,stage='done',done=1,total=1,result=str(root/'fixture.mp4'),ended_at=time.time())
 app.run_job=run_job
 api=app.Api()
+docx_file=root/'fixture.docx'
+with zipfile.ZipFile(docx_file,'w') as archive:
+ archive.writestr('word/document.xml','<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>S01.01</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Imported narration for the forest scene.</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Original cinematic forest.</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
+app.webview=SimpleNamespace(OPEN_DIALOG='open')
+app.WINDOW=SimpleNamespace(create_file_dialog=lambda *args,**kwargs:[str(docx_file)])
 def call(name,args):
  return getattr(api,name)(*args)
 
@@ -92,6 +99,19 @@ with sync_playwright() as p:
  page.evaluate('hideStoryboard()')
  page.locator('#rv_script').fill('A completely edited global narration.')
  assert page.evaluate('boardState') is None
+ page.locator('#projectsbtn').click()
+ page.get_by_role('button',name='Импорт DOCX',exact=True).click()
+ page.wait_for_function('boardState && boardState.rows[0].prompt === "Original cinematic forest."')
+ assert page.locator('.board-row').count()==1
+ page.locator('#projectsbtn').click()
+ page.locator('#project_title').fill('Unified native project')
+ page.locator('#project_save').click()
+ page.wait_for_function('desktopProject && desktopProject.title === "Unified native project"')
+ assert (root/'projects.sqlite').exists()
+ page.locator('[data-open-project]').click()
+ page.wait_for_selector('#screen5.active')
+ assert page.evaluate('boardState.script')=='Imported narration for the forest scene.'
+ assert page.locator('input[name=prov][value=syntx]').count()==1
  assert not errors,errors
  b.close()
 print('Browser E2E passed: semantic selection, real API save, per-plan take, invalid preview guard, preview launch, full launch, return, stale-script invalidation.')

@@ -30,6 +30,7 @@ from yougen_api import YouGen, YouGenError, IMAGE_MODELS as YOUGEN_MODELS
 from openai_api import OpenAIClient, DEFAULT_CHAT_MODEL as OPENAI_DEFAULT_MODEL
 import subtitles as subs
 from google_api import GoogleAI, GoogleError
+from syntx_api import Syntx, SyntxGate, SyntxError
 from royaltechno_api import RoyalTechno, RoyalError, IMAGE_MODELS as ROYAL_MODELS
 from secretslider_api import SecretSlider, SliderError
 from llm_api import AnthropicClient, GeminiClient, AssemblyAI, LLM_SERVICES
@@ -74,10 +75,10 @@ def video_chain_for(scene):
     return [(f"flow_video_omni_flash_from_keyframes_{n}s", 1)] + list(VIDEO_CHAIN_FASTGEN)
 YOUGEN_CHAIN = [("nano-banana-2", 2), ("nano-banana-pro", 1), ("nano-banana-2-lite", 1)]
 ROYAL_CHAIN = [("nano-banana-2", 2), ("nano-banana-pro", 1)]
-PROVIDERS = ("fastgen", "nonstop", "yougen", "royal", "slider", "google")
-PROVIDER_NAMES = {"fastgen": "fast-gen", "nonstop": "veononstop", "yougen": "yougen", "royal": "royaltechno", "slider": "secretslider", "google": "Google"}
+PROVIDERS = ("fastgen", "nonstop", "yougen", "royal", "slider", "google", "syntx")
+PROVIDER_NAMES = {"fastgen": "fast-gen", "nonstop": "veononstop", "yougen": "yougen", "royal": "royaltechno", "slider": "secretslider", "google": "Google", "syntx": "SYNTX"}
 SINGLE_KEY = {"fastgen": "fastgen_api_key", "nonstop": "veononstop_api_key", "yougen": "yougen_api_key", "royal": "royaltechno_api_key",
-              "slider": "secretslider_api_key", "google": "google_api_key"}
+              "slider": "secretslider_api_key", "google": "google_api_key", "syntx": "syntx_api_key"}
 # Google напрямую: скорость — Imagen 4 Fast (референсы не принимает), качество — Nano Banana 2 → Pro с портретами героев
 GOOGLE_CHAINS = {"speed": [("imagen-fast", 3)], "quality": [("nb2", 1), ("nbpro", 1), ("imagen", 1)]}
 GOOGLE_CHAINS_REFS = {"speed": [("nb2", 2)], "quality": [("nb2", 1), ("nbpro", 1)]}
@@ -2171,6 +2172,11 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
         g = ctx["gates"]["google"]
         video_gen["google"] = (g, lambda s, img, out, pr, g=g: gen_google_video(ctx["google"], g, s, img, out, pr))
     provs = [p for p in ctx["bases"] if p in video_gen]
+    if "syntx" in ctx["bases"]:
+        g = SyntxGate(ctx["syntx"])
+        g.threads = 2
+        video_gen["syntx"] = (g, lambda s, img, out, pr, g=g: gen_syntx(ctx["syntx"], g, s, out, image=img))
+        provs = [p for p in ctx["bases"] if p in video_gen]
     workers = sum(video_gen[p][0].threads for p in provs)
     if not provs:
         say("videos", 0, 0, "оживление недоступно на выбранных ключах — кадры останутся с плавным движением")
@@ -2809,6 +2815,33 @@ def make_qa_client(cfg):
     return OpenAIVision(key, model, base)
 
 
+def gen_syntx(api, gate, scene, out_path, refs=None, image=None):
+    kind = 'video' if image else 'image'
+    semaphore = gate.vsem if image else gate.sem
+    with semaphore:
+        check_cancel()
+        temporary = out_path + ('.part.mp4' if image else '.part.png')
+        try:
+            model = api.generate(video_prompt(scene) if image else scene['prompt'], temporary, kind=kind,
+                                 image=image, references=refs if not image else None, duration=scene.get('duration', 5))
+            if image:
+                result = run_media([ffmpeg_bin('ffprobe'), '-v', 'error', '-show_streams', '-of', 'json', temporary])
+                if not any(stream.get('codec_type') == 'video' for stream in json.loads(result.stdout).get('streams', [])):
+                    raise SyntxError('SYNTX вернул файл без видеопотока')
+            else:
+                from PIL import Image
+                with Image.open(temporary) as source:
+                    source.load()
+                    source.convert('RGB').save(temporary, format='PNG')
+            os.replace(temporary, out_path)
+            return model
+        except SyntxError as error:
+            raise SceneRejected(str(error)) from error
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+
 def make_context(cfg, providers):
     """providers — выбранные сервисы. Каждый ключ сервиса — отдельный «юнит» (fastgen, fastgen#2, …) со своими лимитами;
     сцены делятся между юнитами по кругу. Сервисы с ключом, но без галочки, — подстраховка."""
@@ -2818,7 +2851,7 @@ def make_context(cfg, providers):
             raise SystemExit(f"Отмечен {PROVIDER_NAMES[p]}, но его ключ не введён")
     api = FastGen(keys["fastgen"][0]) if keys["fastgen"] else None
     ctx = {"api": api, "providers": [], "bases": list(providers), "gates": {}, "image_gen": {},
-           "nonstop": None, "yougen": None, "royal": None, "slider": None, "google": None, "sliders": [], "fallback": []}
+           "nonstop": None, "yougen": None, "royal": None, "slider": None, "google": None, "syntx": None, "sliders": [], "fallback": []}
 
     def add(p, n, key, selected):
         unit = p if n == 0 else f"{p}#{n + 1}"
@@ -2839,6 +2872,9 @@ def make_context(cfg, providers):
             elif p == "google":
                 c = GoogleAI(key); g = GoogleGate(c); ctx["google"] = ctx["google"] or c
                 fn = lambda sc, out, pr, refs, c=c, g=g: gen_google_image(c, g, sc, out, pr, refs)
+            elif p == "syntx":
+                c = Syntx(key); g = SyntxGate(c); ctx["syntx"] = ctx["syntx"] or c
+                fn = lambda sc, out, pr, refs, c=c, g=g: gen_syntx(c, g, sc, out, refs=refs)
             else:
                 c = SecretSlider(key); g = SliderGate(c); ctx["slider"] = ctx["slider"] or c; ctx["sliders"].append((c, g))
                 fn = lambda sc, out, pr, refs: None

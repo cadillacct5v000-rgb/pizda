@@ -405,6 +405,7 @@
 <div class="bgl"><i></i><i></i></div>
 <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
 <div class="topctl">
+  <button class="ctl" id="projectsbtn" onclick="openProjects()">Проекты</button>
   <div class="ctl help" id="helpbtn" onclick="pywebview.api.open_help()" data-i18n="help"></div>
   <div class="ctl" id="langbtn" title="Language">EN</div>
   <div class="ctl" id="theme" title="Theme">
@@ -435,6 +436,7 @@
         <svg viewBox="0 0 64 64"><rect x="6" y="18" width="40" height="30"/><rect x="18" y="10" width="40" height="30"/><path d="M18 34l10-10 8 8 6-6 16 14"/></svg><span class="t">secretslider</span></label>
       <label class="tile"><input type="checkbox" name="prov" value="google"><span class="dot"></span><span class="q" data-tipkey="tip_google">?</span>
         <svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="22"/><path d="M32 32h20M32 22c6 0 10 4 10 10s-4 10-10 10c-8 0-12-6-12-10s4-10 12-10"/></svg><span class="t">Google</span></label>
+      <label class="tile"><input type="checkbox" name="prov" value="syntx"><span class="dot"></span><svg viewBox="0 0 64 64"><rect x="8" y="12" width="48" height="40"/><path d="M16 40l12-16 10 12 8-8 10 16"/></svg><span class="t">SYNTX</span></label>
     </div>
     <div class="hint" id="hint1"></div>
     <div class="store" id="store"></div>
@@ -608,10 +610,10 @@ function rwOn() { return $('use_rw').checked; }
 $('use_rw').addEventListener('change', () => { if (rwOn()) setSource('script'); mark(); pywebview.api.save_config({rewrite: rwOn()}); });
 const LINKS = {elevenlabs:'https://elevenlabs.io/app/settings/api-keys',whisper:'https://platform.openai.com/api-keys', assemblyai:'https://www.assemblyai.com/app', openai:'https://platform.openai.com/api-keys', anthropic:'https://console.anthropic.com/settings/keys', gemini:'https://aistudio.google.com/apikey', openrouter:'https://openrouter.ai/settings/keys', voicegen:'https://qw1voicegencore.pro', voicer:'https://voicer.mat3u.com/docs', lumean:'https://lumean.app/developers/docs'};
 let stt = 'whisper', llm = 'openai', tts = 'voicegen', recent = [], autoStart = false;
-const IMG = ['fastgen','nonstop','yougen','royal','slider','google'];
+const IMG = ['fastgen','nonstop','yougen','royal','slider','google','syntx'];
 const KPH = {nonstop:'veo_...', yougen:'sf_...', royal:'rt_live_...', google:'AIza...'};
 const EYE = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
-const keyRows = {fastgen:[], nonstop:[], yougen:[], royal:[], slider:[], google:[]};
+const keyRows = {fastgen:[], nonstop:[], yougen:[], royal:[], slider:[], google:[], syntx:[]};
 const ttsKeys = {};
 for (let i = 0; i < 32; i++) { const b = document.createElement('i'); b.style.animationDelay = (i * 0.07) + 's'; b.style.animationDuration = (1.1 + (i % 5) * 0.15) + 's'; $('wave').appendChild(b); }
 document.addEventListener('click', e => { const a = e.target.closest('[data-url]'); if (!a) return; e.preventDefault(); e.stopPropagation(); pywebview.api.open_url(a.dataset.url); });
@@ -978,8 +980,8 @@ const MODEL_OPTS = {llm_model:[['openai/gpt-5-2','gpt-5-2'],['openai/gpt-5-1','g
 let baseUrls = {}, baseDefaults = {openai:'https://api.openai.com/v1', anthropic:'https://api.anthropic.com/v1', gemini:'https://generativelanguage.googleapis.com/v1beta'};
 const SVC_HUMAN = {openai:'OpenAI', anthropic:'Claude', gemini:'Gemini'};
 const baseRow = svc => row(t('base_url') + ' · ' + SVC_HUMAN[svc], '', `<input type="text" class="base" data-svc="${svc}" value="${esc(baseUrls[svc] || '')}" placeholder="${esc(baseDefaults[svc])}" spellcheck="false" autocomplete="off"><span class="note">${t('base_note')}</span>`);
-const SVC_LINKS = {fastgen:'https://fast-gen.ai/', nonstop:'https://t.me/veononstop', yougen:'https://yougen.io/', royal:'https://t.me/royaltechno_ai_bot', slider:'https://secretslider.com', google:'https://aistudio.google.com/apikey'};
-const SVC_TITLES = {fastgen:'fast-gen', nonstop:'veononstop', yougen:'yougen', royal:'royaltechno', slider:'secretslider', google:'Google AI Studio'};
+const SVC_LINKS = {fastgen:'https://fast-gen.ai/', nonstop:'https://t.me/veononstop', yougen:'https://yougen.io/', royal:'https://t.me/royaltechno_ai_bot', slider:'https://secretslider.com', google:'https://aistudio.google.com/apikey', syntx:'https://syntx.ai'};
+const SVC_TITLES = {fastgen:'fast-gen', nonstop:'veononstop', yougen:'yougen', royal:'royaltechno', slider:'secretslider', google:'Google AI Studio', syntx:'SYNTX'};
 const TTS_SVCS = ['voicegen','voicer','lumean','elevenlabs'];
 const esc = v => String(v ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 const row = (label, link, controls, status) => `<div class="lrow"><div class="lab">${label}${link ? `<span class="lk" data-url="${link}">${t('what')}</span>` : ''}</div><div class="ctl${controls.includes('<textarea') ? ' tall' : ''}">${controls}</div>${status ? `<div class="status st" id="${status}"></div>` : ''}</div>`;
@@ -989,7 +991,7 @@ const chk = (k, i, sid) => `<button class="ghost" onclick="checkRow('${k}', ${i}
 const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n]) => `<option value="${v}"${v === val ? ' selected' : ''}>${n}</option>`).join('')}</select>`;
 
 function renderAccess() {
-  const p = provs(), fg = p.includes('fastgen'), H = [];
+  const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value), H = [];
   for (const k of p) {
     if (!keyRows[k].length) keyRows[k].push({idx:-1, value:''});
     const many = keyRows[k].length > 1;
@@ -1221,6 +1223,64 @@ async function loadVoices() {
   renderVoiceList(r.voices.map(v => ({id: v.id, name: `${v.name}${v.lang ? ' · ' + v.lang : ''}${v.gender ? ' · ' + v.gender : ''}`})));
   if (st) { st.textContent = r.voices.length ? t('voices_n').replace('{n}', r.voices.length) : t('voices_none'); st.className = 'status st ok'; }
 }
+let desktopProject = null;
+async function openProjects() {
+  $('projects_dialog').showModal();
+  $('project_title').value = desktopProject ? desktopProject.title : '';
+  await refreshDesktopProjects();
+}
+async function refreshDesktopProjects() {
+  const r = await pywebview.api.list_projects();
+  if (!r.ok) { $('project_status').textContent = r.error; return; }
+  $('projects_list').innerHTML = r.projects.length ? r.projects.map(p => `<div style="display:flex;gap:10px;align-items:center;padding:12px 0;border-top:1px solid var(--line)"><span style="flex:1">${esc(p.title)}</span><button data-open-project="${p.id}">Открыть</button><button data-delete-project="${p.id}">Удалить</button></div>`).join('') : 'Сохранённых проектов пока нет.';
+  $('projects_list').querySelectorAll('[data-open-project]').forEach(b => b.onclick = () => loadDesktopProject(b.dataset.openProject));
+  $('projects_list').querySelectorAll('[data-delete-project]').forEach(b => b.onclick = async () => {
+    if (!confirm('Удалить запись проекта? Готовые медиа останутся в jobs/output.')) return;
+    const result = await pywebview.api.delete_project(b.dataset.deleteProject, true);
+    if (!result.ok) $('project_status').textContent = result.error;
+    else { if (desktopProject && desktopProject.id === b.dataset.deleteProject) desktopProject = null; await refreshDesktopProjects(); }
+  });
+}
+async function saveDesktopProject(copy = false) {
+  $('project_save').disabled = true; $('project_copy').disabled = true;
+  try {
+    if (boardState && boardDirty && !(await saveStoryboard())) return;
+    const o = opts();
+    if ($('rv_script_panel').style.display !== 'none' && $('rv_script').value.trim()) { o.script = $('rv_script').value; o.source = 'script'; o.rewrite.on = false; }
+    const result = await pywebview.api.save_project($('project_title').value.trim() || 'Новый проект', o, !copy && desktopProject ? desktopProject.id : null, !copy && desktopProject ? desktopProject.revision : null);
+    if (!result.ok) throw new Error(result.error);
+    desktopProject = result.project; $('project_status').textContent = 'Проект сохранён в SQLite.'; await refreshDesktopProjects();
+  } catch (e) { $('project_status').textContent = String(e); }
+  finally { $('project_save').disabled = false; $('project_copy').disabled = false; }
+}
+async function loadDesktopProject(id) {
+  const r = await pywebview.api.load_project(id);
+  if (!r.ok) { $('project_status').textContent = r.error; return; }
+  desktopProject = r.project;
+  const o = r.project.options;
+  F.script = o.script || ''; F.voice = o.voice || ''; audioPath = o.audio || ''; source = o.source || 'script';
+  tts = o.tts || tts; styleKey = o.style || styleKey;
+  document.querySelectorAll('input[name=fgq]').forEach(el => el.checked = el.value === (o.use_refs ? 'quality' : 'speed'));
+  $('custom_style').value = o.custom_style || '';
+  document.querySelectorAll('input[name=prov]').forEach(el => el.checked = (o.providers || []).includes(el.value));
+  document.querySelectorAll('input[name=mode]').forEach(el => el.checked = el.value === (o.mode || 'images'));
+  const rw = o.rewrite || {}; sourceMontage = rw.montage !== false; analyzeVideo = rw.analyze_video !== false;
+  $('use_rw').checked = !!rw.on; $('use_tts').checked = source === 'script'; F.rwUrl = rw.url || ''; F.rwText = rw.text || ''; F.rwWords = rw.words || 1500; F.rwLang = rw.language || 'русском'; rwEngine = rw.engine || rwEngine; rwSrc = rw.source || 'youtube';
+  for (const [field,control] of Object.entries({subtitles:'use_subs',motion:'use_motion',hd:'use_hd',qa:'use_qa',speed:'use_speed'})) $(control).checked = !!o[field];
+  $('render_fps').value = o.render_fps || 25; $('vf').value = o.video_first || 0; drawVf(); mark();
+  resetStoryboard(); reviewProfileId = null; reviewSourceProfile = null;
+  $('projects_dialog').close(); go(4);
+  if (r.board) { boardState = r.board; boardDirty = false; F.script = r.board.script; $('use_rw').checked = false; source = 'script'; $('use_tts').checked = true; renderReview(r.board.script); go(5); renderStoryboard(); }
+}
+async function importDesktopDocx(withPrompts) {
+  $('project_status').textContent = 'Выберите DOCX сценария' + (withPrompts ? ', затем DOCX промптов.' : '.');
+  const result = await pywebview.api.import_docx(withPrompts);
+  if (!result.ok) { if (!result.cancelled) $('project_status').textContent = result.error; return; }
+  boardState = result.board; boardDirty = false; reviewProfileId = null; reviewSourceProfile = null; F.script = boardState.script; source = 'script'; $('use_rw').checked = false; $('use_tts').checked = true;
+  $('projects_dialog').close(); renderReview(F.script); go(5); renderStoryboard();
+  if (result.warnings.length) $('board_status').textContent = result.warnings.join(' · ');
+}
+
 function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   render_fps: +$('render_fps').value,
   storyboard_id: boardState ? boardState.id : null,
@@ -1412,5 +1472,10 @@ async function storyboardPreview() {
 }
 
 </script>
+<dialog id="projects_dialog" style="background:var(--bg);color:var(--ink);border:1px solid var(--line);padding:24px;max-width:800px;width:90%;max-height:85vh;overflow:auto">
+<h2>Проекты KadroGen</h2><p>SQLite сохраняет сценарий, настройки и ссылку на раскадровку. Ключи общие и в проект не копируются.</p>
+<label>Название <input id="project_title" maxlength="200" placeholder="Новый проект"></label>
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0"><button id="project_save" onclick="saveDesktopProject()">Сохранить текущий</button><button id="project_copy" onclick="saveDesktopProject(true)">Сохранить как новый</button><button onclick="importDesktopDocx(false)">Импорт DOCX</button><button onclick="importDesktopDocx(true)">DOCX + промпты</button><button onclick="document.getElementById('projects_dialog').close()">Закрыть</button></div>
+<p id="project_status" role="status"></p><div id="projects_list"></div></dialog>
 </body>
 </html>

@@ -1,6 +1,18 @@
+# KadroGen 1.9.1 — единое настольное приложение
+
+Скачайте **KadroGen-1.9.1-Windows-x64** в Artifacts в [Windows-сборке](https://github.com/cadillacct5v000-rgb/pizda/actions/workflows/windows.yml), распакуйте и запустите **KadroGen.exe**. Отдельный Video Flow и Node.js не требуются.
+
+В одном окне: YouTube и рерайт, визуальные ориентиры и ритм склеек, редактируемая раскадровка, 20/30-секундный предпросмотр, FastGen/SYNTX, ElevenLabs/RoyalTechno, 25/30/60 FPS, SQLite-проекты и импорт DOCX. [Как запустить](docs/UNIFIED_WINDOWS_RU.txt).
+
+Это предварительная версия; полная приёмка всех 40 рекомендаций PDF и точное воспроизведение всех элементов монтажа не заявляются. Живые платные сервисы проверяются с ключом пользователя.
+
+# KadroGen Next
+
+Готовая Windows-программа появится в [Releases](../../releases) после успешных проверок. Скачайте **KadroGen-1.9.1-Windows-x64** в Artifacts, распакуйте и запустите KadroGen.exe. Дополнительный модуль Video Flow поставляется отдельным ZIP.
+
 # Kadro.Gen — исходный код
 
-Версия 1.8.0: общие исправления для Windows и macOS / Apple Silicon (включая M4).
+Версия 1.9.0-dev: общие исправления для Windows и macOS / Apple Silicon (включая M4).
 Windows: [WINDOWS.md](WINDOWS.md), Mac: [MACOS.md](MACOS.md). Проверки: [VALIDATION.md](VALIDATION.md).
 Новый режим YouTube сохраняет ход полного рассказа и использует анализ выборочных кадров исходного видео для визуального стиля новых сцен.
 Исходная информация о Windows ниже сохранена; на Mac используйте инструкции из MACOS.md.

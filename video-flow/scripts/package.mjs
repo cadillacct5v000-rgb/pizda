@@ -6,7 +6,7 @@ import {appDir} from '../server/config.mjs';
 
 const version=JSON.parse(readFileSync(path.join(appDir,'package.json'),'utf8')).version,zip=new JSZip(),checksums={};
 const sha=(bytes)=>createHash('sha256').update(bytes).digest('hex');
-const folders=['src','server','remotion','scripts','docs','windows','test'];
+const folders=['src','server','remotion','scripts','docs','windows'];
 const allowedFiles=['package.json','package-lock.json','index.html','vite.config.ts','tsconfig.json','.env.example','.gitignore','.editorconfig','.gitattributes','.oxlintrc.json','README.md','CONTRIBUTING.md'];
 function add(name,bytes){zip.file(name,bytes);checksums[name]=sha(bytes);}
 function walk(folder){for(const entry of readdirSync(folder)){const file=path.join(folder,entry),relative=path.relative(appDir,file).split(path.sep).join('/');if(statSync(file).isDirectory())walk(file);else add(`app/${relative}`,readFileSync(file));}}

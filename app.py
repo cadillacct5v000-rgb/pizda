@@ -31,7 +31,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.9.0-dev"
+VERSION = "1.9.1-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -771,6 +771,64 @@ def check_update():
 
 
 class Api:
+    def list_projects(self):
+        from native_projects import ProjectStore
+        try:
+            return {"ok": True, "projects": ProjectStore(data_dir()).list()}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def save_project(self, title, options, project_id=None, revision=None):
+        from native_projects import ProjectStore
+        try:
+            return {"ok": True, "project": ProjectStore(data_dir()).save(title, options, project_id, revision)}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def load_project(self, project_id):
+        from native_projects import ProjectStore
+        try:
+            with LOCK:
+                if STATE.get('running') or STATE.get('preparing') or STATE.get('queue_active'):
+                    return {"ok": False, "error": "Сначала остановите текущую работу."}
+            project = ProjectStore(data_dir()).get(project_id)
+            board_id = project['options'].get('storyboard_id')
+            board = self.get_storyboard(board_id)['board'] if board_id else None
+            return {"ok": True, "project": project, "board": board}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def delete_project(self, project_id, confirm=False):
+        from native_projects import ProjectStore
+        if confirm is not True:
+            return {"ok": False, "error": "Подтвердите удаление проекта"}
+        try:
+            ProjectStore(data_dir()).delete(project_id)
+            return {"ok": True}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
+    def import_docx(self, with_prompts=False):
+        try:
+            with LOCK:
+                if STATE.get('running') or STATE.get('preparing') or STATE.get('queue_active'):
+                    return {"ok": False, "error": "Сначала остановите текущую работу."}
+            def pick():
+                chosen = WINDOW.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False, file_types=("Word DOCX (*.docx)",))
+                return chosen[0] if isinstance(chosen, (list, tuple)) and chosen else chosen
+            script_file = pick()
+            if not script_file:
+                return {"ok": False, "cancelled": True}
+            prompts_file = pick() if with_prompts else None
+            if with_prompts and not prompts_file:
+                return {"ok": False, "cancelled": True}
+            from docx_import import import_board
+            board, warnings = import_board(script_file, prompts_file)
+            store_storyboard(board)
+            return {"ok": True, "board": self.get_storyboard(board["id"])["board"], "warnings": warnings}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
+
     def get_state(self):
         cfg = load_cfg()
         with LOCK:
@@ -1056,7 +1114,12 @@ class Api:
             from google_api import GoogleAI
             return GoogleAI(key).check()
 
-        checkers = {"fastgen": ck_fastgen, "nonstop": ck_nonstop, "yougen": ck_yougen, "royal": ck_royal, "slider": ck_slider, "google": ck_google}
+        def ck_syntx(key):
+            from syntx_api import Syntx
+            Syntx(key).balance()
+            return 'OK · SYNTX: ключ принят'
+
+        checkers = {"fastgen": ck_fastgen, "nonstop": ck_nonstop, "yougen": ck_yougen, "royal": ck_royal, "slider": ck_slider, "google": ck_google, "syntx": ck_syntx}
         for p, fn in checkers.items():
             if p not in which:
                 continue
@@ -1798,6 +1861,29 @@ def main():
     if "--help" in sys.argv or "-h" in sys.argv:
         print("Kadro.Gen: python app.py [--debug]\n"
               "CLI: python app.py --run AUDIO [--provider PROVIDER] [--mode images|mixed|video] [--refs] [--subs]")
+        return
+    if "--self-test-unified" in sys.argv:
+        import tempfile
+        from pathlib import Path
+        from native_projects import ProjectStore
+        from docx_import import import_board
+        import syntx_api
+        import storyboard
+        report = sys.argv[sys.argv.index('--self-test-unified') + 1]
+        with tempfile.TemporaryDirectory(prefix='kadrogen-selftest-') as temporary:
+            root = Path(temporary)
+            source = root / 'script.docx'
+            with zipfile.ZipFile(source, 'w') as archive:
+                archive.writestr('word/document.xml', '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:tbl><w:tr><w:tc><w:p><w:r><w:t>S01.01</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Test narration.</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Cinematic forest.</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
+            board, _ = import_board(source)
+            assert storyboard.edit(board, board['rows'])['id'] == board['id']
+            store = ProjectStore(root)
+            saved = store.save('Bundled self-test', {'script': board['script'], 'render_fps': 60, 'providers': ['syntx']})
+            assert ProjectStore(root).get(saved['id'])['options']['render_fps'] == 60
+            assert pipeline.validate_fps(60) == 60 and 'syntx' in pipeline.PROVIDERS
+            assert syntx_api.SyntxGate
+        Path(report).parent.mkdir(parents=True, exist_ok=True)
+        Path(report).write_text(json.dumps({'ok': True, 'version': VERSION, 'sqlite': True, 'docx': True, 'storyboard': True, 'syntx_adapter_import': True, 'fps60': True}), encoding='utf-8')
         return
     if "--apply-update" in sys.argv:
         i = sys.argv.index("--apply-update")
