@@ -5,6 +5,7 @@
 
 Запуск из консоли:  python pipeline.py файл.mp3 [--provider fastgen|nonstop|both] [--mode images|video] [--style cinematic] [--refs]
 """
+from contextlib import contextmanager
 import concurrent.futures as cf
 import collections
 import hashlib
@@ -60,14 +61,14 @@ def image_credits(op):
     return base * 2 if HD_IMAGES and op in HD_OPS else base
 NONSTOP_CHAIN = [("GEM_PIX_2", 2), ("NARWHAL", 1), ("HARBOR_SEAL", 1)]
 # оживление картинки в видео
-VIDEO_CHAIN_FASTGEN = [("flower_video_from_image", 2), ("flow_video_from_keyframes", 1)]
+VIDEO_CHAIN_FASTGEN = [("flow_video_lite_from_keyframes", 2), ("flow_video_from_keyframes", 1)]
 VIDEO_CREDITS = {"flower_video_from_image": 1, "flow_video_from_keyframes": 1}
-OMNI_SECONDS = (6, 8, 10)  # Omni Flash делает клип ровно 4/6/8/10 с за 1 кредит — для длинных сцен не нужен «замороженный хвост»
+OMNI_SECONDS = tuple(range(3, 11))  # Omni Flash делает клип ровно 4/6/8/10 с за 1 кредит — для длинных сцен не нужен «замороженный хвост»
 
 
 def video_chain_for(scene):
     dur = float(scene.get("duration") or 0)
-    if dur <= 5.0:
+    if dur <= 5.0 and "source_shot" not in scene:
         return list(VIDEO_CHAIN_FASTGEN)
     n = next((s for s in OMNI_SECONDS if s >= dur), OMNI_SECONDS[-1])
     return [(f"flow_video_omni_flash_from_keyframes_{n}s", 1)] + list(VIDEO_CHAIN_FASTGEN)
@@ -103,6 +104,14 @@ MODES = ("images", "video", "mixed")  # mixed — через одну: виде�
 TRANSITION = 0.5  # секунд на переход в моушн-режиме
 SCENE_MIN, SCENE_MAX, SCENE_TARGET = 3.0, 7.0, 5.0
 FPS = 25
+
+
+def validate_fps(value):
+    if isinstance(value, bool) or str(value) not in ("25", "30", "60"):
+        raise ValueError("Частота кадров: выберите 25, 30 или 60 FPS.")
+    return int(value)
+
+
 W, H = 1920, 1080
 INLINE_AUDIO_LIMIT = 15 * 1024 * 1024
 FG_CHUNK_SECONDS = 1200  # fast-gen: до 25 МБ на файл, режем по 20 минут
@@ -190,6 +199,10 @@ def clear_wait(kind=None):
         WAIT.clear()
 
 
+class SceneRejected(Exception):
+    pass
+
+
 class Cancelled(Exception):
     pass
 
@@ -206,11 +219,15 @@ def log(msg):
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}"
     try:
         print(line, flush=True)
+    except Cancelled:
+        raise
     except Exception:
         pass
     try:
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+    except Cancelled:
+        raise
     except Exception:
         pass
 
@@ -637,7 +654,7 @@ class LLM:
                     if attempt >= 2 and self.model != DEFAULT_LLM_FALLBACK and DEFAULT_LLM_FALLBACK:
                         log(f"модель {self.model} не отвечает ({last[:80]}), перехожу на {DEFAULT_LLM_FALLBACK}")
                         self.model = DEFAULT_LLM_FALLBACK
-                    time.sleep(10 * attempt)
+                    netutil.pause(10 * attempt)
                     continue
                 if r.status_code >= 400:
                     if self.model != DEFAULT_LLM_FALLBACK and DEFAULT_LLM_FALLBACK:
@@ -659,7 +676,7 @@ class LLM:
                 if attempt >= 2 and self.model != DEFAULT_LLM_FALLBACK and DEFAULT_LLM_FALLBACK:
                     log(f"модель {self.model} отвечает некорректно ({last[:80]}), перехожу на {DEFAULT_LLM_FALLBACK}")
                     self.model = DEFAULT_LLM_FALLBACK
-                time.sleep(5 * attempt)
+                netutil.pause(5 * attempt)
         raise RuntimeError(f"Языковая модель не ответила корректно: {last}")
 
 
@@ -900,6 +917,9 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
         return found
 
     def finish(s):
+        if s.get("source_redesign"):
+            s["raw_prompt"] = s["source_redesign"] + " Narrative context (adapt the action to it): " + s["text"]
+            s["motion"] = s.get("source_motion") or "static camera"
         s["characters"] = detect(s.get("characters") or [], s.get("raw_prompt", ""))
         s["style_line"] = style_line
         s["prompt"] = compose_prompt(s["raw_prompt"], s["characters"], chars, use_refs, scene=s, props=props, locs=locs, anchors=anchors, style_line=style_line)
@@ -922,7 +942,7 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
 
     def do_chunk(chunk):
         check_cancel()
-        listing = "\n".join(f"{s['index']}. [{s['duration']:.1f} c] {s['text']}" for s in chunk)
+        listing = "\n".join(f"{s['index']}. [{s['duration']:.1f} c] {s['text']}" + ("\nNew visual redesign: " + s["source_redesign"] if s.get("source_redesign") else "") for s in chunk)
         profile = style.get("source_profile") or {}
         segments = profile.get("segments") or []
         if segments:
@@ -1006,6 +1026,8 @@ class RateGate:
         self.blocked_until = 0.0
         self.probe = None          # поток, которому разрешён пробный запрос
         self.after_block = False   # блокировка кончилась, пробы ещё не было
+        self.unavailable_ops = {}
+        self.disabled = False
         self.said_at = 0.0         # чтобы десять потоков не писали одно и то же в журнал каждые 10 секунд
         # свой подсчёт кредитов — скользящее окно в час, как у сервера. Раньше счётчик копился с начала задания
         # и на длинном ролике «упирался в лимит» после 2000 кредитов, хотя часы давно сменились
@@ -1094,6 +1116,8 @@ class RateGate:
             if time.time() - self.checked_at > 55:
                 try:
                     self.refresh()  # сервер сам скажет, сколько осталось в текущем часе
+                except Cancelled:
+                    raise
                 except Exception:
                     pass
 
@@ -1123,6 +1147,8 @@ class NonStopGate:
             u = self.api.usage()
             rem = u.get("image_remaining")
             self.exhausted = rem is not None and int(rem) <= 0
+        except Cancelled:
+            raise
         except Exception:
             pass
 
@@ -1149,13 +1175,27 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
     inputs = [{"filename": os.path.basename(p), "input": file_to_data_uri(p)} for p in refs]
     started = time.time()
     for op, tries in chain:
+        with gate.lock:
+            if gate.disabled:
+                return None
+            if gate.unavailable_ops.get(op, 0) > time.monotonic():
+                continue
         t = 0
         while t < tries:
             check_cancel()
             credits = image_credits(op)
+            if gate.hour_limit and credits > gate.hour_limit:
+                log(f"fast-gen: операция {op} требует больше кредитов, чем часовой лимит ключа")
+                break
             gate.acquire(credits, progress)
             err, st = None, None
             with gate.sem:
+                check_cancel()
+                with gate.lock:
+                    disabled = gate.disabled or gate.unavailable_ops.get(op, 0) > time.monotonic()
+                if disabled:
+                    gate.request_done(False, credits)
+                    break
                 payload = {"operation": op, "prompt": prompt, "aspect_ratio": "16:9"}
                 if HD_IMAGES and op in HD_OPS:
                     payload["generation_config"] = {"upscale": {"type": "2x"}}
@@ -1163,6 +1203,8 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                     payload["inputs"] = inputs
                 try:
                     st = api.run(payload, poll=3, max_wait=600)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     err = str(e)
                 if st is not None:
@@ -1172,11 +1214,28 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                             os.replace(out_path + ".part", out_path)
                             gate.request_done(True, credits)
                             return "fastgen:" + op
+                        except Cancelled:
+                            raise
                         except Exception as e:
                             err = f"не скачалась картинка: {e}"
                     else:
                         err = f"{st.get('error_code')} {str(st.get('error'))}"
             log(f"сцена {scene['index']}: fast-gen {op} попытка {t + 1}/{tries} не удалась: {err[:200]}")
+            low = (err or "").lower()
+            if "content_policy" in low or "safety filter" in low or "content_filter" in low:
+                gate.request_done(False, credits)
+                raise SceneRejected(f"Сцена {scene['index']}: сервис отклонил содержание. Измените описание сцены и повторите.")
+            if any(code in low for code in ("401", "auth.invalid", "invalid_api_key", "invalid_credentials")):
+                gate.request_done(False, credits)
+                with gate.lock:
+                    gate.disabled = True
+                return None
+            if "accounts_exhausted" in low:
+                gate.request_done(False, credits)
+                with gate.lock:
+                    gate.unavailable_ops[op] = time.monotonic() + 300
+                log(f"fast-gen: {op} недоступна у сервиса, исключаю из запросов на 5 минут")
+                break
             if is_rate_limited(err):
                 gate.server_limit_hit(progress)
                 if time.time() - started < MAX_LIMIT_WAIT:
@@ -1189,7 +1248,7 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                 log(f"сцена {scene['index']}: повторяю без референсов")
                 continue
             t += 1
-            time.sleep(5)
+            netutil.pause(5)
     return None
 
 
@@ -1209,13 +1268,15 @@ def gen_nonstop_image(api, gate, scene, out_path, progress, refs):
                                        reference_images=ref_objs or None, use_all_ref_images=bool(ref_objs))
                     os.replace(out_path + ".part", out_path)
                     return "nonstop:" + NONSTOP_MODELS.get(model_key, model_key)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     msg = str(e)
                     log(f"сцена {scene['index']}: veononstop {NONSTOP_MODELS.get(model_key, model_key)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
                     if "401" in msg:
                         return None
                     if is_rate_limited(msg):
-                        time.sleep(30)
+                        netutil.pause(30)
                     if "limit" in msg.lower() and "daily" in msg.lower():
                         gate.refresh()
                         return None
@@ -1248,6 +1309,8 @@ class YouGenGate:
             img = u.get("image") if isinstance(u.get("image"), dict) else None
             rem = (img or {}).get("remaining", u.get("image_remaining"))
             self.exhausted = rem is not None and int(rem) <= 0
+        except Cancelled:
+            raise
         except Exception as e:
             log(f"yougen: не удалось прочитать лимиты: {e}")
 
@@ -1270,6 +1333,8 @@ def gen_yougen_image(api, gate, scene, out_path, progress, refs):
                     api.generate_image(prompt, out_path + ".part", model=model, aspect_ratio="16:9", inputs=inputs, max_wait=900)
                     os.replace(out_path + ".part", out_path)
                     return "yougen:" + YOUGEN_MODELS.get(model, model)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     msg = str(e)
                     log(f"сцена {scene['index']}: yougen {YOUGEN_MODELS.get(model, model)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
@@ -1280,7 +1345,7 @@ def gen_yougen_image(api, gate, scene, out_path, progress, refs):
                         with gate.lock:
                             gate.exhausted = True
                         return None
-                    time.sleep(5)
+                    netutil.pause(5)
     return None
 
 
@@ -1293,12 +1358,14 @@ def gen_yougen_video(api, gate, scene, img_path, out_path, progress):
                 api.generate_video_from_image(prompt, img_path, out_path + ".part.mp4", model="veo-3.1-fast", aspect_ratio="16:9", max_wait=1800)
                 os.replace(out_path + ".part.mp4", out_path)
                 return "yougen:veo-3.1-fast"
+            except Cancelled:
+                raise
             except Exception as e:
                 msg = str(e)
                 log(f"сцена {scene['index']}: yougen видео попытка {t + 1}/2: {msg[:200]}")
                 if msg[:3] in ("401", "403", "429"):
                     return None
-                time.sleep(5)
+                netutil.pause(5)
     return None
 
 
@@ -1344,10 +1411,12 @@ def gen_royal_image(api, gate, scene, out_path, progress, refs):
                         return None
                     if e.status == 400:
                         break  # с этой моделью запрос не проходит — пробуем следующую
-                    time.sleep(5)
+                    netutil.pause(5)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     log(f"сцена {scene['index']}: royaltechno ошибка: {str(e)[:200]}")
-                    time.sleep(5)
+                    netutil.pause(5)
     return None
 
 
@@ -1364,10 +1433,12 @@ def gen_royal_video(api, gate, scene, img_path, out_path, progress):
                 log(f"сцена {scene['index']}: royaltechno видео попытка {t + 1}/2: {e}")
                 if e.status in (400, 401, 402, 403):
                     return None
-                time.sleep(10)
+                netutil.pause(10)
+            except Cancelled:
+                raise
             except Exception as e:
                 log(f"сцена {scene['index']}: royaltechno видео ошибка: {str(e)[:200]}")
-                time.sleep(10)
+                netutil.pause(10)
     return None
 
 
@@ -1409,10 +1480,12 @@ def gen_google_image(api, gate, scene, out_path, progress, refs):
                         return None
                     if e.status in (400, 404, 422):
                         break  # эта модель не подходит — следующая
-                    time.sleep(5)
+                    netutil.pause(5)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     log(f"сцена {scene['index']}: Google ошибка: {str(e)[:200]}")
-                    time.sleep(5)
+                    netutil.pause(5)
     return None
 
 
@@ -1429,10 +1502,12 @@ def gen_google_video(api, gate, scene, img_path, out_path, progress):
                 log(f"сцена {scene['index']}: Google видео попытка {t + 1}/2: {e}")
                 if e.status in (400, 401, 403, 404, 422):
                     return None
-                time.sleep(15)
+                netutil.pause(15)
+            except Cancelled:
+                raise
             except Exception as e:
                 log(f"сцена {scene['index']}: Google видео ошибка: {str(e)[:200]}")
-                time.sleep(15)
+                netutil.pause(15)
     return None
 
 
@@ -1448,6 +1523,8 @@ class SliderGate:
             self.credits = b.get("api_credits")
             self.exhausted = self.credits is not None and int(self.credits) <= 0
             self.threads = max(1, min(8, int(b.get("rate_limit_per_minute") or 8) // 2))
+        except Cancelled:
+            raise
         except Exception as e:
             log(f"secretslider: не удалось прочитать баланс: {e}")
         self.sem = threading.Semaphore(self.threads)
@@ -1485,6 +1562,8 @@ def slider_batch(ctx, scenes, img_dir, progress):
                     with gate.lock:
                         gate.exhausted = True
                 return
+            except Cancelled:
+                raise
             except Exception as e:
                 log(f"secretslider пакет: {str(e)[:200]}")
                 return
@@ -1567,6 +1646,8 @@ def qa_check(client, scene, path):
         except (TypeError, ValueError):
             score = 8 if ok else 3
         return ok, score, str(j.get("issues") or "")[:200]
+    except Cancelled:
+        raise
     except Exception as e:
         log(f"автоотбор: проверка не удалась ({str(e)[:120]}), кадр оставлен")
         return True, 10, ""
@@ -1632,6 +1713,8 @@ class Prerender:
         for f in self.futs:
             try:
                 f.result()
+            except Cancelled:
+                raise
             except Exception as e:  # клип дорисует сборка
                 log(f"предварительный рендер: {str(e)[:120]}")
         self.pool.shutdown(wait=True)
@@ -1711,6 +1794,8 @@ def warn_hours(ctx, todo, progress):
                    + (" (в режиме «скорость» было бы в 4 раза быстрее)" if per_scene > 1 else ""))
             log(msg)
             progress("images", 0, 0, msg)
+    except Cancelled:
+        raise
     except Exception:
         pass
 
@@ -1745,6 +1830,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     if only is None:
         warn_hours(ctx, todo, progress)
     lock = threading.Lock()
+    rejected = set()
     # Secret Slider: свои сцены (по кругу) — одним пакетом, до начала остальных
     if "slider" in ctx["bases"] and only is None:
         mine = [s for s in todo if base_of(provider_chain(ctx, s["index"])[0]) == "slider"] if len(ctx["bases"]) > 1 else list(todo)
@@ -1766,7 +1852,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     log(f"сцена {s['index']}: выбранные сервисы не справились, пробую {unit_name(prov)}")
                 try:
                     model = ctx["image_gen"][prov](s, path, progress, scene_refs)
-                except Cancelled:
+                except (Cancelled, SceneRejected):
                     raise
                 except Exception as e:
                     log(f"сцена {s['index']}: {prov} упал: {str(e)[:200]}")
@@ -1781,12 +1867,16 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     log(f"сцена {s['index']}: последний рубеж fast-gen: {', '.join(m for m, _ in rest)}")
                     try:
                         model = gen_fastgen_image(ctx["api"], ctx["gates"]["fastgen"], s, path, progress, scene_refs, chain=rest)
-                    except Cancelled:
+                    except (Cancelled, SceneRejected):
                         raise
                     except Exception as e:
                         log(f"сцена {s['index']}: последний рубеж упал: {str(e)[:200]}")
-        except Cancelled:
+        except SceneRejected:
+            with lock:
+                rejected.add(s["index"])
             return None
+        except Cancelled:
+            raise
         return model
 
     def work(s):
@@ -1795,6 +1885,9 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             return
         path = os.path.join(img_dir, f"{s['index']:04d}.png")
         scene_refs = [refs[n] for n in s.get("characters", []) if n in refs]
+        if s.get("source_reference"):
+            scene_refs.insert(0, s["source_reference"])
+            s = {**s, "prompt": s["prompt"] + " The first attached image is SOURCE STYLE/COMPOSITION ONLY. Create a NEW redesigned image, change details and props; do not reproduce its exact pixels, text or logos."}
         model = draw(s, path, scene_refs)
         if model and ctx.get("qa") and not CANCEL.is_set():
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
@@ -1853,13 +1946,15 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         if model and on_image:
             try:
                 on_image(s)
+            except Cancelled:
+                raise
             except Exception:
                 pass
 
     with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         list(ex.map(work, todo))
     check_cancel()
-    failed = [s for s in todo if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
+    failed = [s for s in todo if s["index"] not in rejected and not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
     if failed:
         # второй заход: к этому времени лимиты обычно отпустили, а копия соседнего кадра — худший вариант
         log(f"повторяю {len(failed)} сцен, которые не удались с первого раза")
@@ -1901,23 +1996,10 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         log(msg)
         raise SystemExit(msg)
 
-    last_good = None
-    for s in scenes:
-        p = os.path.join(img_dir, f"{s['index']:04d}.png")
-        if os.path.exists(p):
-            last_good = p
-        elif last_good:
-            shutil.copyfile(last_good, p)
-            state[str(s["index"])] = {"ok": False, "model": "copy_prev"}
-    for s in reversed(scenes):
-        p = os.path.join(img_dir, f"{s['index']:04d}.png")
-        if os.path.exists(p):
-            last_good = p
-        elif last_good:
-            shutil.copyfile(last_good, p)
-    write_json(state_path, state)
-    if any(not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) for s in scenes):
+    if len(missing) == len(scenes):
         raise RuntimeError("Не удалось получить ни одной картинки — проверьте ключи и лимиты")
+    if missing:
+        raise RuntimeError(f"Не получены картинки для {len(missing)} сцен. Готовые кадры сохранены; повторите позже. Копии соседних кадров не подставляются.")
     return img_dir
 
 
@@ -1929,13 +2011,27 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
     prompt = video_prompt(scene)
     started = time.time()
     for op, tries in video_chain_for(scene):
+        with gate.lock:
+            if gate.disabled:
+                return None
+            if gate.unavailable_ops.get(op, 0) > time.monotonic():
+                continue
         t = 0
         while t < tries:
             check_cancel()
             credits = VIDEO_CREDITS.get(op, 1)
+            if gate.hour_limit and credits > gate.hour_limit:
+                log(f"fast-gen: операция {op} требует больше кредитов, чем часовой лимит ключа")
+                break
             gate.acquire(credits, progress)
             err, st = None, None
             with gate.sem:
+                check_cancel()
+                with gate.lock:
+                    disabled = gate.disabled or gate.unavailable_ops.get(op, 0) > time.monotonic()
+                if disabled:
+                    gate.request_done(False, credits)
+                    break
                 payload = {"operation": op, "prompt": prompt, "aspect_ratio": "16:9", "inputs": [file_to_data_uri(img_path)]}
                 if "keyframes" in op:
                     payload["keyframes"] = True
@@ -1943,6 +2039,8 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
                     payload["duration_seconds"] = int(op.rsplit("_", 1)[1].rstrip("s"))
                 try:
                     st = api.run(payload, poll=5, max_wait=1500)
+                except Cancelled:
+                    raise
                 except Exception as e:
                     err = str(e)
                     if "403" in err or "video.generate" in err:
@@ -1956,11 +2054,28 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
                             os.replace(out_path + ".part.mp4", out_path)
                             gate.request_done(True, credits)
                             return "fastgen:" + op
+                        except Cancelled:
+                            raise
                         except Exception as e:
                             err = f"не скачалось видео: {e}"
                     else:
                         err = f"{st.get('error_code')} {str(st.get('error'))}"
             log(f"сцена {scene['index']}: fast-gen видео {op} попытка {t + 1}/{tries}: {err[:200]}")
+            low = (err or "").lower()
+            if "content_policy" in low or "safety filter" in low or "content_filter" in low:
+                gate.request_done(False, credits)
+                raise SceneRejected(f"Сцена {scene['index']}: сервис отклонил содержание. Измените описание сцены и повторите.")
+            if any(code in low for code in ("401", "auth.invalid", "invalid_api_key", "invalid_credentials")):
+                gate.request_done(False, credits)
+                with gate.lock:
+                    gate.disabled = True
+                return None
+            if "accounts_exhausted" in low:
+                gate.request_done(False, credits)
+                with gate.lock:
+                    gate.unavailable_ops[op] = time.monotonic() + 300
+                log(f"fast-gen: {op} недоступна у сервиса, исключаю из запросов на 5 минут")
+                break
             if is_rate_limited(err):
                 gate.server_limit_hit(progress)
                 if time.time() - started < MAX_LIMIT_WAIT:
@@ -1968,7 +2083,7 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
             else:
                 gate.request_done(False, credits)
             t += 1
-            time.sleep(5)
+            netutil.pause(5)
     return None
 
 
@@ -1981,13 +2096,15 @@ def gen_nonstop_video(api, gate, scene, img_path, out_path, progress):
                 api.generate_video_from_image(prompt, img_path, out_path + ".part.mp4", aspect_ratio="16:9", max_wait=1800)
                 os.replace(out_path + ".part.mp4", out_path)
                 return "nonstop:veo"
+            except Cancelled:
+                raise
             except Exception as e:
                 msg = str(e)
                 log(f"сцена {scene['index']}: veononstop видео попытка {t + 1}/2: {msg[:200]}")
                 if "401" in msg:
                     return None
                 if is_rate_limited(msg):
-                    time.sleep(30)
+                    netutil.pause(30)
     return None
 
 
@@ -2037,6 +2154,8 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
                     say("videos", 0, 0, msg)
             else:
                 log("fast-gen: на этом ключе видео недоступно (video.generate=false)")
+        except Cancelled:
+            raise
         except Exception as e:
             log(f"fast-gen видео: не удалось прочитать лимиты: {e}")
     if "nonstop" in ctx["bases"]:
@@ -2175,7 +2294,7 @@ def _clip_cached(out_path, signature):
 
 
 def render_scene_clip(img_path, i, duration, out_path):
-    duration = max(0.3, float(duration))
+    duration = max(1 / FPS, float(duration))
     signature = _clip_signature(img_path, duration, f"image:{i % 6}:crop={EDGE_CROP}")
     if _clip_cached(out_path, signature):
         return out_path
@@ -2224,15 +2343,24 @@ def render_scene_clip(img_path, i, duration, out_path):
     return out_path
 
 
-def render_video_clip(src_mp4, duration, out_path):
+def render_video_clip(src_mp4, duration, out_path, retime=False, trim_start=0., full_duration=None):
     """Подогнать сгенерированный клип под длительность сцены: 1920x1080, 25 к/с, без звука.
     Если клип короче сцены — последний кадр держится до конца."""
-    duration = max(0.3, float(duration))
-    signature = _clip_signature(src_mp4, duration, "video")
+    duration = max(1 / FPS, float(duration))
+    signature = _clip_signature(src_mp4, duration, "video:retime" if retime else "video")
+    signature.update(trim_start=trim_start, full_duration=full_duration)
     if _clip_cached(out_path, signature):
         return out_path
     tmp = out_path + ".tmp.mp4"
-    vf = (f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS},"
+    timing = ""
+    if retime:
+        source_duration = audio_duration(src_mp4)
+        if not math.isfinite(source_duration) or source_duration <= 0:
+            raise ValueError("Generated video has no valid duration")
+        timing = f"setpts=(PTS-STARTPTS)*{(full_duration or duration) / source_duration:.9f},"
+        if trim_start or full_duration is not None:
+            timing += f"trim=start={trim_start:.9f}:duration={duration:.9f},setpts=PTS-STARTPTS,"
+    vf = (timing + f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS},"
           f"tpad=stop_mode=clone:stop_duration={duration + 1:.3f}")
     run_ffmpeg(["-i", src_mp4, "-vf", vf, "-t", f"{duration:.3f}", "-an",
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", tmp])
@@ -2253,17 +2381,23 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
 
     grouped = motion and n > XFADE_GROUP
 
+    positions = {s["index"]: position for position, s in enumerate(scenes)}
+
     def one(s):
         check_cancel()
         i = s["index"]
+        position = positions[i]
         dur = s["duration"] + extra  # каждый клип длиннее на переход: следующий начинается на T раньше и заканчивается вовремя
-        tail = grouped and ((i + 1) % XFADE_GROUP == 0 or i == n - 1)  # последний клип группы: ещё +T, его съест переход второго уровня
+        tail = grouped and ((position + 1) % XFADE_GROUP == 0 or position == n - 1)  # последний клип группы: ещё +T, его съест переход второго уровня
         if tail:
             dur += TRANSITION
         suffix = "_x" if tail else ""
         if i in videos:
             clip = os.path.join(clips_dir, f"{i:04d}_v{suffix}.mp4")
-            render_video_clip(videos[i], dur, clip)
+            if "preview_offset" in s:
+                render_video_clip(videos[i], dur, clip, retime=True, trim_start=s["preview_offset"], full_duration=s["full_duration"])
+            else:
+                render_video_clip(videos[i], dur, clip, retime="source_shot" in s)
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
             render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
@@ -2272,7 +2406,7 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
     done = 0
     clips = [None] * n
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(one, s): s["index"] for s in scenes}
+        futs = {ex.submit(one, s): position for position, s in enumerate(scenes)}
         for f in cf.as_completed(futs):
             clips[futs[f]] = f.result()
             done += 1
@@ -2432,7 +2566,9 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
                          f"и запустите снова. Либо выберите озвучку «Edge · бесплатно» — она работает без ключа.") from e
     except Exception as e:
         # длинный сценарий сервис мог не принять целиком — озвучиваем частями и склеиваем
-        if len(script_text) < 2500:
+        if tts_service in ("elevenlabs", "royal") or len(script_text) < 2500:
+            raise
+        if not any(token in str(e).lower() for token in ("prompt_too_long", "text_too_long", "text too long", "413", "слишком длин")):
             raise
         log(f"озвучка целиком не удалась ({str(e)[:120]}), пробую частями")
         parts = split_text(script_text, 3500)
@@ -2456,6 +2592,13 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
                 os.remove(f)
             except OSError:
                 pass
+    check_cancel()
+    try:
+        duration = audio_duration(out + ".part")
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("empty audio")
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        raise TTSError("Сервис озвучки вернул повреждённое аудио; результат не сохранён.") from exc
     os.replace(out + ".part", out)
     write_json(out + ".json", signature)
     progress("tts", 1, 1, "озвучка готова")
@@ -2699,6 +2842,8 @@ def make_context(cfg, providers):
             else:
                 c = SecretSlider(key); g = SliderGate(c); ctx["slider"] = ctx["slider"] or c; ctx["sliders"].append((c, g))
                 fn = lambda sc, out, pr, refs: None
+        except Cancelled:
+            raise
         except Exception as e:
             if selected:
                 raise
@@ -2768,7 +2913,7 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         import youtube_source
         import source_analysis
         source_video = youtube_source.video(url, source_dir, os.path.dirname(ffmpeg_bin()), say, **auth)
-        analysis_cfg = {**cfg, "source_analysis_engine": rw.get("engine") or cfg.get("rewrite_engine") or "fastgen"}
+        analysis_cfg = {**cfg, "source_analysis_engine": cfg.get("source_analysis_engine") or rw.get("engine") or cfg.get("rewrite_engine") or "fastgen", "source_montage": bool(rw.get("montage", cfg.get("source_montage", True)))}
         profile = source_analysis.analyse(source_video, text, analysis_cfg, source_dir, say)
         if profile_callback:
             profile_callback(profile)
@@ -2811,10 +2956,11 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
 
 
 def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use_refs=False,
-            script_text=None, tts_service=None, tts_voice=None, rewrite=None):
+            script_text=None, tts_service=None, tts_voice=None, rewrite=None, reset_cancel=True):
     """Первая половина: (озвучка) + транскрипция + сцены. Возвращает оценку для подтверждения."""
     progress = Progress(progress_cb)
-    CANCEL.clear()
+    if reset_cancel:
+        CANCEL.clear()
     cfg = load_config()
     providers = normalize_providers(provider or cfg.get("image_providers") or cfg.get("image_provider"))
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite)
@@ -2852,16 +2998,44 @@ def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use
     return est
 
 
+@contextmanager
+def managed_pools():
+    """Drain background jobs before reporting failure or permitting another run."""
+    pools = []
+    try:
+        yield pools
+    except BaseException:
+        CANCEL.set()
+        raise
+    finally:
+        for pool in reversed(pools):
+            pool.shutdown(wait=True, cancel_futures=True)
+
+
+def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None):
+    profile = read_json(os.path.join(job_dir, "source_profile.json"))
+    identity = {"style": style_key, "quality": quality, "refs": bool(use_refs), "hd": bool(hd),
+                "profile": profile, "schema": PROMPT_SCHEMA, "storyboard": board_id}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
+    directory = os.path.join(job_dir, "visual_" + digest)
+    os.makedirs(directory, exist_ok=True)
+    if profile:
+        write_json(os.path.join(directory, "source_profile.json"), profile)
+    return directory, digest
+
+
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False, source_profile=None):
-    global FASTGEN_QUALITY, HD_IMAGES
+               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None):
+    global FASTGEN_QUALITY, HD_IMAGES, FPS
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
-    CANCEL.clear()
+    if reset_cancel:
+        CANCEL.clear()
     clear_wait()
     take_redo()
     cfg = load_config()
+    FPS = validate_fps(render_fps if render_fps is not None else cfg.get("render_fps", 25))
     providers = normalize_providers(provider or cfg.get("image_providers") or cfg.get("image_provider"))
     if mode not in MODES:
         raise SystemExit(f"Неизвестный режим: {mode}")
@@ -2869,13 +3043,21 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     FASTGEN_QUALITY = (fastgen_quality or cfg.get("quality") or cfg.get("fastgen_quality") or "speed")
     if FASTGEN_QUALITY not in IMAGE_CHAINS:
         FASTGEN_QUALITY = "speed"
+    if storyboard:
+        import storyboard as sb
+        if (script_text or "").strip() != storyboard["script"].strip():
+            raise sb.StoryboardError("Сценарий изменился. Сохраните новую раскадровку перед генерацией.")
+        source_profile = storyboard["profile"]
+        source_shots = {item["index"]: item for item in source_profile["montage"]["shots"]}
+        for row in storyboard["rows"]:
+            shot = source_shots.get(row["source_shot"])
+            if row["source_shot"] is not None and (not shot or not os.path.isfile(shot.get("reference_frame", ""))):
+                raise sb.StoryboardError("Референсы исходника больше недоступны. Повторите анализ YouTube перед генерацией.")
+    if preview_range is not None and not storyboard:
+        raise ValueError("Предпросмотр требует сохранённой раскадровки.")
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite, source_profile)
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
-    out_mp4 = os.path.join(out_dir, base + ".mp4")
-    if os.path.exists(os.path.join(job_dir, "script.txt")):
-        shutil.copy(os.path.join(job_dir, "script.txt"), os.path.join(out_dir, base + ".txt"))  # сценарий рядом с видео
-
     duration = audio_duration(audio_path)
     progress("start", 0, 0, f"аудио {duration:.0f} с · картинки: {' + '.join(PROVIDER_NAMES[p] for p in providers)} · режим: {mode} · стиль: {style_name}")
     ctx = make_context(cfg, providers)
@@ -2906,40 +3088,103 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         write_json(scenes_path, scenes)
     progress("scenes", len(scenes), len(scenes), f"сцен: {len(scenes)}")
 
-    style = build_style(llm, tr["text"], job_dir, progress, style_key, style_hint)
-    refs, ref_pool = {}, None
-    if use_refs:
-        # портреты героев зависят только от библии — рисуем их, пока пишутся промпты сцен (сообщения пока в журнал)
-        ref_quiet = threading.Event()
-        ref_quiet.set()
+    global LAST_JOB_DIR
+    root_job_dir = job_dir
+    profile = read_json(os.path.join(job_dir, "source_profile.json"))
+    source_montage = bool(profile and profile.get("montage"))
+    if storyboard:
+        import storyboard as sb
+        aligned, score = sb.align(storyboard, tr["words"], duration, FPS)
+        audio_path, timed_words, aligned = sb.retime_audio(audio_path, tr["words"], aligned, job_dir)
+        tr = {**tr, "words": timed_words}
+        duration = aligned[-1]["end"]
+        scenes = sb.scenes(storyboard, aligned, FPS)
+        mode, motion = "video", False
+        progress("scenes", len(scenes), len(scenes), f"раскадровка привязана к речи: совпадение текста {score:.0%}")
+    elif source_montage:
+        import montage
+        scenes = montage.map_scenes(profile, tr["words"], duration, FPS)
+        mode = "video"
+        motion = False
+        progress("scenes", len(scenes), len(scenes), "монтаж исходника: все планы генерируются как видео, без случайных переходов")
+    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None)
+    LAST_JOB_DIR = job_dir
+    base += "_" + visual_id
+    out_mp4 = os.path.join(out_dir, base + ".mp4")
+    if os.path.isfile(os.path.join(root_job_dir, "script.txt")):
+        shutil.copyfile(os.path.join(root_job_dir, "script.txt"), os.path.join(out_dir, base + ".txt"))
+    scenes = read_json(os.path.join(job_dir, "scenes.json")) or scenes
+    assembly_scenes = None
+    with managed_pools() as pools:
+        if storyboard:
+            style = {"style_key": "board-source-" + sb.digest(profile), "style": profile["visual_style"]["description"],
+                     "style_hint": json.dumps(profile["visual_style"], ensure_ascii=False), "characters": []}
+            for scene in scenes:
+                scene.update(raw_prompt=scene["source_redesign"], style_key=style["style_key"], schema=PROMPT_SCHEMA)
+        else:
+            style = build_style(llm, tr["text"], job_dir, progress, style_key, style_hint)
+        refs, ref_pool = {}, None
+        if use_refs:
+            # портреты героев зависят только от библии — рисуем их, пока пишутся промпты сцен (сообщения пока в журнал)
+            ref_quiet = threading.Event()
+            ref_quiet.set()
 
-        def ref_progress(*a):
-            if ref_quiet.is_set():
-                if len(a) > 3 and a[3]:
-                    log(a[3])
-                return
-            return progress(*a)
-        ref_pool = cf.ThreadPoolExecutor(max_workers=1)
-        ref_fut = ref_pool.submit(make_references, ctx, style, job_dir, ref_progress)
-    scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
-    if ref_pool:
-        ref_quiet.clear()
-        if not ref_fut.done():
-            progress("refs", 0, 0, "дорисовываю портреты героев")
-        refs = ref_fut.result()
-        ref_pool.shutdown(wait=True)
-    drop_failed_images(scenes, job_dir)
-    pre = Prerender(scenes, os.path.join(job_dir, "images"), job_dir, mode, motion, video_first)
-    overlap = VideoOverlap(ctx, scenes, job_dir, progress, mode, video_first) if (mode in ("video", "mixed") or video_first) else None
-    try:
-        img_dir = generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=pre.submit)
-    except BaseException:
+            def ref_progress(*a):
+                if ref_quiet.is_set():
+                    if len(a) > 3 and a[3]:
+                        log(a[3])
+                    return
+                return progress(*a)
+            ref_pool = cf.ThreadPoolExecutor(max_workers=1)
+            pools.append(ref_pool)
+            ref_fut = ref_pool.submit(make_references, ctx, style, job_dir, ref_progress)
+        scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
+        if ref_pool:
+            ref_quiet.clear()
+            if not ref_fut.done():
+                progress("refs", 0, 0, "дорисовываю портреты героев")
+            refs = ref_fut.result()
+            ref_pool.shutdown(wait=True)
+        if storyboard:
+            import storyboard_cache
+            asset_directory = os.path.join(data_dir(), "jobs", "storyboard-assets", sb.digest([profile, FASTGEN_QUALITY, hd, providers]))
+            if preview_range is not None:
+                scenes, assembly_scenes, audio_path, captions = sb.preview(scenes, audio_path, tr["words"],
+                    preview_range["start"], preview_range["seconds"], job_dir)
+                tr = {**tr, "words": captions}
+                out_dir = os.path.join(out_dir, "previews")
+                os.makedirs(out_dir, exist_ok=True)
+                base += "_preview_" + sb.digest(preview_range)[:8]
+                out_mp4 = os.path.join(out_dir, base + ".mp4")
+                progress("start", 0, 0, f"предпросмотр: видео только для выбранного отрезка ({len(scenes)} фрагментов)")
+        if storyboard:
+            write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
+            progress("scenes", len(scenes), len(scenes), "планы текущей сборки")
+        drop_failed_images(scenes, job_dir)
+        if storyboard:
+            storyboard_cache.restore(scenes, job_dir, asset_directory)
+        pre = Prerender(scenes, os.path.join(job_dir, "images"), job_dir, mode, motion, video_first)
+        pools.append(pre.pool)
+        overlap = VideoOverlap(ctx, scenes, job_dir, progress, mode, video_first) if (mode in ("video", "mixed") or video_first) else None
         if overlap:
-            overlap.abort()
-        raise
-    videos = overlap.result() if overlap else {}
-    pre.wait()
-    videos = redo_pass(ctx, scenes, style, job_dir, progress, refs, mode, motion, video_first, videos)
+            pools.append(overlap.pool)
+        try:
+            img_dir = generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=pre.submit)
+        except BaseException:
+            if overlap:
+                overlap.abort()
+            raise
+        videos = overlap.result() if overlap else {}
+        pre.wait()
+        videos = redo_pass(ctx, scenes, style, job_dir, progress, refs, mode, motion, video_first, videos)
+    if storyboard:
+        storyboard_cache.publish(scenes, job_dir, asset_directory)
+    if source_montage:
+        missing = [s["index"] + 1 for s in scenes if s["index"] not in videos]
+        if missing:
+            raise RuntimeError(f"Монтаж исходника: не получены видео для {len(missing)} планов. Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
+    if assembly_scenes is not None:
+        scenes = assembly_scenes
     if subtitles:
         raw_mp4 = os.path.join(job_dir, "nosubs.mp4")
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, raw_mp4, progress, motion=motion)
@@ -2955,7 +3200,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         progress("subtitles", 1, 1, "субтитры наложены, .srt сохранён в папке output/subtitles")
     else:
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=motion)
-    if cfg.get("speed_copies"):
+    if cfg.get("speed_copies") and preview_range is None:
         try:
             make_speed_copies(out_mp4, progress)
         except Cancelled:
@@ -2972,6 +3217,8 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
 if __name__ == "__main__":
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Cancelled:
+        raise
     except Exception:
         pass
     if len(sys.argv) < 2:

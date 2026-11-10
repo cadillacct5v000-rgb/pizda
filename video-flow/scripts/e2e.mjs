@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {setTimeout as pause} from 'node:timers/promises';
+import {configuration, appDir} from '../server/config.mjs';
+import {openStore} from '../server/database.mjs';
+import {createProject, importRows, scriptRows} from '../server/domain.mjs';
+import {generationService} from '../server/generation.mjs';
+import {buildTimeline} from '../server/timeline.mjs';
+import {renderService} from '../server/render.mjs';
+import {processFile, ffmpeg, probe} from '../server/media.mjs';
+import {exportArchive, restoreArchive} from '../server/archive.mjs';
+
+const root=mkdtempSync(path.join(tmpdir(),'video-flow-e2e-')),output=path.join(appDir,'test-results');mkdirSync(output,{recursive:true});
+const config=configuration({DATA_DIR:root},appDir);config.providers.elevenlabs.key='e2e-fake';config.providers.fastgen.key='e2e-fake';config.poll=1;
+let store=openStore(root),service;let createCount=0;
+try{
+  const image=path.join(root,'input.png'),audio=path.join(root,'input.mp3');
+  await processFile(ffmpeg,['-y','-f','lavfi','-i','color=c=0x293e2c:s=1920x1080','-frames:v','1','-threads','1',image]);
+  await processFile(ffmpeg,['-y','-f','lavfi','-i','sine=frequency=330:duration=0.5','-c:a','libmp3lame',audio]);
+  const clients={elevenlabs:{speech:async()=>readFileSync(audio)},fastgen:{create:async()=>({id:`mock-${++createCount}`}),status:async()=>({status:'succeeded',usage:{credits:1}}),result:async()=>readFileSync(image)}};
+  service=generationService(store,clients,config);
+  let project=importRows(createProject({title:'E2E · три сцены'}),scriptRows('Первый кадр.\n\nВторой кадр.\n\nТретий кадр.'));
+  project.models.voiceId='mock-voice';project.frames.forEach((f)=>{f.imagePrompt='Forest film scene';f.approved=true;});project=store.put(project,null);
+  for(const block of project.blocks)service.enqueue(project.id,'voice',block.id);
+  for(const frame of project.frames)service.enqueue(project.id,'image',frame.id);
+  const wait=async()=>{for(let count=0;count<3000;count++){if(service.stats().every((q)=>!q.active&&!q.pending))return;await pause(10);}throw new Error('generation timeout');};await wait();
+  project=store.get(project.id);assert.equal(project.blocks.filter((b)=>b.audio).length,3);assert.equal(project.frames.filter((f)=>f.image).length,3);
+  const timeline=buildTimeline(project);assert.equal(timeline.visuals.length,3);assert.equal(timeline.audio.length,3);
+  const renderer=renderService(store,{browserExecutable:process.env.REMOTION_BROWSER_EXECUTABLE});
+  const result=await renderer.render(project,new AbortController().signal);renderer.close();
+  const {copyFileSync}=await import('node:fs');copyFileSync(path.join(store.projectsDir,result.path),path.join(output,'three-scenes.mp4'));
+  const metadata=await probe(path.join(output,'three-scenes.mp4'));assert.equal(metadata.streams.find((s)=>s.codec_type==='video').width,1920);assert.equal(metadata.streams.find((s)=>s.codec_type==='audio').codec_name,'aac');
+  const project60={...project,options:{...project.options,fps:60}};
+  const result60=await renderer.render(project60,new AbortController().signal);
+  copyFileSync(path.join(store.projectsDir,result60.path),path.join(output,'three-scenes-60fps.mp4'));
+  const metadata60=await probe(path.join(output,'three-scenes-60fps.mp4'));assert.equal(metadata60.streams.find((s)=>s.codec_type==='video').r_frame_rate,'60/1');
+  const archive=await exportArchive(store,project.id),restored=await restoreArchive(store,archive);assert.equal(buildTimeline(restored).visuals.length,3);
+  await service.close();store.close();store=openStore(root);service=generationService(store,clients,config);project=store.get(project.id);
+  for(const frame of project.frames)service.enqueue(project.id,'image',frame.id);await wait();assert.equal(createCount,3);
+  const many=importRows(createProject(),scriptRows(Array.from({length:202},(_,i)=>`Сцена ${i+1}.`).join('\n\n')));many.options.voiceoverSkipped=true;many.frames.forEach((f)=>{f.image={path:'fixture.png'};});
+  assert.equal(buildTimeline(many).visuals.length,202);
+  writeFileSync(path.join(output,'e2e-report.json'),JSON.stringify({passed:true,scenes:3,paidRequests:0,mockImageCreates:createCount,restartDidNotRecreate:true,archiveRestored:true,stressFrames:202,duration:metadata.duration,video:metadata.streams.find((s)=>s.codec_type==='video'),audio:metadata.streams.find((s)=>s.codec_type==='audio')},null,2));
+  process.stdout.write('E2E passed: three scenes → real Remotion MP4; archive/restore; restart/cache; 202-frame dry run. No paid API calls.\n');
+}finally{await service?.close();store.close();rmSync(root,{recursive:true,force:true});}

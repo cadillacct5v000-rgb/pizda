@@ -1,0 +1,53 @@
+{
+  "name": "ai-video-flow",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev:client": "vite --host 127.0.0.1",
+    "dev:server": "node --watch server/index.mjs",
+    "dev": "concurrently -k npm:dev:client npm:dev:server",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.mjs",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "node --test --test-concurrency=1 server/*.test.mjs",
+    "lint": "oxlint src server remotion scripts",
+    "check": "npm test && npm run lint && npm run build",
+    "studio": "remotion studio remotion/index.tsx --port=8788",
+    "integrity": "node scripts/integrity.mjs",
+    "package:customer": "node scripts/package.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@remotion/bundler": "^4.0.400",
+    "@remotion/captions": "^4.0.400",
+    "@remotion/cli": "^4.0.400",
+    "@remotion/media": "^4.0.400",
+    "@remotion/renderer": "^4.0.400",
+    "better-sqlite3": "^12.6.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.3.4",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "jszip": "^3.10.1",
+    "music-metadata": "^11.10.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "remotion": "^4.0.400"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^24.10.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "concurrently": "^9.2.1",
+    "oxlint": "^1.38.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.0"
+  }
+}

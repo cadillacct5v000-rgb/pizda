@@ -1,0 +1,83 @@
+name: Video Flow validation and Windows package
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  linux-quality:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: video-flow
+    env:
+      ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: video-flow/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npx playwright install --with-deps chromium
+      - name: Browser and real Remotion acceptance (mock paid APIs)
+        run: |
+          export REMOTION_BROWSER_EXECUTABLE="$(node -e "process.stdout.write(require('@playwright/test').chromium.executablePath())")"
+          export PLAYWRIGHT_CHROMIUM_EXECUTABLE="$REMOTION_BROWSER_EXECUTABLE"
+          node scripts/check-ui.mjs
+          node scripts/e2e.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: VideoFlow-validation
+          path: video-flow/test-results/
+  windows-package:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: video-flow
+    env:
+      ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: video-flow/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $Tokens = $null
+          $ParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'windows/Manage.ps1'), [ref]$Tokens, [ref]$ParseErrors) | Out-Null
+          if ($ParseErrors.Count) { $ParseErrors | Format-List; throw 'PowerShell parser rejected installer.' }
+      - run: npm run package:customer
+      - name: Install and launch customer package from path with spaces
+        shell: pwsh
+        run: |
+          $Package = Get-ChildItem release/VideoFlow-*-Windows-x64.zip | Select-Object -First 1
+          $Install = Join-Path $env:RUNNER_TEMP 'Video Flow Customer'
+          Expand-Archive -LiteralPath $Package.FullName -DestinationPath $Install
+          try {
+            & "$Install/app/windows/Manage.ps1" -Action Install -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Installer failed.' }
+            $Health = Invoke-RestMethod http://127.0.0.1:8787/api/health
+            if ($Health.version -ne '0.1.0') { throw 'Unexpected installed backend.' }
+            & "$Install/app/windows/Manage.ps1" -Action Start -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Second start failed.' }
+          } finally {
+            & "$Install/app/windows/Manage.ps1" -Action Stop -NoBrowser
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoFlow-Windows-x64
+          path: |
+            video-flow/release/*.zip
+            video-flow/release/*.sha256
+          if-no-files-found: error
