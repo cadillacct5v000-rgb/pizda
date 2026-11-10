@@ -10,6 +10,9 @@ import math
 import os
 from pathlib import Path
 import subprocess
+from contextvars import ContextVar
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 from PIL import Image, ImageDraw, ImageOps
 import requests
@@ -45,7 +48,27 @@ STYLE_SCHEMA = (
 
 
 class SourceAnalysisError(RuntimeError):
-    pass
+    def __init__(self, message, status=None):
+        super().__init__(message)
+        self.status = status
+
+
+_REQUEST_PROGRESS = ContextVar('source_analysis_progress', default=None)
+
+
+def _retry_seconds(response, attempt):
+    header = (getattr(response, 'headers', None) or {}).get('Retry-After')
+    if isinstance(header, str):
+        try:
+            delay = float(header)
+        except ValueError:
+            try:
+                delay = (parsedate_to_datetime(header) - datetime.now(timezone.utc)).total_seconds()
+            except (ValueError, TypeError, OverflowError):
+                delay = None
+        if delay is not None and math.isfinite(delay):
+            return max(0, math.ceil(delay))
+    return min(40, 5 * 2 ** attempt)
 
 
 def _atomic_json(path, value):
@@ -137,14 +160,22 @@ def _provider(cfg):
 
 
 def _http(method, url, **kwargs):
-    for attempt in range(3):
+    attempts = 5
+    for attempt in range(attempts):
         netutil.check_cancel()
+        delay = min(40, 5 * 2 ** attempt)
         try:
             response = requests.request(method, url, timeout=(15, 180), **kwargs)
             try:
                 if response.status_code == 429 or response.status_code >= 500:
-                    if attempt == 2:
-                        raise SourceAnalysisError(f"Сервис анализа видео временно недоступен (HTTP {response.status_code}).")
+                    if attempt == attempts - 1:
+                        raise SourceAnalysisError(f"Сервис анализа видео временно недоступен (HTTP {response.status_code}). Повторите подготовку позже.", response.status_code)
+                    delay = _retry_seconds(response, attempt)
+                    if delay > 60:
+                        raise SourceAnalysisError(f"Сервис анализа видео просит подождать {delay} с (HTTP {response.status_code}). Повторите подготовку после этого времени.", response.status_code)
+                    progress = _REQUEST_PROGRESS.get()
+                    if progress:
+                        progress(f"сервис анализа: HTTP {response.status_code}; повтор {attempt + 2}/{attempts} через {delay} с, готовые части сохранены")
                 elif response.status_code >= 400:
                     try:
                         details = response.json()
@@ -171,11 +202,13 @@ def _http(method, url, **kwargs):
             finally:
                 response.close()
         except requests.RequestException as exc:
-            if attempt == 2:
+            if method.upper() == 'POST' and not isinstance(exc, requests.ConnectTimeout):
+                raise SourceAnalysisError('Соединение прервалось после отправки запроса анализа. Результат и списание за этот запрос неизвестны; автоматический повтор остановлен. Готовые ответы сохранены.') from exc
+            if attempt == attempts - 1:
                 raise SourceAnalysisError("Соединение с сервисом анализа видео прервалось. Повторите анализ.") from exc
         except ValueError as exc:
             raise SourceAnalysisError("Сервис анализа видео вернул некорректный ответ.") from exc
-        netutil.pause(3 * (attempt + 1))
+        netutil.pause(delay)
     raise SourceAnalysisError("Сервис анализа видео не ответил.")
 
 
@@ -269,6 +302,53 @@ def _style(result):
     return visual
 
 
+def _narrative(result):
+    note = result.get('narrative_style') if isinstance(result, dict) else None
+    if not isinstance(note, str) or not note.strip():
+        raise SourceAnalysisError('Модель не вернула анализ структуры исходного рассказа.')
+    return note
+
+
+def _summary(result):
+    _style(result)
+    _narrative(result)
+
+
+def cached_query(directory, engine, key, model, prompt, image_path=None, *, validate=None, progress=None):
+    """Checkpoint each validated response, not just the final whole-video analysis."""
+    netutil.check_cancel()
+    endpoint = 'https://api.fast-gen.ai/v1' if engine == 'fastgen' else endpoints.base(engine)
+    identity = {'version': 1, 'engine': engine, 'model': model, 'endpoint': endpoint,
+                'system': hashlib.sha256(SYSTEM.encode()).hexdigest(),
+                'prompt': hashlib.sha256(prompt.encode()).hexdigest(),
+                'image': _hash_file(image_path) if image_path else None}
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    directory = Path(directory) / 'responses'
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / (digest + '.json')
+    try:
+        cached = json.loads(path.read_text(encoding='utf-8'))
+        if cached.get('identity') == identity and isinstance(cached.get('result'), dict):
+            if validate:
+                validate(cached['result'])
+            return cached['result']
+    except (OSError, ValueError, SourceAnalysisError, AttributeError):
+        pass
+    netutil.check_cancel()
+    token = _REQUEST_PROGRESS.set(progress)
+    try:
+        result = _query(engine, key, model, prompt, image_path)
+        if validate:
+            validate(result)
+        _atomic_json(path, {'identity': identity, 'result': result})
+        netutil.check_cancel()
+        return result
+    except SourceAnalysisError as error:
+        raise SourceAnalysisError(str(error) + ' Успешные части анализа сохранены; при повторном запуске они будут переиспользованы.', error.status) from error
+    finally:
+        _REQUEST_PROGRESS.reset(token)
+
+
 def analyse(video_path, transcript, cfg, cache_dir, progress=None):
     """Read full transcript in chunks; inspect uniformly sampled source frames."""
     netutil.check_cancel()
@@ -296,7 +376,8 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
         pass
     _preflight(engine, key)
     if progress:
-        progress(f"анализирую видеоряд: {len(timestamps)} кадров по всей длительности {duration:.0f} с")
+        stage = 'шаг 1/2; далее — поиск склеек и разбор каждого плана' if cfg.get('source_montage') else 'обзор стиля; разбор монтажа выключен'
+        progress(f"обзор видеоряда: {len(timestamps)} кадров по всей длительности {duration:.0f} с ({stage})")
     frames = extract_frames(video_path, directory / "frames", timestamps)
     segments, visual_notes = [], []
     for offset in range(0, len(frames), BATCH_SIZE):
@@ -308,7 +389,7 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
                   f"The labels show seconds; timestamps={batch_times}. Describe visual style, palette, "
                   "composition, kinds of shots, graphic/text elements. Do not invent motion or shot durations. "
                   "Return " + STYLE_SCHEMA + ". Set narrative_style to an empty string: no narration supplied yet.")
-        response = _query(engine, key, model, prompt, sheet)
+        response = cached_query(directory, engine, key, model, prompt, sheet, validate=_style, progress=progress)
         visual = _style(response)
         end = min(duration, timestamps[min(offset + BATCH_SIZE, len(timestamps) - 1)])
         if offset + BATCH_SIZE >= len(timestamps):
@@ -326,7 +407,7 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
                   "Describe narrative structure, viewpoint, sentence style, pacing of ideas, and rhetorical devices. "
                   "Do not infer audible delivery/music. Return {\"narrative_style\":\"...\"}. "
                   "Reference transcript follows as JSON data:\n" + json.dumps({"transcript": chunk}, ensure_ascii=False))
-        response = _query(engine, key, model, prompt)
+        response = cached_query(directory, engine, key, model, prompt, validate=_narrative, progress=progress)
         note = response.get("narrative_style")
         if not isinstance(note, str) or not note.strip():
             raise SourceAnalysisError("Модель не вернула анализ структуры исходного рассказа.")
@@ -337,7 +418,7 @@ def analyse(video_path, transcript, cfg, cache_dir, progress=None):
                       "Cover recurring features AND changes over the whole source; keep observations separate from guesses. "
                       "Do not invent unobserved sound, exact transitions or frame-by-frame knowledge. Return " + STYLE_SCHEMA
                       + ". Reference data:\n" + json.dumps({"visual": visual_notes, "narrative": narrative_notes}, ensure_ascii=False))
-    summary = _query(engine, key, model, summary_prompt)
+    summary = cached_query(directory, engine, key, model, summary_prompt, validate=_summary, progress=progress)
     visual = _style(summary)
     narrative = summary.get("narrative_style")
     if not isinstance(narrative, str) or not narrative.strip():

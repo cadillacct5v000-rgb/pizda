@@ -42,6 +42,10 @@ def analyse(video_path, directory, duration, engine, key, model, progress=None):
     directory.mkdir(exist_ok=True)
     shots = detect_shots(video_path, duration)
     analysed = []
+    def validate_description(response):
+        for field in ("description", "redesign_prompt", "motion"):
+            if not isinstance(response.get(field), str) or not response[field].strip():
+                raise sa.SourceAnalysisError(f"Не получено описание плана: {field}.")
     for shot in shots:
         netutil.check_cancel()
         index = shot["index"]
@@ -73,7 +77,7 @@ def analyse(video_path, directory, duration, engine, key, model, progress=None):
             '{"description":"Russian visual description","redesign_prompt":"English new shot prompt",'
             '"motion":"English camera and subject motion, or static",'
             '"motion_confidence":"low|medium|high"}.')
-        response = sa._query(engine, key, model, prompt, sheet)
+        response = sa.cached_query(directory, engine, key, model, prompt, sheet, validate=validate_description, progress=progress)
         for field in ("description", "redesign_prompt", "motion"):
             if not isinstance(response.get(field), str) or not response[field].strip():
                 raise sa.SourceAnalysisError(f"Не получено описание плана {index + 1}: {field}.")
