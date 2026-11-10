@@ -381,6 +381,24 @@
     .opt { padding:8px 18px; } .opt .t { font-size:17px; } .opt svg { width:32px; height:32px; } .opts .optq { font-size:20px; }
     .corner { display:none; }
   }
+
+  [hidden] { display:none !important; }
+  .review.board-hidden { display:none; }
+  .board-controls { display:flex; gap:10px; flex-wrap:wrap; padding:8px 0; }
+  .board-panel { flex:1; min-height:0; overflow:auto; border:1px solid var(--line); padding:14px; }
+  .board-row { display:grid; grid-template-columns:230px 1fr; gap:18px; border:1px solid var(--line); padding:16px; margin:14px 0; }
+  .board-ref { display:flex; flex-direction:column; gap:10px; }
+  .board-ref img { width:100%; min-height:110px; object-fit:contain; background:var(--bg2); }
+  .board-ref small { line-height:1.5; color:var(--ink2); }
+  .board-confidence { color:var(--acc2); } .board-confidence.low { color:#efa44b; }
+  .board-edit { display:grid; gap:10px; } .board-edit label { display:grid; gap:6px; font-size:14px; }
+  .board-edit textarea { min-height:72px; padding:10px; resize:vertical; font-size:15px; }
+  .board-edit input,.board-edit select { min-height:36px; padding:8px; font-size:14px; width:100%; }
+  .board-preview-controls { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .board-preview-controls input { width:90px; padding:8px; }
+  .board-note { font-size:14px; line-height:1.5; color:var(--ink2); padding:8px 0; }
+  @media(max-width:1000px) { .board-row { grid-template-columns:160px 1fr; } }
+
 </style>
 </head>
 <body>
@@ -455,6 +473,7 @@
       <label class="opt sec" id="qa" data-tipkey="tip_qa"><input type="checkbox" id="use_qa"><svg viewBox="0 0 64 64"><path d="M6 32c8-12 16-18 26-18s18 6 26 18c-8 12-16 18-26 18S14 44 6 32z"/><circle cx="32" cy="32" r="8"/><path d="M44 50l6 6 10-12"/></svg><span class="t" data-i18n="o_qa"></span><span class="dot"></span></label>
       <label class="opt sec" id="speed" data-tipkey="tip_speed"><input type="checkbox" id="use_speed"><svg viewBox="0 0 64 64"><path d="M8 44a24 24 0 0 1 48 0"/><path d="M32 44l12-16"/><circle cx="32" cy="44" r="3"/><path d="M14 44h4M46 44h4M20 30l3 3M44 30l-3 3"/></svg><span class="t" data-i18n="o_speed"></span><span class="dot"></span></label>
     </div>
+    <label style="display:block;margin:16px 0">FPS <select id="render_fps" aria-label="Частота кадров"><option value="25">25 FPS</option><option value="30">30 FPS</option><option value="60">60 FPS</option></select></label>
     <div class="nav"><button class="ghost" onclick="go(2)" data-i18n="back"></button><button class="primary" id="btn_opts" onclick="go(4)" data-i18n="next"></button></div>
   </div>
 
@@ -464,12 +483,25 @@
     <datalist id="voice_list"></datalist>
     <datalist id="lang_list"><option value="русском"><option value="польском"><option value="английском"><option value="украинском"><option value="немецком"><option value="испанском"><option value="французском"><option value="португальском"><option value="итальянском"><option value="турецком"></datalist>
     <div class="status err" id="s_prep" style="text-align:center"></div>
-    <div class="nav"><button class="ghost" onclick="go(3)" data-i18n="back"></button><button class="primary" id="btn_prep" onclick="startAll()" data-i18n="begin"></button></div>
+    <div class="nav"><button class="ghost" onclick="go(3)" data-i18n="back"></button><button class="ghost" onclick="restoreStoryboardFromAccess()">Открыть раскадровку</button><button class="primary" id="btn_prep" onclick="startAll()" data-i18n="begin"></button></div>
   </div>
 
   <div class="screen" id="screen5">
     <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>05</b> · <span data-i18n="s5"></span></div></div>
     <div class="scan" id="scan" style="display:none"><div class="wave" id="wave"></div><div class="phase" id="scan_phase"></div><div class="line"></div><div class="sub" id="scan_sub"></div></div>
+    <div class="board-controls" id="board_controls" hidden>
+      <button class="ghost" id="board_create" onclick="createStoryboard()">Создать раскадровку</button>
+      <button class="ghost" id="board_restore" onclick="restoreStoryboard()">Открыть сохранённую</button>
+      <button class="ghost" id="board_cancel" onclick="pywebview.api.cancel()" hidden>Остановить подготовку</button>
+      <button class="ghost" id="board_show" onclick="showStoryboard()" hidden>К раскадровке</button>
+    </div>
+    <div class="board-panel" id="board_panel" hidden>
+      <div class="board-controls"><strong id="board_count"></strong><button class="ghost" onclick="turnBoardPage(-1)">←</button><button class="ghost" onclick="turnBoardPage(1)">→</button><button class="ghost" onclick="saveStoryboard()">Сохранить</button><button class="ghost" onclick="hideStoryboard()">К сценарию</button></div>
+      <div class="board-note">Привязка предложена моделью — проверьте соответствие фразы и кадра. Изменение текста плана меняет сценарий. При ручной длительности подстраивается темп этой фразы (не более чем вдвое).</div>
+      <div class="board-preview-controls"><label>Начало, с <input id="preview_start" type="number" min="0" value="0"></label><label>Длительность <select id="preview_seconds"><option value="20">20 с</option><option value="30" selected>30 с</option></select></label><button class="ghost" id="board_preview" onclick="storyboardPreview()">Собрать предпросмотр</button></div>
+      <div class="board-note">Озвучка и распознавание подготавливаются для всего сценария. Новые картинки и видео — только для выбранного отрезка; готовые планы переиспользуются при полной сборке. Анализ текста и генерация оплачиваются по тарифам сервисов.</div>
+      <div class="status" id="board_status"></div><div id="board_rows"></div>
+    </div>
     <div class="review" id="review">
       <div class="panel rv"><div class="fc" id="fc" style="display:none"><div class="lbl" data-i18n="fc_title"></div><div class="big" id="fc_big"></div><div class="sub" id="fc_sub"></div><div class="alt" id="fc_alt"></div></div><h3 data-i18n="rv_settings"></h3><div class="rvlist" id="rv_sum"></div></div>
       <div class="panel rv" id="rv_script_panel"><h3 id="rv_script_title"></h3><textarea id="rv_script" spellcheck="false"></textarea><div class="status" id="rv_words"></div></div>
@@ -489,7 +521,7 @@
         <div class="bar"><i id="stage_bar"></i></div>
         <div class="time" id="p_time"></div><div id="p_err"></div>
         <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small></div>
-        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
+        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
         <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button></div>
@@ -646,6 +678,7 @@ async function startAll() {
     queueMode = true; renderReview(null); go(5); return;
   }
   queueMode = false;
+  resetStoryboard();
   reviewProfileId = null; reviewSourceProfile = null;
   const o = opts();
   if (!rwOn() && source === 'script' && !o.script.trim()) { $('s_prep').textContent = t('err_script'); return; }
@@ -710,10 +743,11 @@ function renderReview(script) {
   $('rv_script').value = script || ''; updRvWords();
   $('rv_mode').addEventListener('change', refreshForecast); $('rv_fgq').addEventListener('change', refreshForecast);
   refreshForecast();
+  storyboardControls();
 }
 function updRvWords() { const n = $('rv_script').value.trim().split(/\s+/).filter(Boolean).length; $('rv_words').textContent = n ? `${n} ${t('rv_words')}` : ''; }
 let fcTimer = null;
-$('rv_script').addEventListener('input', () => { updRvWords(); clearTimeout(fcTimer); fcTimer = setTimeout(refreshForecast, 700); });
+$('rv_script').addEventListener('input', () => { if (boardState) { resetStoryboard(); storyboardControls(); $('board_status').textContent = ''; } updRvWords(); clearTimeout(fcTimer); fcTimer = setTimeout(refreshForecast, 700); });
 
 // ===== прогноз времени: сцены, кредиты, часовой лимит fast-gen =====
 function fmtMin(m) { m = Math.max(1, Math.round(m)); if (m < 60) return plural(m, t('min')); m = Math.round(m / 5) * 5; const h = Math.floor(m / 60), r = m % 60; return `${h} ${t('h_')}` + (r ? ` ${r} ${t('m_')}` : ''); }
@@ -808,7 +842,10 @@ async function pollUpdate() {
   updTimer = setTimeout(pollUpdate, 500);
 }
 async function startFromReview() {
+  if (boardBusy) return;
+  if (boardState && !await saveStoryboard()) return;
   const o = opts();
+  if (boardState) { o.source = 'script'; o.script = boardState.script; o.rewrite.on = false; o.storyboard_id = boardState.id; o.source_profile_id = null; o.mode = 'video'; o.motion = false; }
   if (queueMode) {
     const r = await pywebview.api.queue_start(o);
     if (!r.ok) { $('s_prep2').textContent = r.error; return; }
@@ -858,7 +895,7 @@ async function poll() {
   if (st.queue) {
     $('p_queue').textContent = `${t('q_job')} ${st.queue.pos} ${t('q_of')} ${st.queue.total} · ${st.queue.title}`;
     if (st.queue.id !== lastQueueId) { lastQueueId = st.queue.id; buildFrames(0); $('result').classList.remove('show'); $('error').textContent = ''; shownPct = 0; }
-  } else $('p_queue').textContent = '';
+  } else $('p_queue').textContent = st.is_preview ? (L === 'ru' ? 'ПРЕДПРОСМОТР' : 'PREVIEW') : '';
   const idx = ORDER[st.stage] ?? 0;
   document.querySelectorAll('.stages li').forEach(li => { const o = ORDER[li.id.slice(3)] ?? 0; li.classList.toggle('done', o < idx || !!st.result); li.classList.toggle('cur', o === idx && !st.result && st.running); });
   const pct = st.result ? 100 : Math.min(99, Math.round((idx / 8) * 100 * 0.85 + (st.total ? (st.done / st.total) * 12 : 0)));
@@ -879,8 +916,9 @@ async function poll() {
     known.add(it.key); known.add(it.i * 2);
     setTimeout(() => {
       const d = $('fr' + it.i); if (!d) return;
+      const redraw = st.active_board_id ? '' : `<button class="redo" title="${esc(t('redo_btn'))}" onclick="redoScene(${it.source_index ?? it.i})">&#8635;</button>`;
       d.classList.remove('redo');
-      if (!d.querySelector('img')) { d.classList.remove('pending', 'active'); d.classList.add('flash'); d.innerHTML = `<span class="ph"></span><img src="${it.img}"><span class="n">${String(it.i + 1).padStart(2, '0')}</span><button class="redo" title="${esc(t('redo_btn'))}" onclick="redoScene(${it.i})">&#8635;</button>`; setTimeout(() => d.classList.remove('flash'), 800); }
+      if (!d.querySelector('img')) { d.classList.remove('pending', 'active'); d.classList.add('flash'); d.innerHTML = `<span class="ph"></span><img src="${it.img}"><span class="n">${String(it.i + 1).padStart(2, '0')}</span>${redraw}`; setTimeout(() => d.classList.remove('flash'), 800); }
       if (it.video && !d.querySelector('.live')) { const b = document.createElement('span'); b.className = 'live'; b.textContent = 'LIVE'; d.appendChild(b); }
     }, k * 160);
   });
@@ -889,6 +927,7 @@ async function poll() {
   else if (st.result && !st.queue_active) { $('result').classList.add('show'); $('r_path').textContent = st.result; $('g_title').textContent = t('frames_done'); }
   if (st.error) { $('error').textContent = t('error') + st.error; $('p_err').textContent = st.error; $('btn_again').textContent = t('to_settings'); } else { $('p_err').textContent = ''; $('btn_again').textContent = t('again'); }
   if (st.cancelled) $('error').textContent = t('stopped');
+  if ($('btn_board_return')) $('btn_board_return').hidden = !st.active_board_id || !!st.running;
   if (st.running || st.queue_active) setTimeout(poll, 1400); else { $('btn_again').disabled = false; $('btn_cancel').disabled = true; }
 }
 async function loadConfig(keepScreen) {
@@ -909,6 +948,7 @@ async function loadConfig(keepScreen) {
   r = document.querySelector(`input[name=fgq][value=${c.quality || 'speed'}]`); if (r) r.checked = true;
   $('use_tts').checked = c.source === 'script' || !!c.rewrite; $('use_subs').checked = !!c.subtitles; $('use_motion').checked = !!c.motion; $('use_hd').checked = !!c.hd_images; $('use_qa').checked = !!c.qa_images; $('use_speed').checked = !!c.speed_copies; qaEngine = c.qa_engine || 'gemini'; qaModel = c.qa_model || ''; mark();
   $('vf').value = c.video_first || 0; drawVf();
+  $('render_fps').value = c.render_fps || 25;
   STYLES = st.styles || c.styles || STYLES; styleKey = c.style || 'ultrareal'; queueStyles = !!c.queue_styles; if (!keepScreen) $('custom_style').value = c.custom_style || ''; fillStyles();
   models.llm_model = c.llm_model || models.llm_model; models.openai_model = c.openai_model || models.openai_model; models.anthropic_model = c.anthropic_model || 'claude-sonnet-5-5'; models.gemini_model = c.gemini_model || 'gemini-3.6-flash'; baseUrls = c.base_urls || {}; baseDefaults = c.base_defaults || baseDefaults;
   stt = c.stt_engine || (c.has_fastgen ? 'fastgen' : 'whisper'); llm = c.llm_engine || (c.has_fastgen ? 'fastgen' : 'openai'); tts = c.tts_service || 'voicegen';
@@ -1182,6 +1222,8 @@ async function loadVoices() {
   if (st) { st.textContent = r.voices.length ? t('voices_n').replace('{n}', r.voices.length) : t('voices_none'); st.className = 'status st ok'; }
 }
 function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
+  render_fps: +$('render_fps').value,
+  storyboard_id: boardState ? boardState.id : null,
   source_profile_id: rwOn() && analyzeVideo && rwSrc === 'youtube' ? reviewProfileId : null,
   rewrite: {on: rwOn(), montage: sourceMontage, analyze_video: analyzeVideo, source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
@@ -1207,6 +1249,168 @@ document.addEventListener('click', () => { if (+$('vol').value > 0 && bgm.paused
 function fitVolbox() { const w = document.querySelector('.topctl').getBoundingClientRect().width; $('volbox').style.height = Math.round(w) + 'px'; }
 window.addEventListener('resize', fitVolbox); document.fonts && document.fonts.ready.then(fitVolbox);
 window.addEventListener('pywebviewready', () => loadConfig(false));
+// Editable source-aware storyboards. Changes are saved before any generation.
+let boardState = null, boardPage = 0, boardDirty = false, boardBusy = false;
+const boardText = (ru, en) => L === 'ru' ? ru : en;
+function resetStoryboard() {
+  boardState = null; boardDirty = false; boardPage = 0;
+  if ($('board_panel')) $('board_panel').hidden = true;
+  if ($('review')) $('review').classList.remove('board-hidden');
+}
+function storyboardControls() {
+  const available = !!(reviewSourceProfile && reviewSourceProfile.montage) && !queueMode;
+  $('board_controls').hidden = queueMode;
+  $('board_create').disabled = !available || boardBusy;
+  $('board_restore').disabled = boardBusy;
+  $('board_cancel').hidden = !boardBusy;
+  $('board_create').textContent = boardText('Создать раскадровку', 'Create storyboard');
+  $('board_restore').textContent = boardText('Открыть сохранённую', 'Open saved');
+  $('board_show').hidden = !boardState;
+  $('board_show').textContent = boardText('К раскадровке', 'Storyboard');
+}
+function syncBoardPage() {
+  if (!boardState) return;
+  document.querySelectorAll('#board_rows [data-row]').forEach(card => {
+    const row = boardState.rows.find(r => r.id === card.dataset.row);
+    if (!row) return;
+    for (const field of ['narration', 'prompt', 'motion']) row[field] = card.querySelector(`[data-field="${field}"]`).value;
+    const source = card.querySelector('[data-field="source_shot"]').value;
+    row.source_shot = source === '' ? null : Number(source);
+    const seconds = card.querySelector('[data-field="duration"]').value;
+    row.duration = seconds === '' ? null : Number(seconds);
+  });
+}
+function markBoardDirty() {
+  syncBoardPage(); boardDirty = true;
+  $('board_status').textContent = boardText('Есть несохранённые изменения.', 'Unsaved changes.');
+}
+async function createStoryboard() {
+  if (boardBusy) return;
+  boardBusy = true; storyboardControls();
+  try {
+    const o = opts(); o.script = $('rv_script').value;
+    const r = await pywebview.api.prepare_storyboard(o);
+    if (!r.ok) throw new Error(r.error);
+    $('board_status').textContent = ''; $('scan').style.display = '';
+    $('scan_phase').textContent = boardText('Раскадровка', 'Storyboard');
+    $('btn_go').disabled = true; $('rv_script').disabled = true;
+    pollStoryboard();
+  } catch (e) { $('s_prep2').textContent = String(e); boardBusy = false; storyboardControls(); }
+}
+async function pollStoryboard() {
+  let pending = false;
+  try {
+    const st = await pywebview.api.get_state();
+    if (st.preparing) { pending = true; $('scan_sub').textContent = st.message || ''; setTimeout(pollStoryboard, 1200); return; }
+    if (st.cancelled) throw new Error(boardText('Подготовка остановлена.', 'Preparation cancelled.'));
+    if (st.error || !st.storyboard_id) throw new Error(st.error || 'No storyboard returned');
+    const r = await pywebview.api.get_storyboard(st.storyboard_id);
+    if (!r.ok) throw new Error(r.error);
+    boardState = r.board; boardPage = 0; boardDirty = false;
+    showStoryboard(); $('s_prep2').textContent = '';
+  } catch (e) { $('s_prep2').textContent = String(e); }
+  finally { if (!pending) { $('rv_script').disabled = false; $('scan').style.display = 'none'; $('btn_go').disabled = false; boardBusy = false; storyboardControls(); } }
+}
+async function restoreStoryboardFromAccess() {
+  source = 'script'; $('use_tts').checked = true;
+  renderReview(''); go(5);
+  await restoreStoryboard();
+}
+async function restoreStoryboard() {
+  if (boardBusy) return;
+  try {
+    const r = await pywebview.api.get_storyboard();
+    if (!r.ok) throw new Error(r.error);
+    boardState = r.board; boardPage = 0; boardDirty = false;
+    $('rv_script').value = boardState.script; updRvWords(); showStoryboard();
+    $('s_prep2').textContent = '';
+  } catch (e) { $('s_prep2').textContent = String(e); }
+}
+function showStoryboard() {
+  if (!boardState) return;
+  $('board_panel').hidden = false; $('review').classList.add('board-hidden');
+  renderStoryboard(); storyboardControls();
+}
+function hideStoryboard() {
+  syncBoardPage(); $('board_panel').hidden = true; $('review').classList.remove('board-hidden');
+}
+async function saveStoryboard() {
+  if (!boardState) return false;
+  syncBoardPage();
+  $('board_panel').inert = true;
+  try {
+    const r = await pywebview.api.save_storyboard(boardState.id, boardState.rows);
+    if (!r.ok) throw new Error(r.error);
+    boardState = r.board; boardDirty = false;
+    $('rv_script').value = boardState.script; updRvWords();
+    $('board_status').textContent = boardText('Сохранено. Генерация ещё не запускалась.', 'Saved. Generation has not started.');
+    return true;
+  } catch (e) { $('board_status').textContent = String(e); return false; }
+  finally { $('board_panel').inert = false; }
+}
+async function newStoryboardTake(rowId) {
+  if (boardBusy) return;
+  boardBusy = true;
+  try {
+    if (!await saveStoryboard()) return;
+    $('board_panel').inert = true;
+    const r = await pywebview.api.regenerate_storyboard_plan(boardState.id, rowId);
+    if (!r.ok) throw new Error(r.error);
+    boardState = r.board; renderStoryboard();
+    $('board_status').textContent = boardText('Этот план будет сгенерирован заново при следующем запуске. Остальные готовые планы сохранятся.', 'This plan will be regenerated on the next run. Other completed plans are retained.');
+  } catch (e) { $('board_status').textContent = String(e); }
+  finally { boardBusy = false; $('board_panel').inert = false; }
+}
+function turnBoardPage(delta) {
+  syncBoardPage(); boardPage = Math.max(0, Math.min(Math.ceil(boardState.rows.length / 20) - 1, boardPage + delta)); renderStoryboard();
+}
+function renderStoryboard() {
+  if (!boardState) return;
+  const rows = boardState.rows.slice(boardPage * 20, boardPage * 20 + 20);
+  $('board_count').textContent = boardText(`Планов: ${boardState.rows.length}. Страница ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`, `Plans: ${boardState.rows.length}. Page ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`);
+  $('board_rows').innerHTML = rows.map((r, i) => `<article class="board-row" data-row="${esc(r.id)}">
+    <div class="board-ref"><img alt="${boardText('Референс исходного плана', 'Source shot reference')}" data-reference="${esc(r.id)}"><strong>${boardText('План', 'Plan')} ${boardPage * 20 + i + 1}</strong>
+    <span class="board-confidence ${r.confidence === 'low' ? 'low' : ''}">${esc(({high:boardText('Уверенная привязка','Strong match'),medium:boardText('Проверьте привязку','Review match'),low:boardText('Нужно проверить','Needs review'),manual:boardText('Выбрано вручную','Manually selected')})[r.confidence] || r.confidence)}</span>
+    <small>${esc(r.reason)}</small><button class="ghost" data-take="${esc(r.id)}">${boardText('Новый вариант этого плана', 'New take for this plan')}</button></div>
+    <div class="board-edit"><label>${boardText('Фраза озвучки', 'Narration')}<textarea data-field="narration">${esc(r.narration)}</textarea></label>
+    <label>${boardText('Исходный референс', 'Source reference')}<select data-field="source_shot"><option value="">${boardText('Новый кадр без референса', 'New shot without a reference')}</option>${boardState.sources.map(s => `<option value="${s.id}"${s.id === r.source_shot ? ' selected' : ''}>${s.id + 1}. ${esc(s.description)}</option>`).join('')}</select></label>
+    <label>${boardText('Что показать — можно изменить', 'Visual description — editable')}<textarea data-field="prompt">${esc(r.prompt)}</textarea></label>
+    <label>${boardText('Движение камеры и объектов', 'Camera and subject motion')}<input type="text" data-field="motion" value="${esc(r.motion)}"></label>
+    <label>${boardText('Секунд — пусто: по речи', 'Seconds — blank: follow speech')}<input type="number" min="0.5" max="30" step="0.1" data-field="duration" value="${r.duration ?? ''}" placeholder="${boardText('авто', 'auto')}"></label></div></article>`).join('');
+  $('board_rows').querySelectorAll('textarea,input,select').forEach(el => el.addEventListener('input', markBoardDirty));
+  $('board_rows').querySelectorAll('select').forEach(el => el.addEventListener('change', () => { markBoardDirty(); refreshBoardReferences(); }));
+  $('board_rows').querySelectorAll('[data-take]').forEach(el => el.addEventListener('click', () => newStoryboardTake(el.dataset.take)));
+  refreshBoardReferences();
+}
+async function refreshBoardReferences() {
+  if (!boardState) return;
+  const boardId = boardState.id;
+  const requests = Array.from(document.querySelectorAll('#board_rows [data-reference]'));
+  for (let offset = 0; offset < requests.length; offset += 4) {
+    await Promise.all(requests.slice(offset, offset + 4).map(async img => {
+      const row = boardState && boardState.rows.find(r => r.id === img.dataset.reference);
+      if (!row || row.source_shot === null) { img.removeAttribute('src'); return; }
+      const shot = row.source_shot;
+      try {
+        const url = await pywebview.api.storyboard_reference(boardId, shot);
+        const latest = boardState && boardState.rows.find(r => r.id === img.dataset.reference);
+        if (url && boardState.id === boardId && latest && latest.source_shot === shot && img.isConnected) img.src = url;
+      } catch (e) { /* The text editor remains usable if a thumbnail is missing. */ }
+    }));
+  }
+}
+async function storyboardPreview() {
+  if (!boardState || boardBusy) return;
+  boardBusy = true; $('board_preview').disabled = true;
+  try {
+    if (!await saveStoryboard()) return;
+    const o = opts(); o.source = 'script'; o.script = boardState.script; o.rewrite.on = false;
+    o.storyboard_id = boardState.id; o.source_profile_id = null; o.mode = 'video'; o.motion = false;
+    o.preview = {start: Number($('preview_start').value), seconds: Number($('preview_seconds').value)};
+    await start(o);
+  } finally { boardBusy = false; $('board_preview').disabled = false; }
+}
+
 </script>
 </body>
 </html>

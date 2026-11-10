@@ -1,0 +1,13 @@
+node_modules/
+*.tsbuildinfo
+dist/
+.env
+.env.local
+.runtime/
+public/projects/
+*.sqlite*
+*.log
+backups/
+release/
+remotion-cache/
+test-results/

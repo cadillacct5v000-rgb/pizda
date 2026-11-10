@@ -104,6 +104,14 @@ MODES = ("images", "video", "mixed")  # mixed — через одну: виде�
 TRANSITION = 0.5  # секунд на переход в моушн-режиме
 SCENE_MIN, SCENE_MAX, SCENE_TARGET = 3.0, 7.0, 5.0
 FPS = 25
+
+
+def validate_fps(value):
+    if isinstance(value, bool) or str(value) not in ("25", "30", "60"):
+        raise ValueError("Частота кадров: выберите 25, 30 или 60 FPS.")
+    return int(value)
+
+
 W, H = 1920, 1080
 INLINE_AUDIO_LIMIT = 15 * 1024 * 1024
 FG_CHUNK_SECONDS = 1200  # fast-gen: до 25 МБ на файл, режем по 20 минут
@@ -2335,11 +2343,12 @@ def render_scene_clip(img_path, i, duration, out_path):
     return out_path
 
 
-def render_video_clip(src_mp4, duration, out_path, retime=False):
+def render_video_clip(src_mp4, duration, out_path, retime=False, trim_start=0., full_duration=None):
     """Подогнать сгенерированный клип под длительность сцены: 1920x1080, 25 к/с, без звука.
     Если клип короче сцены — последний кадр держится до конца."""
     duration = max(1 / FPS, float(duration))
     signature = _clip_signature(src_mp4, duration, "video:retime" if retime else "video")
+    signature.update(trim_start=trim_start, full_duration=full_duration)
     if _clip_cached(out_path, signature):
         return out_path
     tmp = out_path + ".tmp.mp4"
@@ -2348,7 +2357,9 @@ def render_video_clip(src_mp4, duration, out_path, retime=False):
         source_duration = audio_duration(src_mp4)
         if not math.isfinite(source_duration) or source_duration <= 0:
             raise ValueError("Generated video has no valid duration")
-        timing = f"setpts=(PTS-STARTPTS)*{duration / source_duration:.9f},"
+        timing = f"setpts=(PTS-STARTPTS)*{(full_duration or duration) / source_duration:.9f},"
+        if trim_start or full_duration is not None:
+            timing += f"trim=start={trim_start:.9f}:duration={duration:.9f},setpts=PTS-STARTPTS,"
     vf = (timing + f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1,fps={FPS},"
           f"tpad=stop_mode=clone:stop_duration={duration + 1:.3f}")
     run_ffmpeg(["-i", src_mp4, "-vf", vf, "-t", f"{duration:.3f}", "-an",
@@ -2370,17 +2381,23 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
 
     grouped = motion and n > XFADE_GROUP
 
+    positions = {s["index"]: position for position, s in enumerate(scenes)}
+
     def one(s):
         check_cancel()
         i = s["index"]
+        position = positions[i]
         dur = s["duration"] + extra  # каждый клип длиннее на переход: следующий начинается на T раньше и заканчивается вовремя
-        tail = grouped and ((i + 1) % XFADE_GROUP == 0 or i == n - 1)  # последний клип группы: ещё +T, его съест переход второго уровня
+        tail = grouped and ((position + 1) % XFADE_GROUP == 0 or position == n - 1)  # последний клип группы: ещё +T, его съест переход второго уровня
         if tail:
             dur += TRANSITION
         suffix = "_x" if tail else ""
         if i in videos:
             clip = os.path.join(clips_dir, f"{i:04d}_v{suffix}.mp4")
-            render_video_clip(videos[i], dur, clip, retime="source_shot" in s)
+            if "preview_offset" in s:
+                render_video_clip(videos[i], dur, clip, retime=True, trim_start=s["preview_offset"], full_duration=s["full_duration"])
+            else:
+                render_video_clip(videos[i], dur, clip, retime="source_shot" in s)
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
             render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
@@ -2389,7 +2406,7 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
     done = 0
     clips = [None] * n
     with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(one, s): s["index"] for s in scenes}
+        futs = {ex.submit(one, s): position for position, s in enumerate(scenes)}
         for f in cf.as_completed(futs):
             clips[futs[f]] = f.result()
             done += 1
@@ -2995,10 +3012,10 @@ def managed_pools():
             pool.shutdown(wait=True, cancel_futures=True)
 
 
-def visual_job_dir(job_dir, style_key, quality, use_refs, hd):
+def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None):
     profile = read_json(os.path.join(job_dir, "source_profile.json"))
     identity = {"style": style_key, "quality": quality, "refs": bool(use_refs), "hd": bool(hd),
-                "profile": profile, "schema": PROMPT_SCHEMA}
+                "profile": profile, "schema": PROMPT_SCHEMA, "storyboard": board_id}
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
     directory = os.path.join(job_dir, "visual_" + digest)
     os.makedirs(directory, exist_ok=True)
@@ -3009,8 +3026,8 @@ def visual_job_dir(job_dir, style_key, quality, use_refs, hd):
 
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False, source_profile=None, reset_cancel=True):
-    global FASTGEN_QUALITY, HD_IMAGES
+               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None):
+    global FASTGEN_QUALITY, HD_IMAGES, FPS
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
     if reset_cancel:
@@ -3018,6 +3035,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     clear_wait()
     take_redo()
     cfg = load_config()
+    FPS = validate_fps(render_fps if render_fps is not None else cfg.get("render_fps", 25))
     providers = normalize_providers(provider or cfg.get("image_providers") or cfg.get("image_provider"))
     if mode not in MODES:
         raise SystemExit(f"Неизвестный режим: {mode}")
@@ -3025,6 +3043,18 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     FASTGEN_QUALITY = (fastgen_quality or cfg.get("quality") or cfg.get("fastgen_quality") or "speed")
     if FASTGEN_QUALITY not in IMAGE_CHAINS:
         FASTGEN_QUALITY = "speed"
+    if storyboard:
+        import storyboard as sb
+        if (script_text or "").strip() != storyboard["script"].strip():
+            raise sb.StoryboardError("Сценарий изменился. Сохраните новую раскадровку перед генерацией.")
+        source_profile = storyboard["profile"]
+        source_shots = {item["index"]: item for item in source_profile["montage"]["shots"]}
+        for row in storyboard["rows"]:
+            shot = source_shots.get(row["source_shot"])
+            if row["source_shot"] is not None and (not shot or not os.path.isfile(shot.get("reference_frame", ""))):
+                raise sb.StoryboardError("Референсы исходника больше недоступны. Повторите анализ YouTube перед генерацией.")
+    if preview_range is not None and not storyboard:
+        raise ValueError("Предпросмотр требует сохранённой раскадровки.")
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite, source_profile)
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
@@ -3062,21 +3092,37 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     root_job_dir = job_dir
     profile = read_json(os.path.join(job_dir, "source_profile.json"))
     source_montage = bool(profile and profile.get("montage"))
-    if source_montage:
+    if storyboard:
+        import storyboard as sb
+        aligned, score = sb.align(storyboard, tr["words"], duration, FPS)
+        audio_path, timed_words, aligned = sb.retime_audio(audio_path, tr["words"], aligned, job_dir)
+        tr = {**tr, "words": timed_words}
+        duration = aligned[-1]["end"]
+        scenes = sb.scenes(storyboard, aligned, FPS)
+        mode, motion = "video", False
+        progress("scenes", len(scenes), len(scenes), f"раскадровка привязана к речи: совпадение текста {score:.0%}")
+    elif source_montage:
         import montage
         scenes = montage.map_scenes(profile, tr["words"], duration, FPS)
         mode = "video"
         motion = False
         progress("scenes", len(scenes), len(scenes), "монтаж исходника: все планы генерируются как видео, без случайных переходов")
-    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd)
+    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None)
     LAST_JOB_DIR = job_dir
     base += "_" + visual_id
     out_mp4 = os.path.join(out_dir, base + ".mp4")
     if os.path.isfile(os.path.join(root_job_dir, "script.txt")):
         shutil.copyfile(os.path.join(root_job_dir, "script.txt"), os.path.join(out_dir, base + ".txt"))
     scenes = read_json(os.path.join(job_dir, "scenes.json")) or scenes
+    assembly_scenes = None
     with managed_pools() as pools:
-        style = build_style(llm, tr["text"], job_dir, progress, style_key, style_hint)
+        if storyboard:
+            style = {"style_key": "board-source-" + sb.digest(profile), "style": profile["visual_style"]["description"],
+                     "style_hint": json.dumps(profile["visual_style"], ensure_ascii=False), "characters": []}
+            for scene in scenes:
+                scene.update(raw_prompt=scene["source_redesign"], style_key=style["style_key"], schema=PROMPT_SCHEMA)
+        else:
+            style = build_style(llm, tr["text"], job_dir, progress, style_key, style_hint)
         refs, ref_pool = {}, None
         if use_refs:
             # портреты героев зависят только от библии — рисуем их, пока пишутся промпты сцен (сообщения пока в журнал)
@@ -3099,7 +3145,24 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
                 progress("refs", 0, 0, "дорисовываю портреты героев")
             refs = ref_fut.result()
             ref_pool.shutdown(wait=True)
+        if storyboard:
+            import storyboard_cache
+            asset_directory = os.path.join(data_dir(), "jobs", "storyboard-assets", sb.digest([profile, FASTGEN_QUALITY, hd, providers]))
+            if preview_range is not None:
+                scenes, assembly_scenes, audio_path, captions = sb.preview(scenes, audio_path, tr["words"],
+                    preview_range["start"], preview_range["seconds"], job_dir)
+                tr = {**tr, "words": captions}
+                out_dir = os.path.join(out_dir, "previews")
+                os.makedirs(out_dir, exist_ok=True)
+                base += "_preview_" + sb.digest(preview_range)[:8]
+                out_mp4 = os.path.join(out_dir, base + ".mp4")
+                progress("start", 0, 0, f"предпросмотр: видео только для выбранного отрезка ({len(scenes)} фрагментов)")
+        if storyboard:
+            write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
+            progress("scenes", len(scenes), len(scenes), "планы текущей сборки")
         drop_failed_images(scenes, job_dir)
+        if storyboard:
+            storyboard_cache.restore(scenes, job_dir, asset_directory)
         pre = Prerender(scenes, os.path.join(job_dir, "images"), job_dir, mode, motion, video_first)
         pools.append(pre.pool)
         overlap = VideoOverlap(ctx, scenes, job_dir, progress, mode, video_first) if (mode in ("video", "mixed") or video_first) else None
@@ -3114,10 +3177,14 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         videos = overlap.result() if overlap else {}
         pre.wait()
         videos = redo_pass(ctx, scenes, style, job_dir, progress, refs, mode, motion, video_first, videos)
+    if storyboard:
+        storyboard_cache.publish(scenes, job_dir, asset_directory)
     if source_montage:
         missing = [s["index"] + 1 for s in scenes if s["index"] not in videos]
         if missing:
             raise RuntimeError(f"Монтаж исходника: не получены видео для {len(missing)} планов. Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
+    if assembly_scenes is not None:
+        scenes = assembly_scenes
     if subtitles:
         raw_mp4 = os.path.join(job_dir, "nosubs.mp4")
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, raw_mp4, progress, motion=motion)
@@ -3133,7 +3200,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         progress("subtitles", 1, 1, "субтитры наложены, .srt сохранён в папке output/subtitles")
     else:
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=motion)
-    if cfg.get("speed_copies"):
+    if cfg.get("speed_copies") and preview_range is None:
         try:
             make_speed_copies(out_mp4, progress)
         except Cancelled:

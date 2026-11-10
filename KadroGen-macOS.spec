@@ -28,7 +28,7 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='KadroGen',
           codesign_identity=None, entitlements_file=None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='KadroGen')
 app = BUNDLE(coll, name='KadroGen.app', bundle_identifier='org.kadrogen.desktop',
-             version='1.8.1', info_plist={
+             version='1.9.0', info_plist={
                  'NSHighResolutionCapable': True,
                  'CFBundleDisplayName': 'Kadro.Gen',
              })
