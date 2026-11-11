@@ -3122,6 +3122,8 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     if preview_range is not None and not storyboard:
         raise ValueError("Предпросмотр требует сохранённой раскадровки.")
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite, source_profile)
+    if (read_json(os.path.join(job_dir, "source_profile.json")) or {}).get("visual_style"):
+        style_name = "Стиль исходного ролика"
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
     duration = audio_duration(audio_path)
@@ -3165,14 +3167,13 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         tr = {**tr, "words": timed_words}
         duration = aligned[-1]["end"]
         scenes = sb.scenes(storyboard, aligned, FPS)
-        mode, motion = "video", False
+        motion = False
         progress("scenes", len(scenes), len(scenes), f"раскадровка привязана к речи: совпадение текста {score:.0%}")
     elif source_montage:
         import montage
         scenes = montage.map_scenes(profile, tr["words"], duration, FPS)
-        mode = "video"
         motion = False
-        progress("scenes", len(scenes), len(scenes), "монтаж исходника: все планы генерируются как видео, без случайных переходов")
+        progress("scenes", len(scenes), len(scenes), f"монтаж исходника: режим {mode}, длительности и склейки по исходным планам")
     job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None)
     LAST_JOB_DIR = job_dir
     base += "_" + visual_id
@@ -3246,7 +3247,8 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     if storyboard:
         storyboard_cache.publish(scenes, job_dir, asset_directory)
     if source_montage:
-        missing = [s["index"] + 1 for s in scenes if s["index"] not in videos]
+        required = animated_scenes(scenes, mode, video_first)
+        missing = [s["index"] + 1 for s in required if s["index"] not in videos]
         if missing:
             raise RuntimeError(f"Монтаж исходника: не получены видео для {len(missing)} планов. Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
     if assembly_scenes is not None:

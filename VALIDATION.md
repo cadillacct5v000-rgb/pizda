@@ -220,3 +220,21 @@ API/model distinction, partial/refused handling, recovery after repair timeout,
 secret redaction, native browser/project roundtrip and prior cache regressions.
 No live paid request was made; the user's discarded 1.9.8 reply cannot establish
 whether its JSONDecodeError was in the transport envelope or assistant content.
+
+## 1.9.10: explicit media mode and automatic source style
+
+Removed storyboard/source-montage forced video overrides in review, preview,
+forecast and rendering. Requested image/mixed/video mode is retained; existing
+explicit video_first selection still requests intro clips. Strict missing-video
+validation applies only to the selected animated scenes, never silently replacing
+failed requested clips. Source cuts keep motion-design transitions disabled.
+Source-style validation accepts a saved source profile without manual custom
+style text; the UI sends the profile ID independently of the rewrite checkbox.
+Saved boards expose their visual style (not profile paths) for read-only review.
+Source prompts/references remain in effect and no preset style needs to be chosen.
+Tests render real FFmpeg image-only preview/full MP4 with video access disabled,
+verify no video requests and actual source prompt/reference input; image assets
+are reused when switching to video. Mixed/video still fail when required clips
+are unavailable. API and forecast tests reproduce custom-style/profile and image
+mode settings; browser E2E verifies readonly source style and images mode in both
+preview/full launch with rewrite unchecked. No paid live provider calls.

@@ -32,7 +32,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.9.9-dev"
+VERSION = "1.9.10-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -181,12 +181,10 @@ def estimate_plan(opts):
     if profile and profile.get("montage"):
         import montage
         scenes = len(montage.map_scenes(profile, [], duration, pipeline.FPS))
-        mode = "video"
     if opts.get("storyboard_id"):
         board = load_storyboard(opts["storyboard_id"])
         scene_durations = [row["duration"] or max(.5, len(row["narration"].split()) / 2.4) for row in board["rows"]]
         scenes = sum(max(1, math.ceil(d / 10)) for d in scene_durations)
-        mode = "video"
     fg = "fastgen" in providers
     limit, threads, vlimit = fg_limits(cfg.get("fastgen_api_key", "")) if fg and cfg.get("fastgen_api_key") else (0, 0, 0)
     vf = _vf(opts.get("video_first", cfg.get("video_first", 0)))
@@ -1452,9 +1450,9 @@ class Api:
         mode, style, subtitles = opts.get("mode", "images"), style_key(opts.get("style"), pipeline.DEFAULT_STYLE), bool(opts.get("subtitles"))
         use_refs = (load_cfg().get("quality") == "quality")
         custom_style = " ".join(str(opts.get("custom_style") or "").split())
-        if style == pipeline.CUSTOM_STYLE and not custom_style and not board:
+        if style == pipeline.CUSTOM_STYLE and not custom_style and not source_profile:
             return {"ok": False, "error": "Опишите свой стиль на экране «Режим» или выберите стиль из списка."}
-        motion = bool(opts.get("motion"))
+        motion = bool(opts.get("motion")) and not bool(source_profile and source_profile.get("montage"))
         try:
             render_fps = pipeline.validate_fps(opts.get("render_fps", load_cfg().get("render_fps", 25)))
         except ValueError as error:
@@ -1517,6 +1515,7 @@ class Api:
                 return {"ok": False, "error": "Раскадровка ещё создаётся." if STATE.get('preparing') else "Сохранённой раскадровки пока нет. Нажмите «Создать раскадровку»."}
             board = load_storyboard(board_id)
             public = {k: copy.deepcopy(board[k]) for k in ("id", "script", "rows")}
+            public["visual_style"] = copy.deepcopy(board["profile"].get("visual_style") or {})
             public["sources"] = [{"id": shot["index"], "description": shot["description"][:250]}
                                  for shot in board["profile"]["montage"]["shots"]]
             return {"ok": True, "board": public}

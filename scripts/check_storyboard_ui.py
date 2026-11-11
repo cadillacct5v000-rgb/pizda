@@ -42,6 +42,7 @@ def run_job(*args):
  with app.LOCK:
   app.STATE.update(running=False,stage='done',done=1,total=1,result=str(root/'fixture.mp4'),ended_at=time.time())
 app.run_job=run_job
+app.fg_limits=lambda key:(500,10,0)
 api=app.Api()
 docx_file=root/'fixture.docx'
 with zipfile.ZipFile(docx_file,'w') as archive:
@@ -67,7 +68,11 @@ with sync_playwright() as p:
  page.goto((ROOT/'ui.html').as_uri())
  page.evaluate("window.dispatchEvent(new Event('pywebviewready'))")
  page.wait_for_function('typeof STYLES !== "undefined" && STYLES.length > 0')
- page.evaluate('(data)=>{reviewSourceProfile=data.profile;reviewProfileId="test-profile";source="script";cur=5; document.querySelectorAll(".screen").forEach(e=>e.classList.remove("active"));document.getElementById("screen5").classList.add("active");renderReview(data.script);}',{'profile':profile,'script':script})
+ page.evaluate('(data)=>{reviewSourceProfile=data.profile;reviewProfileId="test-profile";source="script";$("use_rw").checked=false;styleKey="custom";$("custom_style").value="";document.querySelector("input[name=mode][value=images]").checked=true;cur=5; document.querySelectorAll(".screen").forEach(e=>e.classList.remove("active"));document.getElementById("screen5").classList.add("active");renderReview(data.script);}',{'profile':profile,'script':script})
+ assert page.locator('#rv_mode').input_value()=='images'
+ assert page.locator('#rv_style').is_disabled()
+ assert 'Стиль исходного ролика' in page.locator('#rv_style').text_content()
+ assert page.evaluate('opts().source_profile_id')=='test-profile'
  page.locator('#board_create').click()
  page.wait_for_selector('.board-row',timeout=20000)
  assert page.locator('.board-row').count()==2
@@ -93,6 +98,7 @@ with sync_playwright() as p:
  page.wait_for_selector('#screen6.active')
  page.wait_for_selector('#btn_board_return:not([hidden])')
  assert len(launched)==1
+ assert launched[-1][2]=='images'
  assert launched[-1][-2]=={'start':2.,'seconds':20.}
  assert launched[-1][-3]['script'].startswith('A redesigned')
  assert launched[-1][-1] in (25,30,60)
@@ -102,6 +108,7 @@ with sync_playwright() as p:
  page.wait_for_selector('#screen6.active')
  page.wait_for_function('document.getElementById("btn_again").disabled === false')
  assert len(launched)==2 and launched[-1][-2] is None
+ assert launched[-1][2]=='images'
  page.locator('#btn_board_return').click()
  page.wait_for_selector('#screen5.active')
  page.evaluate('hideStoryboard()')
@@ -119,6 +126,11 @@ with sync_playwright() as p:
  page.locator('[data-open-project]').click()
  page.wait_for_selector('#screen5.active')
  assert page.evaluate('boardState.script')=='Imported narration for the forest scene.'
+ page.evaluate('async () => {reviewSourceProfile=null;reviewProfileId=null;resetStoryboard();await restoreStoryboard();}')
+ assert page.locator('#rv_style').is_disabled()
+ assert 'Стиль исходного ролика' in page.locator('#rv_style').text_content()
+ assert page.locator('#rv_mode').input_value()=='images'
+
  assert page.locator('input[name=prov][value=syntx]').count()==1
  page.evaluate("() => { $('use_rw').checked=true; rwSrc='youtube'; analyzeVideo=true; analysisEngine='fastgen'; go(4); }")
  page.wait_for_selector('#screen4.active #analysis_access_check')

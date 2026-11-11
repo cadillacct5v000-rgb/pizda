@@ -236,7 +236,7 @@ def test_complete_montage_pipeline_encodes_video_and_audio(tmp_path, monkeypatch
     monkeypatch.setattr(pipeline, 'transcribe', lambda *a,**k:tr)
     monkeypatch.setattr(pipeline, 'build_style', lambda *a:{'style_key':'test','style':'cinema','style_hint':'cinema'})
     monkeypatch.setattr(pipeline.LLM, 'chat_json', lambda *a,**k:{'scenes':[{'index':0,'prompt':'new one'},{'index':1,'prompt':'new two'}]})
-    output = pipeline.make_video(str(audio), out_dir=str(tmp_path/'output'), provider='fastgen')
+    output = pipeline.make_video(str(audio), out_dir=str(tmp_path/'output'), provider='fastgen', mode='video')
     r=subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',output],capture_output=True,check=True)
     data=json.loads(r.stdout)
     assert {s['codec_type'] for s in data['streams']} == {'audio','video'}

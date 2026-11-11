@@ -226,7 +226,7 @@ def test_preview_then_full_then_single_edit_reuses_completed_generations(profile
     monkeypatch.setattr(pipeline,'make_text_engine',lambda *a:('fastgen',api,'fastgen',api))
     def forbidden(*a,**kw):raise AssertionError('An edited storyboard must not be overwritten by another LLM prompt pass')
     monkeypatch.setattr(pipeline.LLM,'chat_json',forbidden)
-    kwargs={'audio_path':audio,'script_text':original['script'],'provider':'fastgen','out_dir':str(tmp_path/'output'),'storyboard':original}
+    kwargs={'audio_path':audio,'script_text':original['script'],'provider':'fastgen','out_dir':str(tmp_path/'output'),'storyboard':original,'mode':'video'}
     preview_path=pipeline.make_video(**kwargs,preview_range={'start':3.2,'seconds':2.})
     assert Path(preview_path).parent.name=='previews'
     assert duration(preview_path)==pytest.approx(2.,abs=.15)
@@ -281,3 +281,72 @@ def test_successful_publish_replaces_corrupt_cached_image(profile,tmp_path):
     broken=assets/('i_'+cache.image_key(scene[0])+'.png');broken.write_bytes(b'broken')
     cache.publish(scene,job,assets)
     with Image.open(broken) as image:assert image.size==(32,32)
+
+
+@pytest.mark.parametrize('mode,missing', [('images',0),('mixed',1),('video',2)])
+def test_storyboard_honours_images_and_source_style_without_video_access(profile,audio,tmp_path,monkeypatch,mode,missing):
+    original=board(profile)
+    job=tmp_path/'job';job.mkdir();pipeline.write_json(str(job/'source_profile.json'),profile)
+    api=Mock();api.usage.return_value={'capabilities':{'video.generate':False},'account_limits':{}}
+    calls=[]
+    def image(scene,path,progress,refs):
+        calls.append((dict(scene),list(refs)))
+        Image.new('RGB',(320,180),'green').save(path)
+        return 'fixture'
+    ctx={'api':api,'providers':['fastgen'],'bases':['fastgen'],'fallback':[],
+         'gates':{'fastgen':Mock(threads=1)},'image_gen':{'fastgen':image}}
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'style':'custom','custom_style':'','quality':'speed'})
+    monkeypatch.setattr(pipeline,'resolve_source',lambda *a:(audio,str(job),'fixture'))
+    monkeypatch.setattr(pipeline,'transcribe',lambda *a:{'text':original['script'],'words':words()})
+    monkeypatch.setattr(pipeline,'make_context',lambda *a:ctx)
+    monkeypatch.setattr(pipeline,'make_text_engine',lambda *a:('fastgen',api,'fastgen',api))
+    def forbidden(*args,**kwargs):raise AssertionError('Source storyboard style must not be replaced by manual style generation')
+    monkeypatch.setattr(pipeline.LLM,'chat_json',forbidden)
+    kwargs={'audio_path':audio,'script_text':original['script'],'provider':'fastgen','out_dir':str(tmp_path/'output'),
+            'storyboard':original,'style_key':'custom','mode':mode,'video_first':0}
+    if missing:
+        with pytest.raises(RuntimeError,match=f'не получены видео для {missing} планов'):
+            pipeline.make_video(**kwargs)
+    else:
+        path=pipeline.make_video(**kwargs,preview_range={'start':0,'seconds':2})
+        assert duration(path)==pytest.approx(2,abs=.15)
+        api.usage.assert_not_called()
+        full=pipeline.make_video(**kwargs)
+        assert duration(full)==pytest.approx(6,abs=.15)
+        before=len(calls)
+        with pytest.raises(RuntimeError,match='не получены видео для 2 планов'):
+            pipeline.make_video(**{**kwargs,'mode':'video'})
+        assert len(calls)==before
+    api.run.assert_not_called()
+    assert calls
+    for scene,refs in calls:
+        assert profile['visual_style']['description'] in scene['prompt']
+        expected=profile['montage']['shots'][scene['source_shot']]['reference_frame']
+        assert refs[0]==expected
+
+
+def test_source_profile_custom_style_does_not_require_manual_description(profile,monkeypatch):
+    app.save_cfg({'fastgen_api_key':'fixture','stt_engine':'fastgen','llm_engine':'fastgen','source':'script','tts_service':'edge'})
+    app.STATE.update(source_profile=profile,source_profile_id='source-profile')
+    started=[]
+    class Thread:
+        def __init__(self,**kwargs):started.append(kwargs)
+        def start(self):pass
+    monkeypatch.setattr(app.threading,'Thread',Thread)
+    result=app.Api().start({'source':'script','script':'Original narration.','tts':'edge','providers':['fastgen'],
+                            'style':'custom','custom_style':'','source_profile_id':'source-profile','mode':'images','motion':True})
+    assert result['ok'] and len(started)==1
+    assert started[0]['args'][2]=='images'
+    assert started[0]['args'][6] is False
+    assert started[0]['args'][-4]['visual_style']==profile['visual_style']
+
+
+def test_storyboard_forecast_uses_selected_mode_and_zero_video_access(profile,monkeypatch):
+    original=board(profile);app.store_storyboard(original)
+    app.save_cfg({'fastgen_api_key':'fixture'})
+    monkeypatch.setattr(app,'fg_limits',lambda key:(500,10,0))
+    opts={'source':'script','script':original['script'],'providers':['fastgen'],'storyboard_id':original['id'],'video_first':0}
+    images=app.estimate_plan({**opts,'mode':'images'})
+    video=app.estimate_plan({**opts,'mode':'video'})
+    assert images['clips']==0 and images['video_off'] is False
+    assert video['clips']==2 and video['video_off'] is True
