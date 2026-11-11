@@ -725,6 +725,10 @@ def run_storyboard(script, profile, cfg):
         if engine == "fastgen":
             client = pipeline.LLM(engine, FastGen(key), cfg.get("llm_model"))
             client.max_limit_waits = 2
+            client.max_attempts = 2
+            client.retry_network_errors = False
+            client.request_timeout = (15,180)
+            client.report_requests = True
             client.progress = lambda stage, done, total, message: transport(message)
         elif engine in ("openai", "elysium"):
             client = pipeline.LLM(engine, pipeline.OpenAIClient(key, provider=engine, stream=True, progress=transport), cfg.get(engine + "_model"))

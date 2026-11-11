@@ -77,3 +77,14 @@ def test_no_saved_board_is_actionable_not_invalid_identifier(monkeypatch):
     assert not result['ok'] and 'Сохранённой раскадровки пока нет' in result['error']
     monkeypatch.setitem(app.STATE,'preparing',True)
     assert app.Api().get_storyboard()['error']=='Раскадровка ещё создаётся.'
+
+
+def test_storyboard_fastgen_network_timeout_is_not_replayed(monkeypatch):
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    monkeypatch.setattr(pipeline,'clear_wait',lambda *args:None)
+    api=Mock();api.s.post.side_effect=requests.ReadTimeout('response lost')
+    client=pipeline.LLM('fastgen',api);client.retry_network_errors=False;client.request_timeout=(15,180)
+    with pytest.raises(RuntimeError,match='ReadTimeout.*Готовые пачки сохранены'):
+        client.chat_json('system','user')
+    assert api.s.post.call_count==1
+    assert api.s.post.call_args.kwargs['timeout']==(15,180)

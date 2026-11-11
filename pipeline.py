@@ -612,6 +612,10 @@ class LLM:
             time.sleep(1)
 
     max_limit_waits = 70
+    max_attempts = 4
+    retry_network_errors = True
+    request_timeout = 300
+    report_requests = False
     fallback = None  # запасная модель (Claude/OpenAI по своему ключу), если у fast-gen кончился часовой лимит токенов
 
     def chat_json(self, system, user, max_tokens=4000):
@@ -624,14 +628,17 @@ class LLM:
             return self.api.chat_json(system + "\nОтвечай только JSON, без пояснений.", user, model=self.model, max_tokens=max_tokens)
         last = None
         attempt, limit_waits, limit = 0, 0, max_tokens
-        while attempt < 4:
+        while attempt < self.max_attempts:
             check_cancel()
+            request_started = time.monotonic()
             try:
+                if self.report_requests and self.progress:
+                    self.progress('prepare',0,0,'ожидаю ответ Fast-gen на текущую пачку')
                 r = self.api.s.post(BASE_URL + "/v1/chat/completions", json={
                     "model": self.model, "temperature": 0.7, "max_tokens": limit,
                     "messages": [{"role": "system", "content": system + "\nОтвечай только JSON, без пояснений."},
                                  {"role": "user", "content": user}],
-                }, timeout=300)
+                }, timeout=self.request_timeout)
                 if r.status_code == 429 and self.fallback is not None:
                     # лимит токенов fast-gen кончился, а у пользователя есть свой ключ Claude/OpenAI — не ждём час, переходим
                     self._switched = True
@@ -675,6 +682,11 @@ class LLM:
                 clear_wait("llm")
                 return out
             except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
+                if not self.retry_network_errors:
+                    clear_wait('llm')
+                    elapsed = max(0,round(time.monotonic()-request_started))
+                    raise RuntimeError(f'Fast-gen · {type(e).__name__} · {elapsed} с. Ответ текущей пачки не получен или не разобран. '
+                                       'Автоматического повтора нет; результат и списание неизвестны. Готовые пачки сохранены.') from e
                 last = str(e)
                 attempt += 1
                 if attempt >= 2 and self.model != DEFAULT_LLM_FALLBACK and DEFAULT_LLM_FALLBACK:

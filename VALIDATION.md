@@ -193,3 +193,8 @@ OpenAI-compatible four network-retry path have both been addressed for storyboar
 Tests reproduce 197 passages with failure at 193–197 and prove the first 192 are
 not queried again; test quota cap/status, stream completion/no retry, missing-board
 messages, stale-error reset, and browser storyboard/project roundtrip.
+
+Fast-gen storyboard requests also disable the generic four-attempt network/JSON
+retry loop: connect/read timeout is 15/180 seconds, transport/parse ambiguity is
+terminal for that batch attempt, and explicit HTTP failures get at most two
+attempts. Request waiting is visible. Other pipeline LLM clients retain defaults.
