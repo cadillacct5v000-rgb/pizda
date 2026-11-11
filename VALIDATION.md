@@ -119,6 +119,22 @@ Video Flow: 17 node:test проверок, oxlint, TypeScript и production buil
 
 Проверены ограниченные повторы HTTP 503, Retry-After, запрет раннего повтора при длинном Retry-After, отсутствие автоматического повторного POST при потерянном ответе, кэширование только валидных ответов, инвалидирование при смене картинки и восстановление полного анализа 17 кадров после сбоя второй пачки без повтора первой. Общий набор 233 теста +13 подтестов прошёл; дополнительный интеграционный тест возобновления также прошёл. Сообщение о 17 кадрах явно указывает обзор и следующий разбор склеек в montage-режиме.
 
-## 1.9.4 — квоты Gemini и пакетный анализ планов
+## 1.9.5 — квоты Gemini и пакетный анализ планов
 
 До шести планов в одном запросе: по три кадра каждого плана, ID проверяются строго, перестановка ответов допустима. Индивидуальные результаты прошлых версий сохраняются. Пакет записывается атомарно перед отдельными файлами для восстановления после прерывания. Добавлен общий разбор Google QuotaFailure/RetryInfo в анализе кадров и GeminiClient для текстов/QA. Суточная квота и квота 0 не повторяются автоматически, минутные ограничения учитывают Retry-After и retryDelay; ключи удаляются из сообщений. Проверки включают 13 планов/39 кадров за 3 запроса и отсутствие повторного API-вызова после восстановления.
+
+## 1.9.5: Elysium gateway and connection diagnostics
+
+Elysium is a separate provider using its documented OpenAI-compatible
+`https://elysiumai.garden/v1/chat/completions` endpoint and Bearer authentication.
+Text scenes, rewriting, storyboard creation, vision QA and source analysis route
+through it without replacing direct OpenAI/Google/Anthropic credentials.
+Model discovery uses GET /models and supports Google/Anthropic pagination;
+listing models is independent of a small billable generation check.
+Gateway billing 429 failures stop immediately. Provider errors identify server,
+model and status, redact secrets, and explain key rejection versus billing.
+The UI shares a provider key across duplicate fields, preserves server model IDs,
+and shows custom API addresses even for vision-only provider use.
+Mocked contract tests and browser E2E cover these paths. A live paid Elysium
+request has not been performed; account/model/vision entitlement is not verified.
+Reference: https://elysiumai.garden/docs and /docs/api/chat-completions.

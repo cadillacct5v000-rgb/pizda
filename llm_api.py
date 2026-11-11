@@ -14,6 +14,7 @@ import requests
 import netutil
 import endpoints
 import quota_info
+import provider_access
 
 
 def image_b64(path, max_side=1024):
@@ -57,6 +58,7 @@ class AnthropicClient:
         return endpoints.base("anthropic")
 
     def __init__(self, key, model=None):
+        self.key = key
         self.s = requests.Session()
         self.s.headers.update({"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
         self.model = model or LLM_SERVICES["anthropic"]["default_model"]
@@ -64,7 +66,7 @@ class AnthropicClient:
     def check(self):
         r = self.s.get(self.BASE + "/models", timeout=30)
         if r.status_code >= 400:
-            raise LLMError(f"Claude: {r.status_code} {r.text[:150]}")
+            raise LLMError(provider_access.failure("anthropic", r, self.key, self.model))
         return "OK"
 
     def chat_json(self, system, user, max_tokens=4000):
@@ -84,7 +86,7 @@ class AnthropicClient:
                 netutil.pause(10 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Claude: {r.status_code} {r.text[:200]}")
+                raise LLMError(provider_access.failure("anthropic", r, self.key, self.model))
             try:
                 j = r.json()
                 text = "".join(b.get("text", "") for b in j.get("content", []))
@@ -116,7 +118,7 @@ class AnthropicClient:
                 netutil.pause(5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Claude: {r.status_code} {r.text[:200]}")
+                raise LLMError(provider_access.failure("anthropic", r, self.key, self.model))
             try:
                 return extract_json("".join(b.get("text", "") for b in r.json().get("content", [])))
             except (json.JSONDecodeError, KeyError) as e:
@@ -137,7 +139,7 @@ class GeminiClient:
     def check(self):
         r = requests.get(self.BASE + "/models", params={"key": self.key}, timeout=30)
         if r.status_code >= 400:
-            raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 150)}")
+            raise LLMError(provider_access.failure("gemini", r, self.key, self.model))
         return "OK"
 
     def _limit(self, response, attempt, attempts):
@@ -171,7 +173,7 @@ class GeminiClient:
                 netutil.pause(10 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 200)}")
+                raise LLMError(provider_access.failure("gemini", r, self.key, self.model))
             try:
                 j = r.json()
                 block = (j.get("promptFeedback") or {}).get("blockReason")
@@ -214,7 +216,7 @@ class GeminiClient:
                 netutil.pause(5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
-                raise LLMError(f"Gemini: {r.status_code} {quota_info.clean(r.text, (self.key,), 200)}")
+                raise LLMError(provider_access.failure("gemini", r, self.key, self.model))
             try:
                 j = r.json()
                 cand = (j.get("candidates") or [{}])[0]

@@ -68,9 +68,9 @@ def bad_paragraphs(text, language):
     return [i for i, p in enumerate(paras) if wrong_language(p, language)], paras
 
 
-ENGINES = ("openai", "anthropic", "gemini", "fastgen")
-ENGINE_NAMES = {"openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}
-DEFAULT_MODELS = {"openai": "gpt-4.1", "anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.6-flash", "fastgen": "openai/gpt-4.1-mini"}
+ENGINES = ("elysium", "openai", "anthropic", "gemini", "fastgen")
+ENGINE_NAMES = {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}
+DEFAULT_MODELS = {"elysium": "gpt-4.1-mini", "openai": "gpt-4.1", "anthropic": "claude-sonnet-5-5", "gemini": "gemini-3.6-flash", "fastgen": "openai/gpt-4.1-mini"}
 
 
 class RewriteError(Exception):
@@ -129,16 +129,19 @@ def _retry(fn, tries=4):
 
 def chat_text(engine, key, model, prompt, max_tokens):
     model = model or DEFAULT_MODELS[engine]
-    if engine == "openai":
+    if engine in ("openai", "elysium"):
         def go():
             from openai_api import _chat_params
-            r = requests.post(endpoints.base("openai") + "/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                              json={"model": model, **_chat_params(model, max_tokens, 0.8),
+            r = requests.post(endpoints.base(engine) + "/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                              json={"model": model, **({"max_tokens": max_tokens} if engine == "elysium" else _chat_params(model, max_tokens, 0.8)),
                                     "messages": [{"role": "user", "content": prompt}]}, timeout=600)
+            import provider_access
+            if provider_access.exhausted(r):
+                raise RewriteError(provider_access.failure(engine, r, key, model))
             if r.status_code == 429 or r.status_code >= 500:
                 raise RewriteError(f"retry {r.status_code}: {r.text[:150]}")
             if r.status_code >= 400:
-                raise RewriteError(f"ChatGPT {r.status_code}: {r.text[:200]}")
+                raise RewriteError(provider_access.failure(engine, r, key, model))
             return completion_text(r.json())
         return _retry(go)
     if engine == "anthropic":

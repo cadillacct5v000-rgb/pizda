@@ -20,6 +20,7 @@ import requests
 import endpoints
 import netutil
 import quota_info
+import provider_access
 from media_tools import ffmpeg_bin, run_media
 
 
@@ -29,6 +30,7 @@ MAX_FRAMES = 120
 BATCH_SIZE = 6
 TRANSCRIPT_CHARS = 12000
 DEFAULT_MODELS = {
+    "elysium": "gpt-4.1-mini",
     "fastgen": "google/gemini-auto",
     "openai": "gpt-4.1-mini",
     "anthropic": "claude-sonnet-5-5",
@@ -148,13 +150,13 @@ def _contact_sheet(frames, timestamps, path):
 def _provider(cfg):
     engine = cfg.get("source_analysis_engine") or cfg.get("rewrite_engine") or "fastgen"
     if engine not in DEFAULT_MODELS:
-        raise SourceAnalysisError("Для анализа видео выберите fast-gen, OpenAI, Claude или Gemini.")
+        raise SourceAnalysisError("Для анализа видео выберите Elysium, fast-gen, OpenAI, Claude или Gemini.")
     key = cfg.get(engine + "_api_key") or ""
     if engine == "fastgen" and not key:
         key = next(iter((cfg.get("image_keys") or {}).get("fastgen") or []), "")
     if not key:
         raise SourceAnalysisError(f"Для анализа видеоряда нужен ключ {engine}. Введите его в настройках.")
-    model = cfg.get("source_analysis_model") or DEFAULT_MODELS[engine]
+    model = cfg.get("source_analysis_model") or cfg.get(engine + "_model") or DEFAULT_MODELS[engine]
     if engine == "fastgen" and not (model.startswith("google/gemini-") or model.startswith("gemini-")):
         raise SourceAnalysisError("fast-gen принимает изображения только через Gemini с доступом chat.multimodal.")
     return engine, key, model
@@ -170,6 +172,10 @@ def _http(method, url, **kwargs):
             try:
                 if response.status_code == 429 or response.status_code >= 500:
                     quota = None
+                    if response.status_code == 429 and provider_access.exhausted(response):
+                        engine = next((name for name in provider_access.LABELS if url.startswith(endpoints.base(name) + '/')), 'openai')
+                        key = str((kwargs.get('headers') or {}).get('Authorization', '')).removeprefix('Bearer ')
+                        raise SourceAnalysisError(provider_access.failure(engine, response, key, (kwargs.get('json') or {}).get('model', '')), 429)
                     if response.status_code == 429:
                         secrets = list((kwargs.get('headers') or {}).values()) + list((kwargs.get('params') or {}).values())
                         quota = quota_info.from_response(response, secrets=secrets)
@@ -188,6 +194,12 @@ def _http(method, url, **kwargs):
                     if progress:
                         progress(f"сервис анализа: HTTP {response.status_code}; повтор {attempt + 2}/{attempts} через {delay} с, готовые части сохранены")
                 elif response.status_code >= 400:
+                    engine = next((name for name in provider_access.LABELS if url.startswith(endpoints.base(name) + "/")), None)
+                    if engine:
+                        keys = list((kwargs.get("headers") or {}).values()) + list((kwargs.get("params") or {}).values())
+                        key = next((str(value).removeprefix("Bearer ") for value in keys if isinstance(value, str) and value not in ("2023-06-01", "application/json")), "")
+                        model = (kwargs.get("json") or {}).get("model", "")
+                        raise SourceAnalysisError(provider_access.failure(engine, response, key, model), response.status_code)
                     try:
                         details = response.json()
                         details = details.get("error", details.get("detail", details))
@@ -257,13 +269,15 @@ def _json(text):
 
 def _query(engine, key, model, prompt, image_path=None):
     image = base64.b64encode(Path(image_path).read_bytes()).decode("ascii") if image_path else None
-    if engine in ("fastgen", "openai"):
-        base = "https://api.fast-gen.ai/v1" if engine == "fastgen" else endpoints.base("openai")
+    if engine in ("fastgen", "openai", "elysium"):
+        base = "https://api.fast-gen.ai/v1" if engine == "fastgen" else endpoints.base(engine)
         headers = {"X-API-Key": key} if engine == "fastgen" else {"Authorization": "Bearer " + key}
         content = [{"type": "text", "text": prompt}]
         if image:
             content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}})
         payload = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]}
+        if engine == "elysium":
+            payload["max_tokens"] = 6000
         if engine == "openai":
             from openai_api import _chat_params
             payload.update(_chat_params(model, 6000, 0.3))

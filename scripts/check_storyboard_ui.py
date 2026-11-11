@@ -132,6 +132,33 @@ with sync_playwright() as p:
  page.locator('#analysis_access_check').click()
  page.wait_for_function('document.getElementById("s_analysis").textContent.includes("не сообщил")')
  assert access_requests==['GET','GET']
+ # Gateway settings: a single Elysium key stays synchronized across all four tasks.
+ import provider_access
+ catalog_calls=[]
+ def gateway_models(engine,key):
+  catalog_calls.append((engine,key))
+  assert engine=='elysium' and key=='gateway-browser-fixture'
+  return ['gemini-vision-fixture','claude-text-fixture']
+ provider_access.models=gateway_models
+ page.evaluate("async () => { await pywebview.api.save_config({llm_engine:'elysium', qa_engine:'elysium', qa:true, rewrite_engine:'elysium', source_analysis_engine:'elysium'}); llm='elysium';qaEngine='elysium';qaModel='';rwEngine='elysium';analysisEngine='elysium';analysisModel='';$('use_qa').checked=true;renderAccess(); }")
+ page.locator('#k_qa').fill('gateway-browser-fixture')
+ assert page.locator('#k_llm').input_value()=='gateway-browser-fixture'
+ assert page.locator('#k_analysis').input_value()=='gateway-browser-fixture'
+ assert page.locator('#k_rw').input_value()=='gateway-browser-fixture'
+ page.locator('#qa_eng').locator('..').get_by_role('button',name='Модели с сервера',exact=True).click()
+ page.wait_for_function("document.querySelector('#qa_model option[value=gemini-vision-fixture]') !== null")
+ page.locator('#qa_model').select_option('gemini-vision-fixture')
+ page.evaluate('saveKeys()')
+ cfg=app.load_cfg()
+ assert cfg['elysium_api_key']=='gateway-browser-fixture'
+ assert cfg['qa_model']=='gemini-vision-fixture'
+ assert cfg['llm_engine']=='elysium' and cfg['source_analysis_engine']=='elysium'
+ assert len(catalog_calls)==1
+ page.evaluate('renderAccess()')
+ assert page.locator('#qa_model').input_value()=='gemini-vision-fixture'
+ # Custom API URL must be visible even if OpenAI is used only for image selection.
+ page.evaluate("() => {qaEngine='openai';llm='fastgen';rwEngine='fastgen';analysisEngine='fastgen';renderAccess();}")
+ assert page.locator('input.base[data-svc=openai]').count()==1
  assert not errors,errors
  b.close()
 print('Browser E2E passed: semantic selection, real API save, per-plan take, invalid preview guard, preview launch, full launch, return, stale-script invalidation.')

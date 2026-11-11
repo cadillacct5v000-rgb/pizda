@@ -14,6 +14,7 @@ import requests
 import netutil
 
 import endpoints
+import provider_access
 
 
 def BASE():
@@ -36,18 +37,16 @@ class OpenAIError(RuntimeError):
 
 
 class OpenAIClient:
-    def __init__(self, api_key: str, timeout: int = 120):
+    def __init__(self, api_key: str, timeout: int = 120, provider="openai"):
+        self.provider = provider
+        self.key = api_key
         self.s = requests.Session()
         self.s.headers["Authorization"] = f"Bearer {api_key}"
         self.timeout = timeout
 
     def _check(self, r: requests.Response):
         if r.status_code >= 400:
-            try:
-                msg = r.json().get("error", {}).get("message") or r.text[:300]
-            except ValueError:
-                msg = r.text[:300]
-            raise OpenAIError(f"{r.status_code}: {str(msg)[:300]}")
+            raise OpenAIError(provider_access.failure(self.provider, r, self.key))
         return r.json()
 
     def check(self) -> str:
@@ -56,7 +55,7 @@ class OpenAIClient:
         for attempt in range(3):  # api.openai.com иногда отвечает не с первого раза
             netutil.check_cancel()
             try:
-                j = self._check(self.s.get(BASE() + "/models", timeout=30))
+                j = self._check(self.s.get(endpoints.base(self.provider) + "/models", timeout=30))
                 break
             except requests.exceptions.RequestException:
                 if attempt == 2:
@@ -73,12 +72,14 @@ class OpenAIClient:
         for attempt in range(4):
             netutil.check_cancel()
             try:
-                r = self.s.post(BASE() + "/chat/completions", json={
+                r = self.s.post(endpoints.base(self.provider) + "/chat/completions", json={
                     "model": model or DEFAULT_CHAT_MODEL,
-                    "response_format": {"type": "json_object"},
-                    **_chat_params(model or DEFAULT_CHAT_MODEL, limit, temperature),
+                    **({"response_format": {"type": "json_object"}} if self.provider == "openai" else {}),
+                    **({"max_tokens": limit} if self.provider == "elysium" else _chat_params(model or DEFAULT_CHAT_MODEL, limit, temperature)),
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 }, timeout=300)
+                if provider_access.exhausted(r):
+                    raise OpenAIError(provider_access.failure(self.provider, r, self.key, model or DEFAULT_CHAT_MODEL))
                 if r.status_code == 429 or r.status_code >= 500:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
                     netutil.pause(10 * (attempt + 1))
@@ -89,7 +90,8 @@ class OpenAIClient:
                     limit = min(32000, limit * 2)  # ответ обрезан — повторяем с большим лимитом
                     last = f"ответ не влез в лимит, повторяю с {limit} токенами"
                     continue
-                return json.loads(choice["message"]["content"])
+                from llm_api import extract_json
+                return extract_json(choice["message"]["content"])
             except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
                 last = str(e)
                 netutil.pause(5 * (attempt + 1))
@@ -104,12 +106,14 @@ class OpenAIClient:
         for attempt in range(3):
             netutil.check_cancel()
             try:
-                r = self.s.post((base or BASE()) + "/chat/completions", json={
-                    "model": m, **_chat_params(m, max_tokens, 0.7),
+                r = self.s.post((base or endpoints.base(self.provider)) + "/chat/completions", json={
+                    "model": m, **({"max_tokens": max_tokens} if self.provider == "elysium" else _chat_params(m, max_tokens, 0.7)),
                     "messages": [{"role": "system", "content": system + "\nОтвечай только JSON, без пояснений и без markdown."},
                                  {"role": "user", "content": [{"type": "text", "text": user},
                                                               {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + data}}]}],
                 }, timeout=120)
+                if provider_access.exhausted(r):
+                    raise OpenAIError(provider_access.failure(self.provider, r, self.key, model or DEFAULT_CHAT_MODEL))
                 if r.status_code == 429 or r.status_code >= 500:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
                     netutil.pause(5 * (attempt + 1))
@@ -131,7 +135,7 @@ class OpenAIClient:
             netutil.check_cancel()
             try:
                 with open(path, "rb") as f:
-                    r = self.s.post(BASE() + "/audio/transcriptions", data=data,
+                    r = self.s.post(endpoints.base(self.provider) + "/audio/transcriptions", data=data,
                                     files={"file": (os.path.basename(path), f, "audio/mpeg")}, timeout=600)
             except requests.RequestException as e:
                 last = str(e)[:200]

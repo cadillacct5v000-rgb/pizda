@@ -320,6 +320,10 @@ def make_text_engine(cfg):
         stt_api = OpenAIClient(cfg["openai_api_key"])
     if llm == "fastgen":
         llm_api = fg
+    elif llm == "elysium":
+        if not cfg.get("elysium_api_key"):
+            raise SystemExit("Для текстов выбран Elysium, но ключ не введён.")
+        llm_api = OpenAIClient(cfg["elysium_api_key"], provider="elysium")
     elif llm == "anthropic":
         if not cfg.get("anthropic_api_key"):
             raise SystemExit("Для текстов выбран Claude, но ключ Anthropic не введён.")
@@ -598,7 +602,7 @@ class LLM:
 
     def __init__(self, engine, api, model=None):
         self.engine, self.api = engine, api
-        self.model = model or (OPENAI_DEFAULT_MODEL if engine == "openai" else DEFAULT_LLM_MODEL)
+        self.model = model or (OPENAI_DEFAULT_MODEL if engine in ("openai", "elysium") else DEFAULT_LLM_MODEL)
         if engine in ("anthropic", "gemini"):
             self.model = getattr(api, "model", engine)
 
@@ -621,7 +625,7 @@ class LLM:
             return self.fallback.chat_json(system, user, max_tokens=max_tokens)
         if self.engine in ("anthropic", "gemini"):
             return self.api.chat_json(system, user, max_tokens=max_tokens)
-        if self.engine == "openai":
+        if self.engine in ("openai", "elysium"):
             return self.api.chat_json(system + "\nОтвечай только JSON, без пояснений.", user, model=self.model, max_tokens=max_tokens)
         last = None
         attempt, limit_waits, limit = 0, 0, max_tokens
@@ -2772,7 +2776,8 @@ def prune_old_jobs():
     return freed
 
 
-QA_ENGINES = {  # движок автоотбора: (название, модель по умолчанию, адрес для OpenAI-совместимых)
+QA_ENGINES = {
+    "elysium": ("Elysium", "gpt-4.1-mini", None),  # движок автоотбора: (название, модель по умолчанию, адрес для OpenAI-совместимых)
     "gemini": ("Gemini", "gemini-3.6-flash", None),
     "anthropic": ("Claude", "claude-haiku-5-5", None),
     "openai": ("OpenAI", "gpt-4.1-mini", None),
@@ -2783,8 +2788,8 @@ QA_ENGINES = {  # движок автоотбора: (название, моде
 class OpenAIVision:
     """Зрение через OpenAI или совместимый сервис (OpenRouter): единый интерфейс see_json/model/check."""
 
-    def __init__(self, key, model, base=None):
-        self.c = OpenAIClient(key)
+    def __init__(self, key, model, base=None, provider="openai"):
+        self.c = OpenAIClient(key, provider=provider)
         self.model, self.base = model, base
 
     def check(self):
@@ -2812,7 +2817,7 @@ def make_qa_client(cfg):
         return GeminiClient(key, model)
     if eng == "anthropic":
         return AnthropicClient(key, model)
-    return OpenAIVision(key, model, base)
+    return OpenAIVision(key, model, base, provider="elysium" if eng == "elysium" else "openai")
 
 
 def gen_syntx(api, gate, scene, out_path, refs=None, image=None):
@@ -2900,7 +2905,7 @@ def make_context(cfg, providers):
 
 
 LAST_JOB_DIR = None
-REWRITE_KEYS = {"openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key", "fastgen": "fastgen_api_key"}
+REWRITE_KEYS = {"elysium": "elysium_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key", "fastgen": "fastgen_api_key"}
 
 
 def rewrite_script(cfg, rw, progress, profile_callback=None):
@@ -2959,7 +2964,7 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         raise SystemExit(f"Для рерайта выбран {rwmod.ENGINE_NAMES.get(engine, engine)}, но его ключ не введён.")
     extra = {"source_profile": profile, "preserve_structure": True} if profile else {}
     target_words = len(text.split()) if profile else (rw.get("words") or cfg.get("rewrite_words") or 1500)
-    return rwmod.rewrite(text, engine, key, None, target_words,
+    return rwmod.rewrite(text, engine, key, cfg.get(engine + "_model"), target_words,
                          rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say, **extra)
 
 
@@ -3103,7 +3108,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     if ctx["qa"]:
         progress("start", 0, 0, f"автоотбор картинок: {ctx['qa'].model}")
     engine, text_api, llm_name, llm_api = make_text_engine(cfg)
-    llm = LLM(llm_name, llm_api, cfg.get("openai_model") if llm_name == "openai" else cfg.get("llm_model"))
+    llm = LLM(llm_name, llm_api, cfg.get(llm_name + "_model") if llm_name in ("openai", "elysium") else cfg.get("llm_model"))
     if llm_name == "fastgen":
         # запасной движок на случай часового лимита fast-gen: свой ключ Claude, иначе OpenAI
         if cfg.get("anthropic_api_key"):

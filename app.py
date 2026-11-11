@@ -31,7 +31,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "1.9.4-dev"
+VERSION = "1.9.5-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -219,7 +219,8 @@ def key_error(e):
     if isinstance(e, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)) or "connection aborted" in low \
             or "10054" in low or "getaddrinfo" in low or "timed out" in low or "max retries" in low:
         return "Ошибка: нет связи с сервисом — проверьте интернет, VPN или антивирус и нажмите «Проверить» ещё раз"
-    return f"Ошибка: ключ не принят ({s[:80]})"
+    from quota_info import clean
+    return "Ошибка: " + clean(s, maximum=1600)
 
 
 def set_clipboard(text):
@@ -501,7 +502,7 @@ def save_cfg(cfg):
     cfg.setdefault("llm_engine", "fastgen")
     cfg.setdefault("anthropic_model", "claude-sonnet-5-5")
     cfg.setdefault("gemini_model", "gemini-3.6-flash")
-    for k in ("openai", "anthropic", "gemini"):
+    for k in ("openai", "anthropic", "gemini", "elysium"):
         cfg.setdefault(k + "_base_url", "")
     # старые идентификаторы моделей → актуальные
     cfg["anthropic_model"] = {"claude-haiku-4-5-20251001": "claude-haiku-4-5"}.get(cfg.get("anthropic_model"), cfg.get("anthropic_model"))
@@ -515,6 +516,8 @@ def save_cfg(cfg):
     cfg.setdefault("tts_voice", "")
     cfg.setdefault("openai_api_key", "")
     cfg.setdefault("openai_model", "gpt-4.1-mini")
+    cfg.setdefault("elysium_api_key", "")
+    cfg.setdefault("elysium_model", "gpt-4.1-mini")
     cfg.setdefault("text_engine", "fastgen")
     if "image_providers" not in cfg:
         cfg["image_providers"] = pipeline.normalize_providers(cfg["image_provider"]) if cfg.get("image_provider") else []
@@ -715,8 +718,8 @@ def run_storyboard(script, profile, cfg):
             raise sb.StoryboardError(f"Для раскадровки нужен ключ выбранной текстовой модели: {engine}.")
         if engine == "fastgen":
             client = pipeline.LLM(engine, FastGen(key), cfg.get("llm_model"))
-        elif engine == "openai":
-            client = pipeline.LLM(engine, pipeline.OpenAIClient(key), cfg.get("openai_model"))
+        elif engine in ("openai", "elysium"):
+            client = pipeline.LLM(engine, pipeline.OpenAIClient(key, provider=engine), cfg.get(engine + "_model"))
         elif engine in ("gemini", "anthropic"):
             cls = pipeline.GeminiClient if engine == "gemini" else pipeline.AnthropicClient
             client = cls(key, cfg.get(engine + "_model"))
@@ -771,6 +774,16 @@ def check_update():
 
 
 class Api:
+    def available_models(self, engine):
+        """GET only: no generation, no API key in returned diagnostics."""
+        import provider_access
+        cfg = load_cfg()
+        try:
+            values = provider_access.models(engine, cfg.get(engine + "_api_key", ""))
+            return {"ok": True, "models": values, "server": provider_access.location(engine)}
+        except Exception as error:
+            return {"ok": False, "error": key_error(error)}
+
     def source_analysis_access(self):
         """Read-only capability check; never creates a paid chat/generation."""
         import source_analysis as analysis
@@ -880,15 +893,16 @@ class Api:
             "elevenlabs": mask(cfg.get("elevenlabs_api_key", "")), "has_elevenlabs": bool(cfg.get("elevenlabs_api_key")),
             "stt_engine": cfg.get("stt_engine", "fastgen"), "llm_engine": cfg.get("llm_engine", "fastgen"),
             "anthropic_model": cfg.get("anthropic_model", "claude-sonnet-5-5"), "gemini_model": cfg.get("gemini_model", "gemini-3.6-flash"),
-            "base_urls": {k: cfg.get(k + "_base_url", "") for k in ("openai", "anthropic", "gemini")}, "base_defaults": dict(endpoints.DEFAULTS),
+            "base_urls": {k: cfg.get(k + "_base_url", "") for k in ("openai", "anthropic", "gemini", "elysium")}, "base_defaults": dict(endpoints.DEFAULTS),
             "quality": cfg.get("quality", "speed"), "motion": bool(cfg.get("motion", False)), "hd_images": bool(cfg.get("hd_images", False)), "video_first": _vf(cfg.get("video_first", 0)), "render_fps": cfg.get("render_fps", 25),
             "tts_recent": cfg.get("tts_recent", []), "data_dir": data_dir(), "portable": data_dir() == app_dir(), "updates_supported": platform_support.windows_updates_supported(),
             "source": cfg.get("source", "mp3"), "tts_service": cfg.get("tts_service", "voicegen"), "tts_voice": cfg.get("tts_voice", ""),
             "rewrite": bool(cfg.get("rewrite", False)), "rewrite_engine": cfg.get("rewrite_engine", "fastgen"), "rewrite_source": cfg.get("rewrite_source", "youtube"),
             "youtube_analyze_video": cfg.get("youtube_analyze_video", True),
-            "source_montage": cfg.get("source_montage", True), "source_analysis_engine": cfg.get("source_analysis_engine", "fastgen"),
+            "source_analysis_model": cfg.get("source_analysis_model", ""), "source_montage": cfg.get("source_montage", True), "source_analysis_engine": cfg.get("source_analysis_engine", "fastgen"),
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
+            "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
             "openai": mask(cfg.get("openai_api_key", "")),
             "has_openai": bool(cfg.get("openai_api_key")),
             "text_engine": cfg.get("text_engine", "fastgen"),
@@ -919,7 +933,7 @@ class Api:
     def save_config(self, data):
         cfg = load_cfg()
         for field, key in (("fastgen", "fastgen_api_key"), ("nonstop", "veononstop_api_key"), ("yougen", "yougen_api_key"),
-                           ("openai", "openai_api_key"), ("royal", "royaltechno_api_key"), ("slider", "secretslider_api_key"), ("google", "google_api_key"),
+                           ("elysium", "elysium_api_key"), ("openai", "openai_api_key"), ("royal", "royaltechno_api_key"), ("slider", "secretslider_api_key"), ("google", "google_api_key"),
                            ("anthropic", "anthropic_api_key"), ("gemini", "gemini_api_key"), ("assemblyai", "assemblyai_api_key"), ("openrouter", "openrouter_api_key"),
                            ("voicegen", "voicegen_api_key"), ("voicer", "voicer_api_key"), ("lumean", "lumean_api_key"), ("elevenlabs", "elevenlabs_api_key")):
             if field in data:
@@ -952,7 +966,7 @@ class Api:
             cfg["image_providers"] = [p for p in (data["providers"] or []) if p in pipeline.PROVIDERS]
         if data.get("lang") in ("ru", "en"):
             cfg["lang"] = data["lang"]
-        for k in ("openai", "anthropic", "gemini"):
+        for k in ("openai", "anthropic", "gemini", "elysium"):
             if k + "_base_url" in data:
                 v = str(data[k + "_base_url"] or "").strip().rstrip("/")
                 cfg[k + "_base_url"] = v if v.startswith(("http://", "https://")) else ""
@@ -975,12 +989,12 @@ class Api:
                 pass
         if data.get("theme") in ("light", "dark"):
             cfg["theme"] = data["theme"]
-        for k, allowed in (("stt_engine", ("fastgen", "whisper", "assemblyai")), ("llm_engine", ("fastgen", "openai", "anthropic", "gemini")),
+        for k, allowed in (("stt_engine", ("fastgen", "whisper", "assemblyai")), ("llm_engine", ("fastgen", "openai", "anthropic", "gemini", "elysium")),
                            ("quality", ("speed", "quality")), ("source", ("mp3", "script")),
                            ("tts_service", ("voicegen", "voicer", "lumean", "elevenlabs", "edge", "fastgen", "royal"))):
             if data.get(k) in allowed:
                 cfg[k] = data[k]
-        for k in ("anthropic_model", "gemini_model"):
+        for k in ("anthropic_model", "gemini_model", "elysium_model"):
             if data.get(k):
                 cfg[k] = data[k].strip()
         if "tts_voice" in data:
@@ -1003,12 +1017,14 @@ class Api:
             cfg["video_first"] = _vf(data["video_first"])
         if "rewrite" in data:
             cfg["rewrite"] = bool(data["rewrite"])
-        if data.get("rewrite_engine") in ("openai", "anthropic", "gemini", "fastgen"):
+        if data.get("rewrite_engine") in ("openai", "anthropic", "gemini", "fastgen", "elysium"):
             cfg["rewrite_engine"] = data["rewrite_engine"]
         if data.get("rewrite_source") in ("youtube", "text"):
             cfg["rewrite_source"] = data["rewrite_source"]
-        if data.get("source_analysis_engine") in ("fastgen", "gemini", "openai", "anthropic"):
+        if data.get("source_analysis_engine") in ("fastgen", "gemini", "openai", "anthropic", "elysium"):
             cfg["source_analysis_engine"] = data["source_analysis_engine"]
+        if "source_analysis_model" in data:
+            cfg["source_analysis_model"] = str(data.get("source_analysis_model") or "").strip()
         if "source_montage" in data:
             cfg["source_montage"] = bool(data["source_montage"])
         if "youtube_analyze_video" in data:
@@ -1084,7 +1100,6 @@ class Api:
 
         def qa_ping(client, name):
             """Проверка ключа для автоотбора: модель должна увидеть картинку."""
-            client.check()
             from PIL import Image, ImageDraw
             tmp = os.path.join(data_dir(), "_qa_test.png")
             im = Image.new("RGB", (320, 180), (40, 60, 90))
@@ -1102,7 +1117,6 @@ class Api:
             return f"OK · {name} видит картинки"
 
         def llm_ping(client, name):
-            client.check()
             j = client.chat_json("Отвечай строго JSON.", 'Верни {"ok": true}', max_tokens=200)
             if not isinstance(j, dict):
                 raise RuntimeError("модель ответила не JSON")
@@ -1157,6 +1171,16 @@ class Api:
                     res.append(key_error(e))
             out[p] = res
         from llm_api import AnthropicClient, GeminiClient, AssemblyAI
+        if "analysis" in which:
+            try:
+                import source_analysis
+                engine, key, model = source_analysis._provider(cfg)
+                if engine == "fastgen":
+                    raise ValueError('Для Fast-gen используйте «Проверить доступ к кадрам».')
+                client = pipeline.make_qa_client({**cfg, "qa_images": True, "qa_engine": engine, "qa_model": model})
+                out["analysis"] = qa_ping(client, f"{engine} · {model}")
+            except Exception as e:
+                out["analysis"] = key_error(e)
         if "qa" in which:
             eng = cfg.get("qa_engine") or "gemini"
             if cfg.get(f"{eng}_api_key"):
@@ -1164,7 +1188,7 @@ class Api:
                     c = pipeline.make_qa_client({**cfg, "qa_images": True})
                     out["qa"] = qa_ping(c, c.model)
                 except Exception as e:
-                    out["qa"] = f"Ошибка: {str(e)[:120]}"
+                    out["qa"] = key_error(e)
             else:
                 out["qa"] = "Ключ не введён"
         for name, key, cls in (("anthropic", "anthropic_api_key", AnthropicClient), ("gemini", "gemini_api_key", GeminiClient), ("assemblyai", "assemblyai_api_key", AssemblyAI)):
@@ -1174,7 +1198,7 @@ class Api:
                         c = cls(cfg[key]) if name == "assemblyai" else cls(cfg[key], cfg.get(f"{name}_model"))
                         out[name] = llm_ping(c, cfg.get(f"{name}_model")) if name != "assemblyai" else c.check()
                     except Exception as e:
-                        out[name] = f"Ошибка: {str(e)[:100]}"
+                        out[name] = key_error(e)
                 else:
                     out[name] = "Ключ не введён"
         from tts_api import make_tts
@@ -1190,15 +1214,26 @@ class Api:
                     try:
                         out[name] = make_tts(name, cfg[f"{name}_api_key"]).check()
                     except Exception as e:
-                        out[name] = f"Ошибка: {str(e)[:100]}"
+                        out[name] = key_error(e)
                 else:
                     out[name] = "Ключ не введён"
+        if "elysium" in which:
+            if cfg.get("elysium_api_key"):
+                try:
+                    from openai_api import OpenAIClient
+                    model = cfg.get("elysium_model") or "gpt-4.1-mini"
+                    c = OpenAIClient(cfg["elysium_api_key"], provider="elysium")
+                    c.chat_json("Return JSON only.", '{"ok":true}', model=model, max_tokens=200)
+                    out["elysium"] = f"OK · Elysium · {model} отвечает"
+                except Exception as e:
+                    out["elysium"] = key_error(e)
+            else:
+                out["elysium"] = "Ключ не введён"
         if "openai" in which:
             if cfg.get("openai_api_key"):
                 try:
                     from openai_api import OpenAIClient
                     c = OpenAIClient(cfg["openai_api_key"])
-                    c.check()
                     j = c.chat_json("Отвечай строго JSON.", 'Верни {"ok": true}', model=cfg.get("openai_model") or "gpt-4.1-mini", max_tokens=200)
                     out["openai"] = f"OK · {cfg.get('openai_model') or 'gpt-4.1-mini'} отвечает" if isinstance(j, dict) else "Ошибка: модель ответила не JSON"
                 except Exception as e:
@@ -1251,7 +1286,7 @@ class Api:
             if rw["source"] == "text" and not rw["text"]:
                 return "Вставьте текст сценария для рерайта."
             if not cfg.get(pipeline.REWRITE_KEYS[rw["engine"]]):
-                return "Для рерайта выбран " + {"openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."
+                return "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."
             tts = opts.get("tts") or cfg.get("tts_service")
             if not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
                 return self._tts_key_error(tts)
@@ -1280,7 +1315,7 @@ class Api:
         if (stt == "whisper" or (stt == "fastgen" and not has_fg)) and not cfg.get("openai_api_key"):
             return "Для распознавания речи нужен ключ OpenAI (Whisper)."
         if llm != "fastgen" or not has_fg:
-            need = {"openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key"}.get(llm, "openai_api_key")
+            need = {"elysium": "elysium_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key"}.get(llm, "openai_api_key")
             if not cfg.get(need):
                 return "Для текстов выбран " + {"openai": "OpenAI", "anthropic": "Claude", "gemini": "Gemini"}.get(llm, llm) + ", введите его ключ."
         if "nonstop" in providers and not cfg.get("veononstop_api_key"):
@@ -1351,7 +1386,7 @@ class Api:
         if rw["source"] == "text" and not rw["text"]:
             return {"ok": False, "error": "Вставьте текст сценария для рерайта."}
         if not cfg.get(pipeline.REWRITE_KEYS[rw["engine"]]):
-            return {"ok": False, "error": "Для рерайта выбран " + {"openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."}
+            return {"ok": False, "error": "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."}
         cfg.update({"rewrite": True, "rewrite_engine": rw["engine"], "rewrite_source": rw["source"], "rewrite_url": rw["url"],
                     "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
         save_cfg(cfg)
@@ -1698,7 +1733,7 @@ class Api:
             keys = pipeline.provider_keys(cfg, name)
             return keys[idx] if isinstance(idx, int) and 0 <= idx < len(keys) else ""
         key = {"fastgen": "fastgen_api_key", "nonstop": "veononstop_api_key", "yougen": "yougen_api_key", "royal": "royaltechno_api_key",
-               "slider": "secretslider_api_key", "google": "google_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key",
+               "slider": "secretslider_api_key", "google": "google_api_key", "elysium": "elysium_api_key", "openai": "openai_api_key", "anthropic": "anthropic_api_key", "gemini": "gemini_api_key",
                "assemblyai": "assemblyai_api_key", "voicegen": "voicegen_api_key", "voicer": "voicer_api_key", "lumean": "lumean_api_key", "elevenlabs": "elevenlabs_api_key"}.get(name)
         return cfg.get(key, "") if key else ""
 
