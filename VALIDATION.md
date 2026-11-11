@@ -157,3 +157,21 @@ query identity remain compatible with 1.9.5.
 Automated tests cover malformed replies, no image re-send, repair outage resume,
 crash recovery, strict validation and no fabricated completion. The reported user
 reply from 1.9.5 was discarded by that version; its exact defect is unknown.
+
+## 1.9.7: streamed source analysis and transport diagnostics
+
+OpenAI-compatible source analysis (OpenAI and Elysium) requests streamed chat
+completions per Elysium's documented SSE API. The reader handles UTF-8, comments,
+reasoning-only events, text blocks, DONE, stop/length/refusal and an explicit
+finish marker without waiting for the proxy connection to close. It does not
+accept balanced-but-unfinished JSON as a completed stream. Partial content is
+checkpointed as incomplete and never sent for JSON repair or silently retried.
+Idle read timeout is 300 seconds for streaming versus 180 for legacy JSON;
+stream processing has a 900-second bound and an 8-MiB event limit. Progress
+reports heartbeat/response activity without displaying model reasoning/text.
+Connection errors identify host/model, elapsed attempt time and exception type,
+redacting credentials. Existing validated reply/cache identities stay compatible.
+Tests include real localhost HTTP heartbeats over a shorter idle timeout, stream
+interruption with no second POST, cached completion and timeout redaction. No live
+paid Elysium call was made. The user's repeated transport exception is not enough
+to identify its exact upstream cause; streaming cannot guarantee server uptime.

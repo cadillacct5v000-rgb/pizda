@@ -10,6 +10,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -172,8 +173,12 @@ def _http(method, url, **kwargs):
     for attempt in range(attempts):
         netutil.check_cancel()
         delay = min(40, 5 * 2 ** attempt)
+        streaming = (kwargs.get('json') or {}).get('stream') is True
+        started = time.monotonic()
+        if streaming and _REQUEST_PROGRESS.get():
+            _REQUEST_PROGRESS.get()('соединяюсь с API анализа; ожидаю поток ответа модели')
         try:
-            response = requests.request(method, url, timeout=(15, 180), **kwargs)
+            response = requests.request(method, url, timeout=(15, 300 if streaming else 180), **({'stream': True} if streaming else {}), **kwargs)
             try:
                 if response.status_code == 429 or response.status_code >= 500:
                     quota = None
@@ -226,12 +231,26 @@ def _http(method, url, **kwargs):
                         "Для fast-gen нужны Gemini и доступ chat.multimodal; можно выбрать отдельный "
                         "Gemini/OpenAI/Claude в настройке анализа исходника.")
                 else:
+                    content_type = str((getattr(response, 'headers', None) or {}).get('Content-Type', '')).lower()
+                    if streaming and 'text/event-stream' in content_type:
+                        import chat_stream
+                        return chat_stream.read(response, _REQUEST_PROGRESS.get(), _RESPONSE_CAPTURE.get())
                     return response.json()
             finally:
                 response.close()
         except requests.RequestException as exc:
             if method.upper() == 'POST' and not isinstance(exc, requests.ConnectTimeout):
-                raise SourceAnalysisError('Соединение прервалось после отправки запроса анализа. Результат и списание за этот запрос неизвестны; автоматический повтор остановлен. Готовые ответы сохранены.') from exc
+                secrets = list((kwargs.get('headers') or {}).values()) + list((kwargs.get('params') or {}).values())
+                secrets += [value.removeprefix('Bearer ') for value in secrets if isinstance(value, str)]
+                elapsed = max(0, round(time.monotonic() - started))
+                cause = quota_info.clean(str(exc), secrets, 220)
+                kind = type(exc).__name__
+                model = quota_info.clean((kwargs.get('json') or {}).get('model', ''), secrets, 100)
+                from urllib.parse import urlsplit
+                host = urlsplit(url).hostname or 'сервис'
+                detail = f'{host} · {model} · {kind} · {elapsed} с. {cause}'
+                raise SourceAnalysisError('Соединение прервалось после отправки запроса анализа. ' + detail +
+                                          ' Результат и списание за этот запрос неизвестны; автоматический повтор остановлен. Готовые ответы сохранены.') from exc
             if attempt == attempts - 1:
                 raise SourceAnalysisError("Соединение с сервисом анализа видео прервалось. Повторите анализ.") from exc
         except ValueError as exc:
@@ -282,6 +301,8 @@ def _query(engine, key, model, prompt, image_path=None):
         if image:
             content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}})
         payload = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]}
+        if engine in ("elysium", "openai"):
+            payload["stream"] = True
         if engine == "elysium":
             payload["max_tokens"] = 6000
         if engine == "openai":
