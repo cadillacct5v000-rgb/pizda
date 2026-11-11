@@ -1397,6 +1397,7 @@ function markBoardDirty() {
 async function createStoryboard() {
   if (boardBusy) return;
   boardBusy = true; storyboardControls();
+  $('s_prep2').textContent = '';
   try {
     const o = opts(); o.script = $('rv_script').value;
     const r = await pywebview.api.prepare_storyboard(o);

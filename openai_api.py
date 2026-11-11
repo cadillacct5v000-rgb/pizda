@@ -37,7 +37,8 @@ class OpenAIError(RuntimeError):
 
 
 class OpenAIClient:
-    def __init__(self, api_key: str, timeout: int = 120, provider="openai"):
+    def __init__(self, api_key: str, timeout: int = 120, provider="openai", stream=False, progress=None):
+        self.stream, self.progress = stream, progress
         self.provider = provider
         self.key = api_key
         self.s = requests.Session()
@@ -67,6 +68,8 @@ class OpenAIClient:
 
     # --- чат ---
     def chat_json(self, system: str, user: str, model: str = None, max_tokens: int = 4000, temperature: float = 0.7) -> dict:
+        if self.stream:
+            return self._stream_chat_json(system, user, model or DEFAULT_CHAT_MODEL, max_tokens)
         last = None
         limit = max_tokens
         for attempt in range(4):
@@ -96,6 +99,42 @@ class OpenAIClient:
                 last = str(e)
                 netutil.pause(5 * (attempt + 1))
         raise OpenAIError(f"чат-модель не ответила корректно: {last}")
+
+    def _stream_chat_json(self, system, user, model, max_tokens):
+        """One billable POST per storyboard batch; never replay ambiguous failures."""
+        import chat_stream
+        from model_json import extract_object
+        started = time.monotonic()
+        response = None
+        payload = {"model": model, "stream": True,
+                   **({"max_tokens": max_tokens} if self.provider == "elysium" else _chat_params(model, max_tokens, .7)),
+                   "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        if self.provider == "openai" or model.startswith('gpt-'):
+            payload['response_format'] = {'type': 'json_object'}
+        netutil.check_cancel()
+        try:
+            if self.progress:
+                self.progress('ожидаю подключение к модели; один запрос текущей пачки')
+            response = self.s.post(endpoints.base(self.provider) + '/chat/completions', json=payload, stream=True, timeout=(15,300))
+            if response.status_code >= 400:
+                raise OpenAIError(provider_access.failure(self.provider, response, self.key, model))
+            content_type = str((getattr(response, 'headers', None) or {}).get('Content-Type', '')).lower()
+            value = chat_stream.read(response, self.progress) if 'text/event-stream' in content_type else response.json()
+            choice = value['choices'][0]
+            if choice.get('finish_reason') in ('length','content_filter','tool_calls') or choice['message'].get('refusal'):
+                raise OpenAIError('Модель не завершила пачку раскадровки; неполный ответ не принят. Готовые пачки сохранены.')
+            return extract_object(choice['message']['content'])
+        except json.JSONDecodeError as error:
+            raise OpenAIError('Модель вернула некорректный JSON раскадровки. Готовые пачки сохранены; автоматического повтора нет.') from error
+        except requests.RequestException as error:
+            from quota_info import clean
+            elapsed = max(0,round(time.monotonic()-started))
+            detail = clean(str(error),(self.key,),220)
+            raise OpenAIError(f'{self.provider} · {model} · {type(error).__name__} · {elapsed} с. {detail}. '
+                              'Запрос текущей пачки автоматически не повторён; результат и списание неизвестны. Готовые пачки сохранены.') from error
+        finally:
+            if response is not None:
+                response.close()
 
     def see_json(self, system: str, user: str, image_path: str, model: str = None, max_tokens: int = 600, base: str = None) -> dict:
         """Вопрос по картинке, ответ JSON. base — свой адрес (OpenRouter и другие совместимые сервисы)."""

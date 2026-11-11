@@ -74,4 +74,18 @@ const idleState = {running: false, queue_active: false, log: [], stage: 'done'};
   assert.equal(s.getElement('btn_cancel').disabled, false);
   assert.match(s.getElement('error').textContent, /retry cancellation/);
 }
-console.log(`UI: ${scripts.length} script syntax check, ${used.size} Python bridge methods, 5 recovery checks passed.`);
+{
+  // Clear stale restore errors before awaiting a new preparation request.
+  const elements = new Map();
+  const element = id => { if (!elements.has(id)) elements.set(id, {textContent: '', value: 'script', style: {}, disabled: false}); return elements.get(id); };
+  element('s_prep2').textContent = 'Error: Неизвестная раскадровка.';
+  let resolvePrepare;
+  const request = new Promise(resolve => { resolvePrepare = resolve; });
+  const context = vm.createContext({boardBusy:false, storyboardControls(){}, $:element, opts:()=>({}),
+    pywebview:{api:{prepare_storyboard:()=>request}},boardText:ru=>ru,pollStoryboard(){}});
+  vm.runInContext(sliceFunction('createStoryboard','async function pollStoryboard'),context);
+  const pending = context.createStoryboard();
+  assert.equal(element('s_prep2').textContent,'');
+  resolvePrepare({ok:true}); await pending;
+}
+console.log(`UI: ${scripts.length} script syntax check, ${used.size} Python bridge methods, 6 recovery checks passed.`);

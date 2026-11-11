@@ -175,3 +175,21 @@ Tests include real localhost HTTP heartbeats over a shorter idle timeout, stream
 interruption with no second POST, cached completion and timeout redaction. No live
 paid Elysium call was made. The user's repeated transport exception is not enough
 to identify its exact upstream cause; streaming cannot guarantee server uptime.
+
+## 1.9.8: storyboard last-batch waits
+
+Storyboard Fast-gen clients now report quota waits and allow at most two minute
+waits before stopping with a resume message. Other video-generation clients keep
+their prior configured wait policy. Storyboards via Elysium/OpenAI opt into SSE
+using chat_stream, accept explicit completion, report transport progress with the
+current batch prefix, and make one POST per batch attempt. Ambiguous network
+failures/invalid JSON are not automatically replayed by this storyboard client.
+Committed storyboard batch signatures/cache locations remain unchanged.
+Create clears stale restore errors before awaiting its preparation call; a missing
+saved board is explained separately from a malformed identifier. Progress marks
+committed batch counts and final save. The screenshot's exact live cause is not
+verified, but the previous Fast-gen 70-minute invisible quota-wait path and
+OpenAI-compatible four network-retry path have both been addressed for storyboards.
+Tests reproduce 197 passages with failure at 193–197 and prove the first 192 are
+not queried again; test quota cap/status, stream completion/no retry, missing-board
+messages, stale-error reset, and browser storyboard/project roundtrip.

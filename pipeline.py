@@ -611,6 +611,7 @@ class LLM:
             check_cancel()
             time.sleep(1)
 
+    max_limit_waits = 70
     fallback = None  # запасная модель (Claude/OpenAI по своему ключу), если у fast-gen кончился часовой лимит токенов
 
     def chat_json(self, system, user, max_tokens=4000):
@@ -640,13 +641,17 @@ class LLM:
                         self.progress("prompts", 0, 0, msg)
                     clear_wait("llm")
                     return self.fallback.chat_json(system, user, max_tokens=max_tokens)
-                if r.status_code == 429 and limit_waits < 70:
+                if r.status_code == 429 and limit_waits < self.max_limit_waits:
                     # fast-gen: 200k токенов текста в час. На длинном ролике лимит кончается на середине —
                     # ждём по минуте, пока окно не освободится; попытка не сгорает.
                     limit_waits += 1
                     last = f"HTTP 429: {r.text[:200]}"
                     self._wait_minute("fast-gen: часовой лимит токенов для текстов исчерпан, жду минуту (продолжу автоматически)")
                     continue
+                if r.status_code == 429 and limit_waits >= self.max_limit_waits:
+                    clear_wait("llm")
+                    raise RuntimeError("Fast-gen: лимит текстовых запросов не освободился. Готовые пачки сохранены. "
+                                       "Повторите позднее или выберите Elysium/OpenAI в строке «Тексты сцен».")
                 if r.status_code == 429 or r.status_code >= 500:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
                     attempt += 1

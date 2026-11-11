@@ -116,6 +116,8 @@ def create(script, profile, query, directory, progress=None):
         except (KeyError, TypeError, ValueError) as exc:
             raise StoryboardError('Модель вернула неполную раскадровку. Повторите: готовые пачки сохранены.') from exc
         atomic(cache, {'signature': signature, 'result': result})
+        if progress:
+            progress(f'раскадровка: сохранено {offset + len(batch)}/{len(units)} фраз')
         for plan in sorted(plans, key=lambda p: p['index']):
             index = plan['index']
             rows.append({'id': f'plan-{index:05d}', 'narration': units[index], 'source_shot': plan.get('source_shot'),
