@@ -10,6 +10,7 @@ import shutil
 import subprocess
 
 import netutil
+import model_reply
 from media_tools import ffmpeg_bin, run_media
 
 VERSION = 1
@@ -58,7 +59,23 @@ def seal(board):
     return board
 
 
-def create(script, profile, query, directory, progress=None):
+def _validated_plans(result, batch, source):
+    plans = result['plans']
+    if not isinstance(plans, list) or any(not isinstance(p, dict) or type(p.get('index')) is not int for p in plans):
+        raise ValueError('invalid plan IDs')
+    indices = [p['index'] for p in plans]
+    if len(indices) != len(set(indices)) or set(indices) != {u['index'] for u in batch}:
+        raise ValueError('wrong plan indices')
+    for plan in plans:
+        shot = plan.get('source_shot')
+        if shot is not None and (type(shot) is not int or shot not in source):
+            raise ValueError('unknown source shot')
+        if not isinstance(plan.get('prompt'), str) or not plan['prompt'].strip():
+            raise ValueError('missing visual prompt')
+    return plans
+
+
+def create(script, profile, query, directory, progress=None, *, reuse_from=()):
     shots = (profile or {}).get('montage', {}).get('shots') or []
     if not shots:
         raise StoryboardError('Сначала выполните анализ YouTube в режиме редизайна видео.')
@@ -67,7 +84,8 @@ def create(script, profile, query, directory, progress=None):
     units = passages(script, max(8, min(24, round(mean * 2.4))))
     source = {s['index']: s for s in shots}
     identity = {'version': VERSION, 'script': script, 'profile': profile}
-    directory = Path(directory) / digest(identity)
+    identity_digest = digest(identity)
+    directory = Path(directory) / identity_digest
     directory.mkdir(parents=True, exist_ok=True)
     rows = []
     for offset in range(0, len(units), 8):
@@ -93,27 +111,27 @@ def create(script, profile, query, directory, progress=None):
                   '"reason":"short Russian explanation","prompt":"English visual prompt","motion":"English motion"}]}.'
                   '\nReference JSON:\n' + json.dumps({'passages': batch, 'source_shots': references}, ensure_ascii=False))
         signature = digest(prompt)
-        try:
-            cached = json.loads(cache.read_text(encoding='utf-8'))
-            result = cached['result'] if cached.get('signature') == signature else None
-        except (OSError, ValueError, KeyError):
-            result = None
+        result = None
+        paths = [cache] + [Path(root) / identity_digest / cache.name for root in reuse_from]
+        for candidate in paths:
+            try:
+                cached = json.loads(candidate.read_text(encoding='utf-8'))
+                if cached.get('signature') != signature:
+                    continue
+                _validated_plans(cached['result'], batch, source)
+                result = cached['result']
+                break
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
         if progress:
             progress(f'раскадровка: смысловая привязка фраз {offset + 1}–{offset + len(batch)} из {len(units)}')
+        receipt = cache.with_suffix(".reply.json")
         if result is None:
-            result = query(prompt)
+            result = model_reply.query(query, prompt, receipt, signature, atomic, progress)
         try:
-            plans = result['plans']
-            indices = [p['index'] for p in plans]
-            if len(indices) != len(set(indices)) or set(indices) != {u['index'] for u in batch}:
-                raise ValueError('wrong plan indices')
-            for plan in plans:
-                shot = plan.get('source_shot')
-                if shot is not None and (type(shot) is not int or shot not in source):
-                    raise ValueError('unknown source shot')
-                if not isinstance(plan.get('prompt'), str) or not plan['prompt'].strip():
-                    raise ValueError('missing visual prompt')
+            plans = _validated_plans(result, batch, source)
         except (KeyError, TypeError, ValueError) as exc:
+            model_reply.invalidate(receipt)
             raise StoryboardError('Модель вернула неполную раскадровку. Повторите: готовые пачки сохранены.') from exc
         atomic(cache, {'signature': signature, 'result': result})
         if progress:

@@ -198,3 +198,25 @@ Fast-gen storyboard requests also disable the generic four-attempt network/JSON
 retry loop: connect/read timeout is 15/180 seconds, transport/parse ambiguity is
 terminal for that batch attempt, and explicit HTTP failures get at most two
 attempts. Request waiting is visible. Other pipeline LLM clients retain defaults.
+
+## 1.9.9: Fast-gen storyboard JSON and cross-provider draft recovery
+
+Fast-gen storyboard requests now use its documented SSE stream field (see stored
+ChatCompletionRequest schema), not an undocumented response_format parameter.
+model_reply.py captures transport/model receipts before parsing, without the API
+key. API HTML/empty/unexpected envelopes, truncated/refused replies and malformed
+model JSON are distinct errors. Completed model JSON may receive one text-only
+syntax repair per preparation attempt, validated against the complete original
+batch and source IDs. Receipts survive a failed repair so original reference
+prompts need not be sent again. HTTP HTML and incomplete responses are not sent
+for model repair. Compatibility parsing handles SSE bodies with an incorrect JSON
+MIME without assuming the first chunk is a complete response.
+Validated drafts from other provider/model directories can be reused only with
+identical script/profile identity, prompt signature and valid exact integer IDs.
+No provider is switched automatically. This enables an explicit user switch to
+Elysium to finish the last five passages while keeping the first 192.
+Tests include the 197-passage repair and provider-switch cases, wrong-ID rejection,
+API/model distinction, partial/refused handling, recovery after repair timeout,
+secret redaction, native browser/project roundtrip and prior cache regressions.
+No live paid request was made; the user's discarded 1.9.8 reply cannot establish
+whether its JSONDecodeError was in the transport envelope or assistant content.

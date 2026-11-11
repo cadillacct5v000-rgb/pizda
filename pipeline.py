@@ -22,6 +22,7 @@ import time
 import requests
 import endpoints
 import netutil
+import model_reply
 from media_tools import ffmpeg_bin, run_media
 
 from fastgen_api import BASE_URL, FastGen, app_dir, data_dir, file_to_data_uri
@@ -616,6 +617,7 @@ class LLM:
     retry_network_errors = True
     request_timeout = 300
     report_requests = False
+    stream_responses = False
     fallback = None  # запасная модель (Claude/OpenAI по своему ключу), если у fast-gen кончился часовой лимит токенов
 
     def chat_json(self, system, user, max_tokens=4000):
@@ -631,14 +633,16 @@ class LLM:
         while attempt < self.max_attempts:
             check_cancel()
             request_started = time.monotonic()
+            r = None
             try:
                 if self.report_requests and self.progress:
                     self.progress('prepare',0,0,'ожидаю ответ Fast-gen на текущую пачку')
                 r = self.api.s.post(BASE_URL + "/v1/chat/completions", json={
                     "model": self.model, "temperature": 0.7, "max_tokens": limit,
+                    **({"stream": True} if self.stream_responses else {}),
                     "messages": [{"role": "system", "content": system + "\nОтвечай только JSON, без пояснений."},
                                  {"role": "user", "content": user}],
-                }, timeout=self.request_timeout)
+                }, timeout=self.request_timeout, **({"stream": True} if self.stream_responses else {}))
                 if r.status_code == 429 and self.fallback is not None:
                     # лимит токенов fast-gen кончился, а у пользователя есть свой ключ Claude/OpenAI — не ждём час, переходим
                     self._switched = True
@@ -673,6 +677,13 @@ class LLM:
                         self.model = DEFAULT_LLM_FALLBACK
                         continue
                     raise RuntimeError(f"fast-gen chat {r.status_code}: {r.text[:300]}")
+                if model_reply.active():
+                    key = self.api.s.headers.get('X-API-Key', '')
+                    progress = (lambda message: self.progress('prepare',0,0,message)) if self.progress else None
+                    choice = model_reply.choice(r, key, progress)
+                    out = model_reply.object_from_choice(choice, key)
+                    clear_wait('llm')
+                    return out
                 choice = r.json()["choices"][0]
                 if choice.get("finish_reason") == "length" and limit < 32000:
                     limit = min(32000, limit * 2)
@@ -693,6 +704,9 @@ class LLM:
                     log(f"модель {self.model} отвечает некорректно ({last[:80]}), перехожу на {DEFAULT_LLM_FALLBACK}")
                     self.model = DEFAULT_LLM_FALLBACK
                 netutil.pause(5 * attempt)
+            finally:
+                if r is not None:
+                    r.close()
         raise RuntimeError(f"Языковая модель не ответила корректно: {last}")
 
 

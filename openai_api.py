@@ -15,6 +15,7 @@ import netutil
 
 import endpoints
 import provider_access
+import model_reply
 
 
 def BASE():
@@ -119,6 +120,9 @@ class OpenAIClient:
             if response.status_code >= 400:
                 raise OpenAIError(provider_access.failure(self.provider, response, self.key, model))
             content_type = str((getattr(response, 'headers', None) or {}).get('Content-Type', '')).lower()
+            if model_reply.active():
+                selected = model_reply.choice(response, self.key, self.progress)
+                return model_reply.object_from_choice(selected, self.key)
             value = chat_stream.read(response, self.progress) if 'text/event-stream' in content_type else response.json()
             choice = value['choices'][0]
             if choice.get('finish_reason') in ('length','content_filter','tool_calls') or choice['message'].get('refusal'):
