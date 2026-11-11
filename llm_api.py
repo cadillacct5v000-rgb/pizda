@@ -42,14 +42,8 @@ class LLMError(RuntimeError):
 
 
 def extract_json(text):
-    t = text.strip()
-    m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
-    if m:
-        t = m.group(1)
-    i, j = t.find("{"), t.rfind("}")
-    if i < 0 or j < 0:
-        raise json.JSONDecodeError("нет JSON", t, 0)
-    return json.loads(t[i:j + 1])
+    from model_json import extract_object
+    return extract_object(text)
 
 
 class AnthropicClient:

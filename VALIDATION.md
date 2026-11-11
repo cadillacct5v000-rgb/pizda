@@ -138,3 +138,22 @@ and shows custom API addresses even for vision-only provider use.
 Mocked contract tests and browser E2E cover these paths. A live paid Elysium
 request has not been performed; account/model/vision entitlement is not verified.
 Reference: https://elysiumai.garden/docs and /docs/api/chat-completions.
+
+## 1.9.6: source JSON recovery
+
+Source GPT requests use JSON-object mode (including GPT through Elysium).
+Shared parsing accepts fenced objects, BOM, trailing commas and literal line
+breaks inside strings without filling missing data. Multiple objects, non-finite
+numbers, arrays and incomplete objects are rejected. Text response blocks are
+normalized; explicit refusals, truncation and empty responses are diagnosed
+separately and are not sent for syntax repair.
+The original completed model reply is checkpointed before parsing/validation,
+without the request, images or API key. A syntax failure permits one text-only
+format repair per preparation attempt, validated with the original schema.
+Successful raw/repair replies resume after interruption without re-sending the
+source frames. Wrong-schema replies are marked ineligible for resume so a user
+retry can regenerate only that failed part. Existing validated checkpoints and
+query identity remain compatible with 1.9.5.
+Automated tests cover malformed replies, no image re-send, repair outage resume,
+crash recovery, strict validation and no fabricated completion. The reported user
+reply from 1.9.5 was discarded by that version; its exact defect is unknown.
