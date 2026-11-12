@@ -9,7 +9,7 @@ if sys.platform != 'darwin':
 
 root = Path(SPECPATH)
 datas = [(str(root / 'ui.html'), '.'), (str(root / 'fonts'), 'fonts'),
-         (str(root / 'music'), 'music'), (str(root / 'docs/instruction.html'), 'docs')]
+         (str(root / 'assets'), 'assets'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
 binaries, hiddenimports = [], []
 for package in ('webview', 'youtube_transcript_api', 'edge_tts', 'yt_dlp', 'yt_dlp_ejs'):
     d, b, h = collect_all(package)
@@ -28,7 +28,7 @@ exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='KadroGen',
           codesign_identity=None, entitlements_file=None)
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name='KadroGen')
 app = BUNDLE(coll, name='KadroGen.app', bundle_identifier='org.kadrogen.desktop',
-             version='1.9.10', info_plist={
+             version='2.0.0', info_plist={
                  'NSHighResolutionCapable': True,
                  'CFBundleDisplayName': 'Kadro.Gen',
              })

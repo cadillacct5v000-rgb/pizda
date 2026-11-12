@@ -1200,6 +1200,8 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
     """refs: список путей к референсам героев (может быть пустым). chain — принудительная цепочка моделей."""
     prompt = scene["prompt"]
     chain = chain or (IMAGE_CHAINS_REFS if refs else IMAGE_CHAINS)[FASTGEN_QUALITY]
+    if HD_IMAGES:
+        chain=sorted(chain,key=lambda item: item[0] not in HD_OPS)
     if HD_IMAGES:  # увеличение 2x умеет только Nano Banana через Flow — дешёвый канал Gemini пропускаем
         chain = [(o, n) for o, n in chain if o != "gemini_nano_banana_2_image_generate"] or chain
     inputs = [{"filename": os.path.basename(p), "input": file_to_data_uri(p)} for p in refs]
@@ -1650,7 +1652,7 @@ def provider_chain(ctx, index):
 
 
 # ============ автоотбор картинок: нейросеть-зритель смотрит каждый кадр, брак перерисовывается ============
-QA_SYSTEM = """Ты контролёр качества кадров для видеоролика. Тебе дано описание кадра (то, что просили нарисовать) и сама картинка.
+QA_SYSTEM = """Сначала учитывай заданную стилистику. Схематичные персонажи, палочные руки, плоская рисовка и условная анатомия допустимы, если таков исходный стиль. Не требуй фотореализма от иллюстрации. Ты контролёр качества кадров для видеоролика. Тебе дано описание кадра (то, что просили нарисовать) и сама картинка.
 Реши, годится ли картинка в ролик. БРАК (ok=false), если есть хотя бы одно:
 - читаемый текст, буквы, цифры, надписи, логотипы, вывески с буквами, субтитры, водяные знаки;
 - лишние люди или животные, которых нет в описании; два одинаковых человека; лицо-дубль;
@@ -2787,6 +2789,7 @@ def prune_old_jobs():
         return 0
     limit, freed = time.time() - JOB_KEEP_DAYS * 86400, 0
     for name in os.listdir(root):
+        if name in ('studio','studio_scripts','storyboards'):continue  # saved editorial versions, not disposable render cache
         p = os.path.join(root, name)
         try:
             newest = max([os.path.getmtime(p)] + [os.path.getmtime(os.path.join(p, f)) for f in os.listdir(p)]) if os.path.isdir(p) else os.path.getmtime(p)
@@ -2987,6 +2990,13 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
     key = cfg.get(REWRITE_KEYS.get(engine, ""), "")
     if not key:
         raise SystemExit(f"Для рерайта выбран {rwmod.ENGINE_NAMES.get(engine, engine)}, но его ключ не введён.")
+    import studio
+    if cfg.get('enhancement_level','faithful') in ('enhanced','director'):
+        if profile:
+            profile=studio.with_direction(profile,cfg)
+            if profile_callback:profile_callback(profile)
+        client=studio.text_client({**cfg,'llm_engine':engine},say)
+        return studio.improve_script(text,profile,cfg,os.path.join(data_dir(),'jobs','studio_scripts'),say,client,language=rw.get('language') or cfg.get('rewrite_lang'))
     extra = {"source_profile": profile, "preserve_structure": True} if profile else {}
     target_words = len(text.split()) if profile else (rw.get("words") or cfg.get("rewrite_words") or 1500)
     return rwmod.rewrite(text, engine, key, cfg.get(engine + "_model"), target_words,
@@ -3253,19 +3263,26 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             raise RuntimeError(f"Монтаж исходника: не получены видео для {len(missing)} планов. Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
     if assembly_scenes is not None:
         scenes = assembly_scenes
-    if subtitles:
+    annotations=assembly_scenes if assembly_scenes is not None else scenes
+    labels_enabled=bool(cfg.get('on_screen_labels')) and any(s.get('overlay_text') for s in annotations)
+    if subtitles or labels_enabled:
         raw_mp4 = os.path.join(job_dir, "nosubs.mp4")
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, raw_mp4, progress, motion=motion)
-        check_cancel()
-        progress("subtitles", 0, 1, "накладываю субтитры")
-        # .srt кладём в подпапку: файл с тем же именем рядом с mp4 плееры подхватывают сами и рисуют
-        # свои субтитры поверх уже вшитых — у тестера текст «двоился»
-        os.makedirs(os.path.join(out_dir, "subtitles"), exist_ok=True)
-        srt_path = os.path.join(out_dir, "subtitles", base + ".srt")
-        subs.write_srt(tr["words"], srt_path)
-        subs.burn(ffmpeg_bin(), raw_mp4, srt_path, out_mp4 + ".tmp.mp4", NO_WINDOW)
-        os.replace(out_mp4 + ".tmp.mp4", out_mp4)
-        progress("subtitles", 1, 1, "субтитры наложены, .srt сохранён в папке output/subtitles")
+        sub_dir=os.path.join(out_dir,'subtitles');os.makedirs(sub_dir,exist_ok=True)
+        srt_path=os.path.join(sub_dir,base+'.srt')
+        if subtitles:subs.write_srt(tr['words'],srt_path)
+        preset=cfg.get('caption_style','source')
+        if labels_enabled and preset not in ('source','focus','panel','minimal'):preset='source'
+        if preset in ('source','focus','panel','minimal'):
+            subtitle_file=os.path.join(sub_dir,base+'.ass')
+            subs.write_ass(tr['words'],subtitle_file,preset=preset,profile=profile,width=W,height=H,
+                           position=cfg.get('caption_position','bottom'),annotations=annotations if labels_enabled else (),captions=subtitles)
+        else:
+            subtitle_file=srt_path
+        progress('subtitles',0,1,'накладываю стилизованные субтитры и смысловые акценты')
+        subs.burn(ffmpeg_bin(),raw_mp4,subtitle_file,out_mp4+'.tmp.mp4',NO_WINDOW)
+        os.replace(out_mp4+'.tmp.mp4',out_mp4)
+        progress('subtitles',1,1,'субтитры сохранены; оформление использует палитру исходника')
     else:
         assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progress, motion=motion)
     if cfg.get("speed_copies") and preview_range is None:

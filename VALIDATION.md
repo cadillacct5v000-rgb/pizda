@@ -238,3 +238,8 @@ are reused when switching to video. Mixed/video still fail when required clips
 are unavailable. API and forecast tests reproduce custom-style/profile and image
 mode settings; browser E2E verifies readonly source style and images mode in both
 preview/full launch with rewrite unchecked. No paid live provider calls.
+
+
+## Studio 2.0 verification
+
+Offline fixture coverage: source-style identity preserved, creative metadata/plan validation and resumable batches, full chunked script including its ending, publication schema/cache, durable export without keys, typed SQLite Studio settings, explicit video-denial preflight. Four ASS styles are actually burned by FFmpeg and decoded: pixels change, audio stream survives, user ASS markup is neutralized. Native bundled self-test checks Studio assets and ASS writing. Browser E2E exercises Studio settings, measured report, async packaging/script/board workers and project roundtrip. No live paid API generations, account capability or video-quality claims are inferred from these tests.

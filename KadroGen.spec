@@ -28,7 +28,7 @@ def required_tool(name, directory):
     return str(found)
 
 datas = [(str(root / 'ui.html'), '.'), (str(root / 'fonts'), 'fonts'),
-         (str(root / 'music'), 'music'), (str(root / 'docs/instruction.html'), 'docs')]
+         (str(root / 'assets'), 'assets'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
 binaries = [(required_tool('ffmpeg.exe', 'ffmpeg'), 'ffmpeg'),
             (required_tool('ffprobe.exe', 'ffmpeg'), 'ffmpeg'),
             (required_tool('deno.exe', 'runtime'), 'runtime')]

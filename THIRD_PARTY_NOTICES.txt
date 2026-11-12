@@ -1,0 +1,1 @@
+KadroGen Studio is derived from KadroGen 1.7.1, originally attributed to Grisha Youtuber (https://t.me/Grisha_Youtuber_2003). Original source attribution is preserved here. Dependency copyright and license notices remain with their respective packages.

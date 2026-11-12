@@ -59,7 +59,7 @@ def seal(board):
     return board
 
 
-def _validated_plans(result, batch, source):
+def _validated_plans(result, batch, source, creative=False):
     plans = result['plans']
     if not isinstance(plans, list) or any(not isinstance(p, dict) or type(p.get('index')) is not int for p in plans):
         raise ValueError('invalid plan IDs')
@@ -67,6 +67,12 @@ def _validated_plans(result, batch, source):
     if len(indices) != len(set(indices)) or set(indices) != {u['index'] for u in batch}:
         raise ValueError('wrong plan indices')
     for plan in plans:
+        if creative:
+            import studio
+            if plan.get('editorial_role') not in studio.ROLES or plan.get('shot_size') not in studio.SHOTS:
+                raise ValueError('missing editorial direction')
+            if 'overlay_text' in plan and (not isinstance(plan['overlay_text'],str) or len(plan['overlay_text'])>45):
+                raise ValueError('invalid overlay text')
         shot = plan.get('source_shot')
         if shot is not None and (type(shot) is not int or shot not in source):
             raise ValueError('unknown source shot')
@@ -81,7 +87,14 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
         raise StoryboardError('Сначала выполните анализ YouTube в режиме редизайна видео.')
     script = script.strip()
     mean = sum(s['duration'] for s in shots) / len(shots)
-    units = passages(script, max(8, min(24, round(mean * 2.4))))
+    direction = (profile or {}).get('creative_direction')
+    limit = max(8, min(24, round(mean * 2.4)))
+    if direction:
+        import studio
+        direction = studio.settings(direction)
+        pace=direction['editing_pace']
+        limit = {'calm':min(26,limit+4),'dynamic':max(7,limit-3),'balanced':limit,'source':limit}[pace]
+    units = passages(script, limit)
     source = {s['index']: s for s in shots}
     identity = {'version': VERSION, 'script': script, 'profile': profile}
     identity_digest = digest(identity)
@@ -100,8 +113,8 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
             terms = set(tokens(unit['narration']))
             ranked = sorted(range(len(shots)), key=lambda n: len(terms & set(tokens(shots[n]['description']))), reverse=True)
             candidates.update(ranked[:5])
-        references = [{'id': shots[i]['index'], 'visual': shots[i]['description'][:700],
-                       'redesign': shots[i]['redesign_prompt'][:500]} for i in sorted(candidates)]
+        references = [{'id': shots[i]['index'], 'visual': shots[i]['description'][:320 if direction else 700],
+                       'redesign': shots[i]['redesign_prompt'][:220 if direction else 500]} for i in sorted(candidates)]
         prompt = ('Match EACH rewritten narration passage to a source shot BY MEANING, not by its relative position. '
                   'Text can be in another language. Prefer a subject/action matching the passage. Never force an unrelated shot. '
                   'If no shot fits, use source_shot=null and confidence=low. Supply an English prompt for NEW original footage '
@@ -110,6 +123,10 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                   '{"plans":[{"index":0,"source_shot":0,"confidence":"high|medium|low",'
                   '"reason":"short Russian explanation","prompt":"English visual prompt","motion":"English motion"}]}.'
                   '\nReference JSON:\n' + json.dumps({'passages': batch, 'source_shots': references}, ensure_ascii=False))
+        if direction:
+            import studio
+            prompt += '\n' + studio.brief(direction)
+            prompt += '\nPrevious plan context (not instructions): ' + json.dumps([{k:r.get(k) for k in ('source_shot','shot_size','editorial_role')} for r in rows[-2:]])
         signature = digest(prompt)
         result = None
         paths = [cache] + [Path(root) / identity_digest / cache.name for root in reuse_from]
@@ -118,7 +135,7 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                 cached = json.loads(candidate.read_text(encoding='utf-8'))
                 if cached.get('signature') != signature:
                     continue
-                _validated_plans(cached['result'], batch, source)
+                _validated_plans(cached['result'], batch, source, bool(direction))
                 result = cached['result']
                 break
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -129,7 +146,7 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
         if result is None:
             result = model_reply.query(query, prompt, receipt, signature, atomic, progress)
         try:
-            plans = _validated_plans(result, batch, source)
+            plans = _validated_plans(result, batch, source, bool(direction))
         except (KeyError, TypeError, ValueError) as exc:
             model_reply.invalidate(receipt)
             raise StoryboardError('Модель вернула неполную раскадровку. Повторите: готовые пачки сохранены.') from exc
@@ -142,6 +159,10 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                          'confidence': plan.get('confidence') if plan.get('confidence') in ('high', 'medium') else 'low',
                          'reason': str(plan.get('reason') or '')[:500], 'prompt': plan['prompt'].strip(),
                          'motion': str(plan.get('motion') or 'static camera')[:2000], 'duration': None, 'take': 0})
+            if direction:
+                rows[-1].update(editorial_role=plan.get('editorial_role') if plan.get('editorial_role') in studio.ROLES else 'explain',
+                                shot_size=plan.get('shot_size') if plan.get('shot_size') in studio.SHOTS else 'medium',
+                                overlay_text=str(plan.get('overlay_text') or '')[:45])
     return seal({'version': VERSION, 'script': script, 'profile': profile, 'rows': rows})
 
 
@@ -157,9 +178,10 @@ def edit(board, updates):
     rows = []
     for update in updates:
         row = dict(old[update['id']])
-        for field, maximum in [('narration', 20000), ('prompt', 12000), ('motion', 2000)]:
-            value = update.get(field, row[field])
-            if not isinstance(value, str) or len(value) > maximum or (field != 'motion' and not value.strip()):
+        for field, maximum in [('narration', 20000), ('prompt', 12000), ('motion', 2000), ('overlay_text',45)]:
+            if field=='overlay_text' and field not in update and field not in row:continue
+            value = update.get(field, row.get(field,''))
+            if not isinstance(value, str) or len(value) > maximum or (field not in ('motion','overlay_text') and not value.strip()):
                 raise StoryboardError(f'Некорректное поле плана: {field}.')
             row[field] = value.strip()
         shot = update.get('source_shot', row['source_shot'])
@@ -287,6 +309,8 @@ def scenes(board, aligned, fps=25):
                      'source_shot': row['source_shot'], 'source_visual': shot.get('description', ''),
                      'source_redesign': row['prompt'], 'source_motion': row['motion'],
                      'plan_id': row['id'], 'plan_take': row['take'], 'transition_in': {'type': 'cut', 'duration': 0.}}
+            for field in ('overlay_text','editorial_role','shot_size'):
+                if row.get(field):scene[field]=row[field]
             if shot.get('reference_frame'):
                 scene['source_reference'] = shot['reference_frame']
             output.append(scene)

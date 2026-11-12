@@ -6,11 +6,12 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const html = fs.readFileSync(root + 'ui.html', 'utf8');
 const app = fs.readFileSync(root + 'app.py', 'utf8');
-const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]);
+const externalScripts=[...html.matchAll(/<script\b[^>]*src="([^"]+)"[^>]*><\/script>/gi)].map(m=>fs.readFileSync(root+m[1],'utf8'));
+const scripts = [...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]).concat(externalScripts);
 assert.ok(scripts.length, 'No UI JavaScript found');
 for (const [i, script] of scripts.entries()) new vm.Script(script, {filename: `ui-script-${i}.js`});
 const methods = new Set([...app.matchAll(/^    def (\w+)\(/gm)].map(m => m[1]));
-const used = new Set([...html.matchAll(/pywebview\.api\.(\w+)\(/g)].map(m => m[1]));
+const used = new Set([...(html+'\n'+externalScripts.join('\n')).matchAll(/pywebview\.api\.(\w+)\(/g)].map(m => m[1]));
 for (const method of used) assert.ok(methods.has(method), `Missing Python API method: ${method}`);
 
 // Execute the actual UI polling/cancel functions against a small in-memory DOM.

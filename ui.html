@@ -2,8 +2,7 @@
 <html lang="ru" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<title>Kadro.Gen</title>
-<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<title>KadroGen Studio</title>
 <style>
   :root { --bg:#f4f6f9; --bg2:#ffffff; --ink:#0f1419; --ink2:#66707c; --line:#d6dde6; --line2:#e9edf2; --acc:#00b4e6; --acc2:#0a7bd6; --ok:#12b886; --err:#e03131;
           --shadow:0 30px 70px rgba(15,30,50,.10); --glass:rgba(255,255,255,.72); --gridc:rgba(15,20,25,.05); --tipbg:#0f1419; --tipink:#fff; }
@@ -400,11 +399,13 @@
   @media(max-width:1000px) { .board-row { grid-template-columns:160px 1fr; } }
 
 </style>
+<link rel="stylesheet" href="assets/studio.css">
 </head>
 <body>
 <div class="bgl"><i></i><i></i></div>
 <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
 <div class="topctl">
+  <button class="ctl" id="studiobtn" onclick="openStudio()">Студия</button>
   <button class="ctl" id="projectsbtn" onclick="openProjects()">Проекты</button>
   <div class="ctl help" id="helpbtn" onclick="pywebview.api.open_help()" data-i18n="help"></div>
   <div class="ctl" id="langbtn" title="Language">EN</div>
@@ -414,14 +415,12 @@
   </div>
 </div>
 <div id="gtip"></div>
-<div class="volbox" id="volbox"><div class="vwrap" title="Музыка"><input type="range" id="vol" min="0" max="100" value="50"></div><div class="nxt" id="nxt" title="Следующий трек"><svg viewBox="0 0 24 24"><path d="M5 5l9 7-9 7z"/><path d="M18 5v14"/></svg></div></div>
-<audio id="bgm" preload="auto"></audio>
 <div id="credit"></div>
 <div class="toast" id="toast"></div>
 <div class="wrap">
 
   <div class="screen active" id="screen1">
-    <div class="logo big"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div>
+    <div class="logo big"><span class="k">KadroGen</span><span class="thin">Studio</span></div>
     <div id="update"><span class="ud"></span><div class="ut" id="u_text"></div><div class="ubar"><i id="u_bar"></i></div><button id="u_btn" onclick="installUpdate()"></button><a class="lk" id="u_link"></a></div>
     <div class="tiles c6" id="providers">
       <label class="tile"><input type="checkbox" name="prov" value="fastgen"><span class="dot"></span><span class="q" data-tipkey="tip_fastgen">?</span>
@@ -444,7 +443,7 @@
   </div>
 
   <div class="screen" id="screen2">
-    <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>02</b> · <span data-i18n="s2"></span></div></div>
+    <div class="topbar"><div class="logo"><span class="k">KadroGen</span><span class="thin">Studio</span></div><div class="stepname"><span data-i18n="step"></span> <b>02</b> · <span data-i18n="s2"></span></div></div>
     <div class="tiles c3" id="modes">
       <label class="tile"><input type="radio" name="mode" value="images"><span class="dot"></span>
         <svg viewBox="0 0 64 64"><rect x="8" y="12" width="48" height="40"/><path d="M8 44l14-14 10 10 8-8 16 12"/><circle cx="44" cy="24" r="4"/></svg><span class="t" data-i18n="m_images"></span></label>
@@ -461,7 +460,7 @@
   </div>
 
   <div class="screen" id="screen3">
-    <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>03</b> · <span data-i18n="s3"></span></div></div>
+    <div class="topbar"><div class="logo"><span class="k">KadroGen</span><span class="thin">Studio</span></div><div class="stepname"><span data-i18n="step"></span> <b>03</b> · <span data-i18n="s3"></span></div></div>
     <div class="opts">
       <input type="checkbox" id="use_refs" hidden>
       <h1 class="optq" data-i18n="opt_q"></h1>
@@ -480,7 +479,7 @@
   </div>
 
   <div class="screen" id="screen4">
-    <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>04</b> · <span data-i18n="s4"></span></div></div>
+    <div class="topbar"><div class="logo"><span class="k">KadroGen</span><span class="thin">Studio</span></div><div class="stepname"><span data-i18n="step"></span> <b>04</b> · <span data-i18n="s4"></span></div></div>
     <div class="alist" id="dropzone"></div>
     <datalist id="voice_list"></datalist>
     <datalist id="lang_list"><option value="русском"><option value="польском"><option value="английском"><option value="украинском"><option value="немецком"><option value="испанском"><option value="французском"><option value="португальском"><option value="итальянском"><option value="турецком"></datalist>
@@ -489,7 +488,7 @@
   </div>
 
   <div class="screen" id="screen5">
-    <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>05</b> · <span data-i18n="s5"></span></div></div>
+    <div class="topbar"><div class="logo"><span class="k">KadroGen</span><span class="thin">Studio</span></div><div class="stepname"><span data-i18n="step"></span> <b>05</b> · <span data-i18n="s5"></span></div></div>
     <div class="scan" id="scan" style="display:none"><div class="wave" id="wave"></div><div class="phase" id="scan_phase"></div><div class="line"></div><div class="sub" id="scan_sub"></div></div>
     <div class="board-controls" id="board_controls" hidden>
       <button class="ghost" id="board_create" onclick="createStoryboard()">Создать раскадровку</button>
@@ -513,7 +512,7 @@
   </div>
 
   <div class="screen" id="screen6">
-    <div class="topbar"><div class="logo"><span class="k">Kadro</span><span class="d">.</span><span class="thin">Gen</span></div><div class="stepname"><span data-i18n="step"></span> <b>06</b> · <span data-i18n="s6"></span></div></div>
+    <div class="topbar"><div class="logo"><span class="k">KadroGen</span><span class="thin">Studio</span></div><div class="stepname"><span data-i18n="step"></span> <b>06</b> · <span data-i18n="s6"></span></div></div>
     <div class="proc">
       <div class="panel">
         <div class="ring"><svg width="180" height="180" viewBox="0 0 180 180"><circle class="tick" cx="90" cy="90" r="86"/><circle class="bg" cx="90" cy="90" r="80"/><circle class="fg" id="ring" cx="90" cy="90" r="80"/><circle class="glow" id="ring_glow" cx="90" cy="90" r="80"/></svg>
@@ -536,11 +535,11 @@
 <script>
 const $ = id => document.getElementById(id);
 const I18N = {
-  ru: {help:'Инструкция', credit:'сделано <a data-url="https://t.me/Grisha_Youtuber_2003">Гришей Ютубером</a>', tagline:'MP3 / сценарий → Video', upd1:'Доступна версия', upd2:'Скачать', upd3:'и распаковать поверх папки программы.', hint1:'Выберите, чем хотите генерировать видео. Можно отметить несколько.', hint_err:'Отметьте хотя бы один сервис.', next:'Далее', back:'Назад', step:'Шаг', s2:'Режим', s3:'Опции', s4:'Доступ', s5:'Проверка', s6:'Создание', begin:'Начать', rv_settings:'Настройки', rv_services:'Сервисы', to_settings:'К настройкам', err_script:'Вставьте текст сценария.', err_audio:'Выберите файл озвучки или перетащите его в окно.', err_rw_empty:'рерайт вернулся пустым', rv_script:'Сценарий, можно править', rv_script_rw:'Переписанный сценарий, можно править', rv_words:'слов', rv_none:'—', rv_yes:'да', rv_no:'нет', addkey:'ещё ключ', opt_q:'Нужны эти опции?', no_next:'Нет, далее', check:'Проверить', same_key:'тот же ключ, что для картинок', drop_hint:'перетащите mp3 в окно или выберите файл', models:'Модель для текстов', src_lbl:'Сценарий', file_lbl:'Файл озвучки', o_tts:'Сделать озвучку', o_rw:'Рерайт сценария', g_main:'Основное', g_extra:'Дополнительно', rw_text_src:'Свой текст', rw_words:'Слов в сценарии', rw_lang:'Язык сценария', rw_size:'Объём и язык', rw_llm:'Кто переписывает', rw_then:'Озвучка нового сценария', voice_rw:'Рерайт и озвучка', vo_q:'Сделать вам <b>озвучку</b>?', vo_mine:'У меня своя', vo_make:'Сделайте', voice_mp3:'Ваша озвучка', voice_tts:'Озвучка сценария',
+  ru: {help:'Инструкция', credit:'KadroGen Studio', tagline:'MP3 / сценарий → Video', upd1:'Доступна версия', upd2:'Скачать', upd3:'и распаковать поверх папки программы.', hint1:'Выберите, чем хотите генерировать видео. Можно отметить несколько.', hint_err:'Отметьте хотя бы один сервис.', next:'Далее', back:'Назад', step:'Шаг', s2:'Режим', s3:'Опции', s4:'Доступ', s5:'Проверка', s6:'Создание', begin:'Начать', rv_settings:'Настройки', rv_services:'Сервисы', to_settings:'К настройкам', err_script:'Вставьте текст сценария.', err_audio:'Выберите файл озвучки или перетащите его в окно.', err_rw_empty:'рерайт вернулся пустым', rv_script:'Сценарий, можно править', rv_script_rw:'Переписанный сценарий, можно править', rv_words:'слов', rv_none:'—', rv_yes:'да', rv_no:'нет', addkey:'ещё ключ', opt_q:'Нужны эти опции?', no_next:'Нет, далее', check:'Проверить', same_key:'тот же ключ, что для картинок', drop_hint:'перетащите mp3 в окно или выберите файл', models:'Модель для текстов', src_lbl:'Сценарий', file_lbl:'Файл озвучки', o_tts:'Сделать озвучку', o_rw:'Рерайт сценария', g_main:'Основное', g_extra:'Дополнительно', rw_text_src:'Свой текст', rw_words:'Слов в сценарии', rw_lang:'Язык сценария', rw_size:'Объём и язык', rw_llm:'Кто переписывает', rw_then:'Озвучка нового сценария', voice_rw:'Рерайт и озвучка', vo_q:'Сделать вам <b>озвучку</b>?', vo_mine:'У меня своя', vo_make:'Сделайте', voice_mp3:'Ваша озвучка', voice_tts:'Озвучка сценария',
        m_images:'Только картинки', m_mixed:'50 на 50', m_video:'Только видео', regime:'Режим', speed:'Скорость', quality:'Качество',
        q_title:'Очередь', q_note:'несколько сценариев или файлов подряд, у каждого свой голос · остальные настройки общие', q_add:'+ В очередь', q_clear:'убрать готовые', q_empty:'Пусто. Вставьте сценарий или выберите mp3 и нажмите «+ В очередь»; повторите для следующего. Кнопка «Начать» запустит все по очереди.', q_voice_ph:'голос (пусто — по умолчанию)', q_retry:'повторить', q_need:'Сначала вставьте сценарий или выберите файл', q_added:'Добавлено в очередь', q_st:{queued:'в очереди', running:'идёт', done:'готово', error:'ошибка', stopped:'остановлено'}, q_job:'Задание', q_of:'из', q_summary:'Готово {d} из {n}', rv_queue:'Очередь', q_default:'голос по умолчанию', redo_btn:'перерисовать этот кадр', redo_queued:'Кадр {n} будет перерисован до сборки ролика', redo_deleted:'Кадр {n} удалён. Нажмите «Ещё одно» и запустите тот же ролик — программа дорисует только его и пересоберёт видео', redo_late:'Ролик уже собирается. Перерисовать можно, когда он будет готов: нажмите ↻ на кадре и запустите ролик ещё раз', style_lbl:'Стиль', custom_name:'Свой стиль', custom_ph:'Опишите стиль своими словами, лучше по-английски: например, «vintage Soviet poster, flat colors, bold shapes, paper texture». Программа положит это в основу всех картинок ролика.', q_styles:'Разный стиль', q_styles_on:'Разный стиль · вкл', q_style_common:'стиль как у всех', tip_style:'Единый вид всех картинок ролика. Ультрареализм — как фото. Остальные — кино, рисунок, комикс, мультфильм. В рисованных стилях одинаковость героев держится хуже, чем в реализме, а аниме и комикс при оживлении иногда «плывут». «Свой стиль» — опишите сами. Смена стиля перерисовывает ролик заново.', tts_royal_note:'озвучка ElevenLabs v4 по ключу royaltechno · ключ уже введён в строке картинок · оплата за символы с баланса', tts_royal_nokey:'нужен ключ royaltechno — введите его в строке картинок выше', tts_fg_note:'голоса Gemini по ключу fast-gen · ключ уже введён в строке картинок · 10 запросных кредитов за фразу, кредиты картинок не тратятся', tts_fg_nokey:'нужен ключ fast-gen — введите его в строке картинок выше', gb:'ГБ', mb:'МБ', store_line:'Видео: {o} · заготовки: {j}', store_open:'открыть папку с видео', store_clear:'очистить заготовки', store_confirm:'Удалить заготовки всех заданий (картинки, озвучку, клипы)? Готовые видео останутся. Начатые ролики придётся делать заново.', store_done:'Освобождено {m} МБ', upd_ready:'Версия <b>{v}</b> скачана — установится сама, когда вы закроете программу', upd_now:'Установить сейчас', base_url:'Свой адрес API', base_note:'необязательно · прокси или зеркало вместо официального адреса; пусто — официальный', vf_lbl:'Оживить первые', vf_none:'нет', vf_mixed:'+ каждая вторая', voice_ok:'Голос найден: ', voice_unknown:'Такого ID нет в загруженном списке — будет использован как введён. Нажмите «Список», чтобы проверить.', spent:'ЗАТРАЧЕНО ', vf_scenes:['сцену','сцены','сцен'], tip_vf:'Первые N сцен ролика будут оживлены видео, остальные — картинками с движением камеры (в «50 на 50» ещё и каждая вторая). Удобно, когда видео-кредитов мало: зритель решает в первые секунды, а на них и уходит оживление.',
        rv_vf:'Оживить первые', rv_vf_mixed:'+ каждая вторая сцена (режим 50 на 50)', o_ultra:'Ультра режим', o_hd:'HD-картинки', tip_hd:'Картинки Nano Banana приходят вдвое крупнее (около 2750×1540 вместо 1376×768) и после сжатия до Full HD выглядят заметно резче. Работает в режиме «Качество» через fast-gen (8 кредитов за картинку вместо 1) и royaltechno (двойной вес). Сама картинка делается чуть дольше; заметно дольше станет, только если ролик упирается в часовой лимит кредитов — он кончится вдвое быстрее.', o_subs:'Субтитры', o_motion:'Моушн-дизайн', o_speed:'Копии 0,98 и 1,02', tip_speed:'Рядом с готовым роликом сохраняются ещё две версии: чуть медленнее (0,98) и чуть быстрее (1,02), со звуком в том же тоне. Нужны, чтобы один сюжет выкладывать на разные каналы как разные видео. Битрейт копий берётся у самого ролика, поэтому весят они примерно как оригинал. Добавляет к сборке несколько минут на часовой ролик.', o_qa:'Автоотбор картинок', qa_row:'Автоотбор картинок', qa_note:'нейросеть смотрит каждый кадр и бракует: текст, лишние люди, кривые руки, не тот предмет', qa_or_model:'название модели на OpenRouter, например google/gemini-2.5-flash или qwen/qwen3-vl', tip_qa:'Нейросеть-зритель (Gemini, Claude, OpenAI или OpenRouter по вашему ключу) смотрит каждую картинку сразу после генерации. Брак — читаемый текст, лишние люди, уродства рук и лиц, не тот предмет, кадр не по описанию — перерисовывается с подсказкой, что было не так, до двух раз; из вариантов берётся лучший. Ключ вводится на экране «Доступ». Проверка идёт параллельно с рисованием и почти не удлиняет ролик; перерисовки стоят кредитов картинок (обычно 5–15% сцен). Через fast-gen это не работает: его тариф не даёт моделям смотреть картинки.',
-       keys:'Ключи', key:'Ключ', what:'что это?', where:'где взять?', stt:'Распознавание речи', llm:'Тексты сцен', check_many:'Проверить ключи', check_one:'Проверить ключ', models:'модели для текстов', voice:'Озвучка', src_mp3:'Готовый mp3', src_script:'Сценарий → озвучить', drop:'Перетащите mp3', or:'или', pick:'Выбрать файл', ttskey:'Ключ озвучки', voiceid:'ID голоса', list:'Список', script:'Текст сценария', ready:'Готов', go:'Поехали', stop:'Стоп', again:'Ещё одно', frames:'Кадры', frames_done:'Кадры · готово', done:'Готово', open:'Открыть видео', folder:'Папка', log:'журнал',
+       keys:'Ключи', key:'Ключ', what:'что это?', where:'где взять?', stt:'Распознавание речи', llm:'Тексты сцен', check_many:'Проверить ключи', check_one:'Проверить ключ', models:'модели для текстов', voice:'Озвучка', src_mp3:'Готовый mp3', src_script:'Сценарий → озвучить', drop:'Перетащите mp3', or:'или', pick:'Выбрать файл', ttskey:'Ключ озвучки', voiceid:'ID голоса', list:'Список', script:'Текст сценария', ready:'Готов', go:'Собрать ролик', stop:'Стоп', again:'Ещё одно', frames:'Кадры', frames_done:'Кадры · готово', done:'Готово', open:'Открыть видео', folder:'Папка', log:'журнал',
        ph_key:'ключ', ph_voice:'вставьте voice_id (пусто — голос по умолчанию)', tts_edge:'Edge · бесплатно', tts_edge_note:'ключ не нужен · по умолчанию русский мужской голос Дмитрий, женский — ru-RU-SvetlanaNeural', ph_script:'Вставьте текст, который нужно озвучить…', checking:'Проверяю…', saved:'Сохранено', loading:'Загружаю список…', voices_n:'в списке голосов: {n} — начните вводить в поле ID', voices_none:'сервис не отдал список; введите voice_id вручную', recent:'Недавние: ', recent_none:'Пусто — будет голос сервиса по умолчанию.', recent_tag:'недавний',
        ph_rw:'Переписываю сценарий', ph_rw_sub:'Модель читает исходник и пишет новый текст', ph_tts:'Озвучиваю сценарий', ph_tts_sub:'Голос синтезируется, это может занять минуту', phases:[['Слушаю озвучку','Распознаю речь и расставляю таймкоды каждого слова'],['Ищу паузы и фразы','Границы предложений станут границами сцен'],['Режу на сцены','Каждая сцена: от 3 до 7 секунд'],['Считаю стоимость','Сколько сцен, кредитов и минут понадобится']],
        sentence:'Видео длительностью <b>{d}</b> будет генерироваться <b>{how}</b>, примерно <b>{m}</b>.', how_images:'только картинками', how_video:'только видео', how_mixed:'видео и картинками через одну', min:['минуту','минуты','минут'], m_:'мин', s_:'с', elapsed:'ПРОШЛО ', error:'Ошибка: ', stopped:'Остановлено. Сделанное сохранено, можно запустить снова.',
@@ -564,7 +563,7 @@ const I18N = {
        tip_tts:'Озвучка из текста сценария. Бесплатно и без ключа — голоса Microsoft Edge (по-русски Дмитрий и Светлана, качество среднее). Дороже и живее — ElevenLabs v3 через VoiceGen, Voicer или Lumean, понадобится их ключ. Без этой галочки нужен готовый mp3.',
        tip_subs:'Текст озвучки накладывается на видео с точными таймингами: строки до 42 символов, без мигания на паузах. Файл .srt сохраняется рядом с видео.',
        tip_motion:'Плавные переходы между сценами: затемнение, сдвиг, раскрытие, наезд. Ролик выглядит смонтированным. Сборка дольше примерно на минуту.'},
-  en: {help:'Guide', credit:'developed by <a data-url="https://t.me/Grisha_Youtuber_2003">t.me/Grisha_Youtuber_2003</a>', tagline:'MP3 / script → Video', upd1:'Version', upd2:'Download', upd3:'is available — unpack over the program folder.', hint1:'Choose what to generate the video with. You can pick several.', hint_err:'Pick at least one service.', next:'Next', back:'Back', step:'Step', s2:'Mode', s3:'Options', s4:'Access', s5:'Review', s6:'Creating', begin:'Start', rv_settings:'Settings', rv_services:'Services', to_settings:'To settings', err_script:'Paste the script text.', err_audio:'Choose a voice-over file or drop it into the window.', err_rw_empty:'the rewrite came back empty', rv_script:'Script, editable', rv_script_rw:'Rewritten script, editable', rv_words:'words', rv_none:'—', rv_yes:'yes', rv_no:'no', addkey:'another key', opt_q:'Need these options?', no_next:'No, next', check:'Check', same_key:'same key as for images', drop_hint:'drop an mp3 into the window or choose a file', models:'Text model', src_lbl:'Script', file_lbl:'Voice-over file', o_tts:'Make voice-over', o_rw:'Script rewrite', g_main:'Main', g_extra:'Extras', rw_text_src:'My text', rw_words:'Words in script', rw_lang:'Script language', rw_size:'Length and language', rw_llm:'Who rewrites', rw_then:'Voice-over of the new script', voice_rw:'Rewrite and voice-over', vo_q:'Should we make the <b>voice-over</b>?', vo_mine:'I have my own', vo_make:'Make it', voice_mp3:'Your voice-over', voice_tts:'Script voice-over',
+  en: {help:'Guide', credit:'KadroGen Studio', tagline:'MP3 / script → Video', upd1:'Version', upd2:'Download', upd3:'is available — unpack over the program folder.', hint1:'Choose what to generate the video with. You can pick several.', hint_err:'Pick at least one service.', next:'Next', back:'Back', step:'Step', s2:'Mode', s3:'Options', s4:'Access', s5:'Review', s6:'Creating', begin:'Start', rv_settings:'Settings', rv_services:'Services', to_settings:'To settings', err_script:'Paste the script text.', err_audio:'Choose a voice-over file or drop it into the window.', err_rw_empty:'the rewrite came back empty', rv_script:'Script, editable', rv_script_rw:'Rewritten script, editable', rv_words:'words', rv_none:'—', rv_yes:'yes', rv_no:'no', addkey:'another key', opt_q:'Need these options?', no_next:'No, next', check:'Check', same_key:'same key as for images', drop_hint:'drop an mp3 into the window or choose a file', models:'Text model', src_lbl:'Script', file_lbl:'Voice-over file', o_tts:'Make voice-over', o_rw:'Script rewrite', g_main:'Main', g_extra:'Extras', rw_text_src:'My text', rw_words:'Words in script', rw_lang:'Script language', rw_size:'Length and language', rw_llm:'Who rewrites', rw_then:'Voice-over of the new script', voice_rw:'Rewrite and voice-over', vo_q:'Should we make the <b>voice-over</b>?', vo_mine:'I have my own', vo_make:'Make it', voice_mp3:'Your voice-over', voice_tts:'Script voice-over',
        m_images:'Images only', m_mixed:'50 / 50', m_video:'Video only', regime:'Mode', speed:'Speed', quality:'Quality',
        q_title:'Queue', q_note:'several scripts or files in a row, each with its own voice · all other settings are shared', q_add:'+ Add to queue', q_clear:'remove finished', q_empty:'Empty. Paste a script or pick an mp3 and press “+ Add to queue”; repeat for the next one. “Start” runs them one by one.', q_voice_ph:'voice (empty — default)', q_retry:'retry', q_need:'Paste a script or pick a file first', q_added:'Added to the queue', q_st:{queued:'queued', running:'running', done:'done', error:'error', stopped:'stopped'}, q_job:'Job', q_of:'of', q_summary:'Done {d} of {n}', rv_queue:'Queue', q_default:'default voice', redo_btn:'redraw this frame', redo_queued:'Frame {n} will be redrawn before the video is assembled', redo_deleted:'Frame {n} deleted. Press “One more” and run the same video — only this frame is redrawn and the video is rebuilt', redo_late:'The video is already being assembled. Once it is done, press ↻ on the frame and run the video again', style_lbl:'Style', custom_name:'Custom style', custom_ph:'Describe the style in your own words, e.g. "vintage Soviet poster, flat colors, bold shapes, paper texture". It becomes the base of every image in the video.', q_styles:'Per-job style', q_styles_on:'Per-job style · on', q_style_common:'same as all', tip_style:'One look for every image in the video. Ultra-realism is photo-like; the rest are film, drawing, comic or cartoon. Drawn styles keep characters consistent less reliably than realism, and anime or comic frames may “swim” when animated. “Custom style” — describe it yourself. Changing the style redraws the video from scratch.', tts_royal_note:'ElevenLabs v4 voice-over via your royaltechno key · the key is already entered in the images row · billed per character from your balance', tts_royal_nokey:'needs a royaltechno key — enter it in the images row above', tts_fg_note:'Gemini voices via your fast-gen key · the key is already entered in the images row · 10 request credits per phrase, image credits are not spent', tts_fg_nokey:'needs a fast-gen key — enter it in the images row above', gb:'GB', mb:'MB', store_line:'Videos: {o} · work files: {j}', store_open:'open videos folder', store_clear:'clear work files', store_confirm:'Delete work files of all jobs (images, voice-over, clips)? Finished videos stay. Unfinished videos will start over.', store_done:'Freed {m} MB', upd_ready:'Version <b>{v}</b> is downloaded — it will install itself when you close the app', upd_now:'Install now', base_url:'Custom API base URL', base_note:'optional · a proxy or mirror instead of the official address; empty — official', vf_lbl:'Animate the first', vf_none:'none', vf_mixed:'+ every second', voice_ok:'Voice found: ', voice_unknown:'This ID is not in the loaded list — it will be used as typed. Press “List” to check.', spent:'TIME SPENT ', vf_scenes:['scene','scenes','scenes'], tip_vf:'The first N scenes are animated to video, the rest stay as images with camera motion (in 50/50 every second scene too). Handy when video credits are scarce: viewers decide in the first seconds.',
        rv_vf:'Animate the first', rv_vf_mixed:'+ every second scene (50/50 mode)', o_ultra:'Ultra mode', o_hd:'HD images', tip_hd:'Nano Banana images come twice as large (about 2750×1540 instead of 1376×768) and look noticeably sharper after downscaling to Full HD. Quality mode via fast-gen (8 credits per image instead of 1) and royaltechno (double weight). Each image takes slightly longer; it gets noticeably longer only if the video hits the hourly credit limit — it runs out twice as fast.', o_subs:'Subtitles', o_motion:'Motion design', o_speed:'0.98 and 1.02 copies', tip_speed:'Two extra versions are saved next to the finished video: slightly slower (0.98) and slightly faster (1.02), audio pitch unchanged. Handy for posting one story to several channels as different videos. Copies use the video’s own bitrate, so they weigh about the same as the original. Adds a few minutes per hour of video.', o_qa:'Auto image review', qa_row:'Auto image review', qa_note:'a vision model checks every frame and rejects text, extra people, broken hands, wrong objects', qa_or_model:'model name on OpenRouter, e.g. google/gemini-2.5-flash or qwen/qwen3-vl', tip_qa:'A vision model (Gemini, Claude, OpenAI or OpenRouter via your own key) looks at every image right after generation. Rejects — readable text, extra people, deformed hands or faces, wrong object, frame off-description — are redrawn with a hint about what was wrong, up to twice; the best variant is kept. The key goes on the Access screen. Review runs in parallel with drawing and barely extends the job; redraws cost image credits (usually 5–15% of scenes). Not available via fast-gen: its plan does not let chat models see images.',
@@ -938,7 +937,7 @@ async function poll() {
 async function loadConfig(keepScreen) {
   const st = await pywebview.api.get_state(); const c = st.config;
   document.documentElement.dataset.theme = c.theme || 'dark'; L = c.lang || 'ru';
-  if (!keepScreen) { setTracks(c.tracks); $('vol').value = (c.music === undefined || c.music === null) ? 50 : c.music; applyMusic(+$('vol').value); }
+  if (window.loadStudioSettings) loadStudioSettings(c);
   for (const k of ['elysium','openai','anthropic','gemini','assemblyai','openrouter']) single[k] = c['has_' + k] ? c[k] : '';
   setKeysFromConfig(c);
   for (const k of ['voicegen','voicer','lumean','elevenlabs']) if (c['has_' + k]) ttsKeys[k] = c[k];
@@ -1044,7 +1043,7 @@ function renderAccess() {
     }
     if (rwSrc === 'youtube' && analyzeVideo) {
       H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['elysium','Elysium'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<button class="ghost" id="analysis_access_check" onclick="checkSourceAnalysisAccess()">${L === 'ru' ? 'Проверить доступ к кадрам' : 'Check image access'}</button>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis') + sel('analysis_model', modelOptions(analysisEngine, analysisModel || models[analysisEngine + '_model']), analysisModel || models[analysisEngine + '_model']) + chk('analysis', 0, 's_analysis') + modelButton(analysisEngine, 'analysis_model', 's_analysis')), 's_analysis'));
-      H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника, все сцены — видео. Сохраняются найденные склейки и их ритм под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
+      H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника. Картинки или клипы — по выбранному режиму. Найденный ритм склеек подстраивается под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
     }
     H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
     const rk = (rwEngine === 'fastgen' && fg) ? `<span class="note">${t('same_key')}</span>` : keyIn('k_rw', rwEngine, 0, rwKeys[rwEngine] || '', RW_PH[rwEngine]) + eye('k_rw') + chk(rwEngine, 0, 's_rw');
@@ -1321,6 +1320,7 @@ async function loadDesktopProject(id) {
   $('use_rw').checked = !!rw.on; $('use_tts').checked = source === 'script'; F.rwUrl = rw.url || ''; F.rwText = rw.text || ''; F.rwWords = rw.words || 1500; F.rwLang = rw.language || 'русском'; rwEngine = rw.engine || rwEngine; rwSrc = rw.source || 'youtube';
   for (const [field,control] of Object.entries({subtitles:'use_subs',motion:'use_motion',hd:'use_hd',qa:'use_qa',speed:'use_speed'})) $(control).checked = !!o[field];
   $('render_fps').value = o.render_fps || 25; $('vf').value = o.video_first || 0; drawVf(); mark();
+  if(o.studio && window.loadStudioSettings){loadStudioSettings({studio:o.studio,studio_configured:true,subtitles:!!o.subtitles});await pywebview.api.save_config({studio:o.studio});}
   resetStoryboard(); reviewProfileId = null; reviewSourceProfile = null;
   $('projects_dialog').close(); go(4);
   if (r.board) { boardState = r.board; boardDirty = false; F.script = r.board.script; $('use_rw').checked = false; source = 'script'; $('use_tts').checked = true; renderReview(r.board.script); go(5); renderStoryboard(); }
@@ -1336,31 +1336,11 @@ async function importDesktopDocx(withPrompts) {
 
 function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   render_fps: +$('render_fps').value,
+  studio: window.studioFields ? studioFields() : undefined,
   storyboard_id: boardState ? boardState.id : null,
   source_profile_id: reviewSourceProfile ? reviewProfileId : null,
   rewrite: {on: rwOn(), montage: sourceMontage, analyze_video: analyzeVideo, source: rwSrc, url: F.rwUrl, text: F.rwText, engine: rwEngine, words: F.rwWords, language: F.rwLang}}; }
 
-// ===== фоновая музыка: плейлист из папки music, ползунок 0..100 (середина — тихо, низ — выключено),
-// треки по кругу с паузой полторы минуты, стрелка — следующий трек сразу =====
-const bgm = $('bgm'); let musicTimer = null, tracks = [], trackIdx = 0;
-const MUSIC_GAP = 90000;
-function musicGain(v) { return v <= 0 ? 0 : Math.pow(v / 100, 2) * 0.45; }  // 50 → 0.11, 100 → 0.45 (на четверть тише, чем раньше)
-function setTracks(list) { tracks = list || []; if (tracks.length) { trackIdx = Math.floor(Math.random() * tracks.length); bgm.src = 'music/' + tracks[trackIdx]; } }
-function playTrack(i) { if (!tracks.length) return; trackIdx = (i + tracks.length) % tracks.length; bgm.src = 'music/' + tracks[trackIdx]; bgm.currentTime = 0; bgm.play().catch(() => {}); }
-function applyMusic(v) {
-  bgm.volume = musicGain(v);
-  if (v <= 0) { bgm.pause(); clearTimeout(musicTimer); musicTimer = null; return; }
-  if (bgm.paused && !musicTimer && bgm.src) bgm.play().catch(() => {});
-}
-bgm.addEventListener('ended', () => { clearTimeout(musicTimer); musicTimer = setTimeout(() => { musicTimer = null; if (+$('vol').value > 0) playTrack(trackIdx + 1); }, MUSIC_GAP); });
-$('nxt').addEventListener('click', () => { clearTimeout(musicTimer); musicTimer = null; $('nxt').classList.remove('flash'); void $('nxt').offsetWidth; $('nxt').classList.add('flash'); if (+$('vol').value <= 0) { $('vol').value = 35; applyMusic(35); pywebview.api.save_config({music: 35}); } playTrack(trackIdx + 1); });
-$('vol').addEventListener('input', () => applyMusic(+$('vol').value));
-$('vol').addEventListener('change', () => pywebview.api.save_config({music: +$('vol').value}));
-document.addEventListener('click', () => { if (+$('vol').value > 0 && bgm.paused && !musicTimer && bgm.src) bgm.play().catch(() => {}); }, {capture: true});
-// музыка играет и когда окно свёрнуто или неактивно — по просьбе пользователя
-// колонка музыки такой же длины, как ряд кнопок сверху
-function fitVolbox() { const w = document.querySelector('.topctl').getBoundingClientRect().width; $('volbox').style.height = Math.round(w) + 'px'; }
-window.addEventListener('resize', fitVolbox); document.fonts && document.fonts.ready.then(fitVolbox);
 window.addEventListener('pywebviewready', () => loadConfig(false));
 // Editable source-aware storyboards. Changes are saved before any generation.
 let boardState = null, boardPage = 0, boardDirty = false, boardBusy = false;
@@ -1386,7 +1366,7 @@ function syncBoardPage() {
   document.querySelectorAll('#board_rows [data-row]').forEach(card => {
     const row = boardState.rows.find(r => r.id === card.dataset.row);
     if (!row) return;
-    for (const field of ['narration', 'prompt', 'motion']) row[field] = card.querySelector(`[data-field="${field}"]`).value;
+    for (const field of ['narration', 'prompt', 'motion','overlay_text']) { const input=card.querySelector(`[data-field="${field}"]`); if(input && (field!=='overlay_text'||input.value||field in row))row[field]=input.value; }
     const source = card.querySelector('[data-field="source_shot"]').value;
     row.source_shot = source === '' ? null : Number(source);
     const seconds = card.querySelector('[data-field="duration"]').value;
@@ -1489,6 +1469,7 @@ function renderStoryboard() {
     <div class="board-edit"><label>${boardText('Фраза озвучки', 'Narration')}<textarea data-field="narration">${esc(r.narration)}</textarea></label>
     <label>${boardText('Исходный референс', 'Source reference')}<select data-field="source_shot"><option value="">${boardText('Новый кадр без референса', 'New shot without a reference')}</option>${boardState.sources.map(s => `<option value="${s.id}"${s.id === r.source_shot ? ' selected' : ''}>${s.id + 1}. ${esc(s.description)}</option>`).join('')}</select></label>
     <label>${boardText('Что показать — можно изменить', 'Visual description — editable')}<textarea data-field="prompt">${esc(r.prompt)}</textarea></label>
+    ${r.editorial_role ? `<p class="studio-note">Назначение: ${esc(({hook:'Вступление',explain:'Объяснение',example:'Пример',contrast:'Сопоставление',reveal:'Раскрытие',resolve:'Вывод'})[r.editorial_role]||r.editorial_role)} · Крупность: ${esc(({wide:'Общий',medium:'Средний',close:'Крупный',detail:'Деталь',diagram:'Схема'})[r.shot_size||'medium']||r.shot_size)}</p>` : ''}<label>Короткий акцент на экране — необязательно<input data-field="overlay_text" maxlength="45" value="${esc(r.overlay_text || '')}"></label>
     <label>${boardText('Движение камеры и объектов', 'Camera and subject motion')}<input type="text" data-field="motion" value="${esc(r.motion)}"></label>
     <label>${boardText('Секунд — пусто: по речи', 'Seconds — blank: follow speech')}<input type="number" min="0.5" max="30" step="0.1" data-field="duration" value="${r.duration ?? ''}" placeholder="${boardText('авто', 'auto')}"></label></div></article>`).join('');
   $('board_rows').querySelectorAll('textarea,input,select').forEach(el => el.addEventListener('input', markBoardDirty));
@@ -1531,5 +1512,37 @@ async function storyboardPreview() {
 <label>Название <input id="project_title" maxlength="200" placeholder="Новый проект"></label>
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin:14px 0"><button id="project_save" onclick="saveDesktopProject()">Сохранить текущий</button><button id="project_copy" onclick="saveDesktopProject(true)">Сохранить как новый</button><button onclick="importDesktopDocx(false)">Импорт DOCX</button><button onclick="importDesktopDocx(true)">DOCX + промпты</button><button onclick="document.getElementById('projects_dialog').close()">Закрыть</button></div>
 <p id="project_status" role="status"></p><div id="projects_list"></div></dialog>
+<dialog id="studio_dialog">
+  <header class="studio-head"><div><h2>Режиссёрская студия</h2><p>Сохраняем стиль и характер исходника. Усиливаем объяснение, детали и подачу.</p></div><button class="ghost" onclick="closeStudio()">Закрыть</button></header>
+  <div class="studio-layout"><aside class="studio-settings">
+    <label>Версия ролика<select id="studio_level"><option value="faithful">Близко к исходнику</option><option value="enhanced" selected>Улучшенная версия</option><option value="director">Расширенная постановка</option></select></label>
+    <label>Темп монтажа<select id="studio_pace"><option value="source">По исходнику</option><option value="calm">Спокойный</option><option value="balanced" selected>Сбалансированный</option><option value="dynamic">Динамичный</option></select></label>
+    <label>Детализация кадров<select id="studio_detail"><option value="balanced">Умеренная</option><option value="rich" selected>Богатая, по смыслу</option></select></label>
+    <label>Отрисовка<select id="studio_quality"><option value="balanced">Обычное качество</option><option value="high" selected>HD-модели и референсы</option></select></label>
+    <label>Субтитры<select id="studio_captions"><option value="off">Выключены</option><option value="source" selected>Палитра исходника</option><option value="focus">Подсветка текущего слова</option><option value="panel">На плашке</option><option value="minimal">Сдержанные</option></select></label>
+    <label>Положение субтитров<select id="studio_caption_position"><option value="bottom">Снизу, в безопасной зоне</option><option value="top">Сверху</option></select></label>
+    <label><input type="checkbox" id="studio_labels" checked>Короткие смысловые надписи</label>
+    <label>Фон приложения<select id="studio_wallpaper"><option value="horizon">Тихий горизонт</option><option value="graphite">Графит</option><option value="none">Однотонный</option></select></label>
+    <button class="ghost" id="studio_apply" onclick="applyStudio()">Применить оформление</button>
+    <p class="studio-note">HD и повторные генерации расходуют больше кредитов. Готовые проекты не переписываются автоматически.</p>
+  </aside><section class="studio-main">
+    <div class="studio-actions">
+      <button id="studio_script_btn" onclick="studioAction('script')">Улучшить сценарий<small>Сильнее начало, яснее объяснения, меньше повторов. Сохраняем факты и язык.</small></button>
+      <button id="studio_board_btn" onclick="studioAction('board')">Создать улучшенную постановку<small>Крупности, детали, назначение планов и короткие акценты. Создаёт отдельную версию.</small></button>
+      <button id="studio_report_btn" onclick="studioReport()">Редакторская проверка<small>Длинные фразы, повторы, слабые привязки и однообразные планы. Без платного запроса.</small></button>
+      <button id="studio_package_btn" onclick="studioAction('packaging')">Подготовить упаковку<small>5 заголовков, 3 варианта начала и 3 концепции обложки с промптами.</small></button>
+      <button id="studio_check_btn" onclick="studioPreflight()">Проверить готовность к генерации<small>Число планов, режим, настройки и подтверждённый доступ к видео.</small></button>
+      <button id="studio_export_btn" onclick="studioExport()">Экспортировать пакет<small>Сценарий, постановка, редакторский отчёт и подготовленная упаковка в ZIP.</small></button>
+    </div>
+    <p class="studio-note"><strong>Как работать:</strong> улучшить сценарий → создать постановку → проверить планы → собрать 20–30 секунд → запускать полный ролик. Текстовые запросы и генерация оплачиваются выбранным сервисом. Редакторская проверка не предсказывает просмотры и удержание.</p>
+    <div class="caption-demo" id="studio_caption_demo"><p>Так появляется <strong>важная мысль</strong></p></div>
+    <div id="studio_status" class="studio-status" role="status"></div>
+    <button class="ghost" id="studio_cancel" hidden onclick="cancelStudio()">Остановить задачу</button>
+    <div id="studio_output" class="studio-output"></div>
+    <details><summary>Сохранённые версии раскадровки</summary><div id="studio_versions"></div></details>
+  </section></div>
+</dialog>
+
+<script src="studio_ui.js"></script>
 </body>
 </html>

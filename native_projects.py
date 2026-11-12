@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 
 OPTION_FIELDS = {'audio', 'source', 'script', 'tts', 'voice', 'providers', 'mode', 'use_refs', 'subtitles',
-                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id'}
+                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id', 'studio'}
 REWRITE_FIELDS = {'on', 'montage', 'analyze_video', 'source', 'url', 'text', 'engine', 'words', 'language'}
 
 
@@ -23,6 +23,10 @@ def safe_options(options):
         if not isinstance(result['rewrite'], dict):
             raise ValueError('Некорректные настройки рерайта')
         result['rewrite'] = {key: value for key, value in result['rewrite'].items() if key in REWRITE_FIELDS}
+    if 'studio' in result:
+        if not isinstance(result['studio'],dict):raise ValueError('Некорректные настройки студии')
+        import studio
+        result['studio']=studio.settings(result['studio'])
     if len(json.dumps(result, ensure_ascii=False)) > 2_000_000:
         raise ValueError('Проект слишком большой')
     return result

@@ -31,9 +31,11 @@ app.save_cfg({'source':'script','tts_service':'edge','image_providers':['fastgen
               'llm_engine':'fastgen','stt_engine':'fastgen','music_volume':0,'lang':'ru','rewrite':True})
 app.STATE.update(source_profile=profile,source_profile_id='test-profile',script=script,running=False,preparing=False,queue_active=False)
 def chat(self,system,user,**kwargs):
- data=json.loads(user.split('Reference JSON:\n')[1])
+ data=json.JSONDecoder().raw_decode(user.split('Reference JSON:\n')[1])[0]
+ if 'source' in data:return {'script':data['source']}
+ if 'script' in data:return {'titles':['Title '+str(i) for i in range(5)],'hooks':['One','Two','Three'],'thumbnail_concepts':[{'concept':'Ink cat','image_prompt':'Original ink cat illustration','overlay_text':'Heat'} for _ in range(3)],'experiment_plan':['Compare titles','Compare thumbnails','Measure sufficient data']}
  return {'plans':[{'index':u['index'],'source_shot':1 if 'spaceship' in u['narration'] else 0,'confidence':'high',
-                  'reason':'Содержание фразы совпадает с предметом в кадре','prompt':'New original redesign: '+u['narration'],'motion':'slow camera pan'}
+                  'reason':'Содержание фразы совпадает с предметом в кадре','prompt':'New original redesign: '+u['narration'],'motion':'slow camera pan', 'editorial_role':'explain','shot_size':'detail','overlay_text':'Cooling'}
                  for u in data['passages']]}
 pipeline.LLM.chat_json=chat
 launched=[]
@@ -60,7 +62,7 @@ def call(name,args):
  return getattr(api,name)(*args)
 
 with sync_playwright() as p:
- b=p.chromium.launch(headless=True)
+ b=p.chromium.launch(headless=True, **({'executable_path':os.environ['KADROGEN_BROWSER']} if os.environ.get('KADROGEN_BROWSER') else {}))
  page=b.new_page(viewport={'width':1440,'height':1100})
  errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
  page.expose_function('callApi',call)
@@ -86,6 +88,7 @@ with sync_playwright() as p:
  first.locator('[data-take]').click()
  page.wait_for_function('boardState.rows[0].take === 1')
  assert page.evaluate('boardState.rows[1].take')==0
+ source_board_id=page.evaluate('boardState.id')
  (ROOT/'test-results').mkdir(exist_ok=True)
  page.screenshot(path=str(ROOT/'test-results/storyboard-editor.png'),full_page=True)
  page.locator('#preview_start').fill('-1')
@@ -171,6 +174,48 @@ with sync_playwright() as p:
  # Custom API URL must be visible even if OpenAI is used only for image selection.
  page.evaluate("() => {qaEngine='openai';llm='fastgen';rwEngine='fastgen';analysisEngine='fastgen';renderAccess();}")
  assert page.locator('input.base[data-svc=openai]').count()==1
+ # Studio settings and measured checks run through the real native bridge.
+ page.evaluate('openStudio()')
+ page.wait_for_selector('#studio_dialog[open]')
+ assert page.locator('audio').count()==0
+ assert page.get_by_text('СДЕЛАНО ГРИШЕЙ ЮТУБЕРОМ',exact=False).count()==0
+ page.locator('#studio_captions').select_option('focus')
+ page.locator('#studio_pace').select_option('dynamic')
+ page.locator('#studio_apply').click()
+ page.wait_for_function('document.getElementById("studio_status").textContent.includes("сохранены")')
+ assert app.load_cfg()['caption_style']=='focus'
+ assert page.evaluate('opts().studio.editing_pace')=='dynamic'
+ page.locator('#studio_report_btn').click()
+ page.wait_for_selector('#studio_output ul')
+ assert 'не прогноз' in page.locator('#studio_output').text_content()
+ page.set_viewport_size({'width':1366,'height':768})
+ page.screenshot(path=str(ROOT/'test-results/studio-interface.png'),full_page=True)
+ assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+ page.evaluate('async id => {const value=await pywebview.api.get_storyboard(id);boardState=value.board;boardDirty=false;F.script=boardState.script;renderReview(F.script);}',source_board_id)
+ # Use fixture model responses to exercise async native workers, no paid calls.
+ page.evaluate("async () => {await pywebview.api.save_config({llm_engine:'fastgen'});llm='fastgen';}")
+ page.locator('#studio_package_btn').click()
+ page.wait_for_function('document.getElementById("studio_status").textContent.includes("Упаковка готова")',timeout=15000)
+ assert page.locator('#studio_output textarea').count()==3
+ page.locator('#studio_board_btn').click()
+ try:
+  page.wait_for_function('document.getElementById("studio_status").textContent.includes("отдельной версией")',timeout=15000)
+ except Exception:
+  print('Studio diagnostic:',page.locator('#studio_status').text_content(),app.STATE.get('studio_task'),errors)
+  raise
+ assert page.evaluate('boardState.rows[0].shot_size')=='detail'
+ assert page.evaluate('boardState.creative_direction.editing_pace')=='dynamic'
+ page.locator('#studio_script_btn').click()
+ page.wait_for_function('document.getElementById("studio_status").textContent.includes("Новая версия сценария")',timeout=15000)
+ assert page.evaluate('boardState') is None
+ page.evaluate('closeStudio()')
+ page.locator('#projectsbtn').click()
+ page.locator('#project_save').click()
+ page.wait_for_function('document.getElementById("project_status").textContent.includes("сохранён")')
+ page.evaluate("document.getElementById('studio_pace').value='calm'")
+ page.locator('[data-open-project]').click()
+ page.wait_for_function("document.getElementById('studio_pace').value==='dynamic'")
+ assert app.load_cfg()['caption_style']=='focus'
  assert not errors,errors
  b.close()
 print('Browser E2E passed: semantic selection, real API save, per-plan take, invalid preview guard, preview launch, full launch, return, stale-script invalidation.')

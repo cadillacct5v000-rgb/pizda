@@ -15,7 +15,7 @@ if ($LASTEXITCODE -ne 0) {
 Copy-Item KadroGen.exe.config dist/KadroGen/KadroGen.exe.config -Force
 Copy-Item WINDOWS.md dist/KadroGen/WINDOWS.md -Force
 Copy-Item docs/UNIFIED_WINDOWS_RU.txt dist/KadroGen/READ_ME_FIRST_RU.txt -Force
-foreach ($relative in @('KadroGen.exe', '_internal/ffmpeg/ffmpeg.exe', '_internal/ffmpeg/ffprobe.exe', '_internal/runtime/deno.exe')) {
+foreach ($relative in @('KadroGen.exe', '_internal/ffmpeg/ffmpeg.exe', '_internal/ffmpeg/ffprobe.exe', '_internal/runtime/deno.exe', '_internal/studio_ui.js', '_internal/assets/studio.css', '_internal/assets/studio-wallpaper.svg')) {
     if (-not (Test-Path (Join-Path 'dist/KadroGen' $relative))) { throw "Build output is missing $relative" }
 }
 & '.\dist\KadroGen\_internal\ffmpeg\ffmpeg.exe' -version | Select-Object -First 1
@@ -33,6 +33,6 @@ $process = Start-Process -FilePath (Join-Path (Get-Location) 'dist/KadroGen/Kadr
 if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'Bundled unified self-test timed out.' }
 if ($process.ExitCode -ne 0 -or -not (Test-Path $Report)) { throw 'Bundled unified self-test failed.' }
 $Result = Get-Content -Raw $Report | ConvertFrom-Json
-if (-not $Result.ok -or $Result.version -ne '1.9.10-dev') { throw 'Bundled unified self-test returned invalid version.' }
+if (-not $Result.ok -or $Result.version -ne '2.0.0-dev') { throw 'Bundled unified self-test returned invalid version.' }
 Compress-Archive -Path dist/KadroGen -DestinationPath dist/KadroGen-Windows-x64.zip -Force
 Write-Host 'Build complete: dist/KadroGen-Windows-x64.zip'
