@@ -177,3 +177,30 @@ def test_real_mp4_download_and_probe(setup, monkeypatch):
     output = root / 'real.mp4'
     client.generate('wave', image, output, 3)
     assert output.read_bytes() == fixture.read_bytes()
+
+
+def test_status_403_exposes_reason_and_id_without_secrets_or_resubmission(setup):
+    client, session, _, image, root = setup
+    session.post.return_value = response({'id': 'video_403', 'status': 'queued'})
+    session.get.return_value = response({'error': {'code': 'task_forbidden',
+        'message': 'Task access denied test-secret sk-other-secret https://cdn.example/private?token=hidden'}}, 403)
+    for _ in range(2):
+        with pytest.raises(ev.ElysiumVideoError) as error:
+            client.generate('wave', image, root / 'out.mp4', 5)
+        text = str(error.value)
+        assert 'GET /videos/video_403' in text
+        assert 'task_forbidden' in text and 'Task access denied' in text
+        assert 'ID задания video_403 сохранён' in text
+        assert 'test-secret' not in text and 'sk-other-secret' not in text
+        assert 'cdn.example' not in text and 'token=hidden' not in text
+    assert session.post.call_count == 1
+
+
+def test_html_error_is_redacted(setup):
+    client, *_ = setup
+    reply = SimpleNamespace(status_code=403, json=lambda: (_ for _ in ()).throw(ValueError()),
+                            text='<html>Access denied Bearer test-secret</html>')
+    with pytest.raises(ev.ElysiumVideoError) as error:
+        client._json(reply, 'GET /videos/task')
+    assert 'Access denied' in str(error.value)
+    assert 'test-secret' not in str(error.value) and '<html>' not in str(error.value)

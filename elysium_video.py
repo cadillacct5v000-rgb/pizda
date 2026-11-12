@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from pathlib import Path
 from urllib.parse import quote, urlparse
@@ -30,23 +31,42 @@ class ElysiumVideo:
         if resolution not in ('720p', '1080p'):
             raise ElysiumVideoError('Выберите 720p или 1080p.')
         self.resolution = resolution
+        self._secret = key
         self.session = session or requests.Session()
         self.session.headers['Authorization'] = 'Bearer ' + key
         self.account = hashlib.sha256(key.encode()).hexdigest()
         self.store = store or ProjectStore(data_dir())
         self.poll, self.max_wait = poll, max_wait
 
-    def _json(self, response):
+    def _safe_error(self, value):
+        text = str(value).replace(self._secret, '[ключ скрыт]')
+        text = re.sub(r'(?i)Bearer\s+[^\s"<>]+', 'Bearer [скрыто]', text)
+        text = re.sub(r'\bsk-[A-Za-z0-9_-]+', '[ключ скрыт]', text)
+        text = re.sub(r'https?://[^\s"<>]+', '[ссылка скрыта]', text)
+        text = re.sub(r'<[^>]*>', ' ', text)
+        return ' '.join(text.split())[:700]
+
+    def _json(self, response, context=''):
         if response.status_code >= 400:
-            # Remote errors can echo the API key or signed reference URL.
-            raise ElysiumVideoError(f'Elysium Video HTTP {response.status_code}: проверьте баланс, права ключа и модель {MODEL}.')
+            try:
+                body = response.json()
+                error = body.get('error') or body
+                if isinstance(error, dict):
+                    detail = ' · '.join(str(error[k]) for k in ('code', 'type', 'message') if isinstance(error.get(k), (str, int)))
+                else:
+                    detail = str(error)
+            except Exception:
+                detail = getattr(response, 'text', '')
+            detail = self._safe_error(detail or 'Сервер не указал причину отказа.')
+            phase = (' · ' + self._safe_error(context)) if context else ''
+            raise ElysiumVideoError(f'Elysium Video HTTP {response.status_code}{phase}: {detail}')
         result = response.json()
         if not isinstance(result, dict):
             raise ElysiumVideoError('Elysium Video вернул некорректный ответ.')
         return result
 
     def _get(self, path):
-        return self._json(netutil.patient(lambda: self.session.get(self.base + path, timeout=60)))
+        return self._json(netutil.patient(lambda: self.session.get(self.base + path, timeout=60)), 'GET ' + path)
 
     def check(self):
         # Authenticated GET; no generation or billing. Catalog presence is not a paid access test.
@@ -85,8 +105,8 @@ class ElysiumVideo:
                 response = self.session.post(self.base + '/videos', json=body, timeout=120)
                 if 400 <= response.status_code < 500:
                     self.store.operation(operation, {'status': 'rejected'})
-                    self._json(response)
-                result = self._json(response)
+                    self._json(response, 'отправка нового задания POST /videos')
+                result = self._json(response, 'отправка нового задания POST /videos')
                 task = result.get('id')
                 if not isinstance(task, str) or not task:
                     raise ValueError('missing task ID')
@@ -102,7 +122,12 @@ class ElysiumVideo:
         deadline = time.monotonic() + self.max_wait
         while time.monotonic() < deadline:
             netutil.check_cancel()
-            result = self._get('/videos/' + quote(task, safe=''))
+            if progress:
+                progress(f'Gemini через Elysium: проверяю статус задания {task}. Новая генерация не отправляется.')
+            try:
+                result = self._get('/videos/' + quote(task, safe=''))
+            except ElysiumVideoError as error:
+                raise ElysiumVideoError(f'{error} · ID задания {self._safe_error(task)} сохранён. Отказ при получении статуса, а не при отправке. Проверьте эту задачу в Elysium; повторной генерации нет.') from None
             status = result.get('status')
             state = {'id': task, 'status': status or 'unknown'}
             if status == 'failed':
