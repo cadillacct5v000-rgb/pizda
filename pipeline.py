@@ -2203,14 +2203,17 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
     state = read_json(state_path, {})
     video_gen = {}  # g=g в lambda обязателен: иначе все замыкания берут последний g (GoogleGate без acquire)
     if ctx.get("video_engine") == "elysium":
-        from elysium_video import ElysiumVideo
+        from elysium_video import ElysiumVideo, ElysiumVideoError
         cfg = ctx["video_config"]
         api = ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"), model=cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), kling_mode=cfg.get("elysium_kling_mode", "std"))
         class Gate:
             threads = 1
         def elysium_clip(scene, image, output, report):
-            return api.generate(video_prompt(scene), image, output, scene['duration'],
-                                lambda message: report('videos', done_count, len(scenes), message))
+            try:
+                return api.generate(video_prompt(scene), image, output, scene['duration'],
+                                    lambda message: report('videos', done_count, len(scenes), message))
+            except ElysiumVideoError as error:
+                raise ElysiumVideoError(f"План {scene['index'] + 1}: {error}") from None
         video_gen = {"elysium": (Gate(), elysium_clip)}
         provs = ["elysium"]
     else:

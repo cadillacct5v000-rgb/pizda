@@ -1,5 +1,6 @@
 """Reuse completed per-plan generations across preview/full runs and edits."""
 import hashlib
+import json
 import math
 from pathlib import Path
 import shutil
@@ -41,6 +42,47 @@ def valid(path, kind):
     return result.returncode == 0 and result.stdout.strip() == b'video'
 
 
+def source_reference(image):
+    """Return a URL only when its receipt matches these exact image bytes."""
+    image = Path(image)
+    try:
+        note = json.loads(Path(str(image) + '.source.json').read_text(encoding='utf-8'))
+        from urllib.parse import urlparse
+        url = note.get('url', '')
+        if (isinstance(url, str) and urlparse(url).scheme == 'https' and urlparse(url).netloc
+                and note.get('sha256') == hashlib.sha256(image.read_bytes()).hexdigest()):
+            return note
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def restore_source(image, candidates):
+    """Repair missing/stale sidecars without changing or regenerating the PNG."""
+    image = Path(image)
+    if source_reference(image):
+        return True
+    try:
+        fingerprint = hashlib.sha256(image.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    for candidate in candidates:
+        try:
+            note = json.loads(Path(candidate).read_text(encoding='utf-8'))
+            from urllib.parse import urlparse
+            url = note.get('url', '')
+            if (isinstance(url, str) and urlparse(url).scheme == 'https' and urlparse(url).netloc
+                    and note.get('sha256') == fingerprint):
+                destination = Path(str(image) + '.source.json')
+                temporary = Path(str(destination) + '.part')
+                temporary.write_text(json.dumps(note, ensure_ascii=False), encoding='utf-8')
+                temporary.replace(destination)
+                return True
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return False
+
+
 def restore(scenes, job_dir, cache_dir):
     job_dir, cache_dir = Path(job_dir), Path(cache_dir)
     for scene in scenes:
@@ -49,8 +91,8 @@ def restore(scenes, job_dir, cache_dir):
         cached_image = cache_dir / ('i_' + image_key(scene) + '.png')
         if not image.exists() and valid(cached_image, 'image'):
             shutil.copyfile(cached_image, image)
-            if Path(str(cached_image) + ".source.json").is_file():
-                shutil.copyfile(str(cached_image) + ".source.json", str(image) + ".source.json")
+        if image.is_file():
+            restore_source(image, [Path(str(cached_image) + ".source.json")])
         if not image.exists():
             continue
         video = job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4"
@@ -70,7 +112,11 @@ def publish(scenes, job_dir, cache_dir):
         for kind, source, destination in [
             ('image', image, cache_dir / ('i_' + image_key(scene) + '.png')),
             ('video', job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4", cache_dir / ('v_' + video_key(scene, image) + '.mp4'))]:
-            if (destination.exists() and valid(destination, kind)) or not valid(source, kind):
+            if destination.exists() and valid(destination, kind):
+                if kind == "image":
+                    restore_source(destination, [Path(str(source) + ".source.json")])
+                continue
+            if not valid(source, kind):
                 continue
             temporary = destination.with_suffix('.part')
             shutil.copyfile(source, temporary)

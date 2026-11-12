@@ -12,6 +12,7 @@ import requests
 import netutil
 from fastgen_api import data_dir
 from native_projects import ProjectStore
+from storyboard_cache import source_reference, restore_source
 
 MODEL = 'google/gemini-omni-flash-1.2'
 KLING_MODEL = 'kling-3.0/video'
@@ -45,6 +46,7 @@ class ElysiumVideo:
         self.account = hashlib.sha256(key.encode()).hexdigest()
         self.store = store or ProjectStore(data_dir())
         self.poll, self.max_wait = poll, max_wait
+        self._source_candidates = None
 
     def _safe_error(self, value):
         text = str(value).replace(self._secret, '[ключ скрыт]')
@@ -118,13 +120,18 @@ class ElysiumVideo:
         if not task:
             if state.get('status') in ('submitting', 'uncertain'):
                 raise ElysiumVideoError('Отправка видео в Elysium не подтверждена. Проверьте историю в кабинете; повтор остановлен, чтобы не создать второе платное задание.')
-            try:
-                reference = json.loads(Path(str(image) + '.source.json').read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                reference = {}
-            url = reference.get('url', '')
-            if reference.get('sha256') != image_hash or urlparse(url).scheme != 'https':
-                raise ElysiumVideoError('У картинки нет исходной HTTPS-ссылки для Elysium. Создайте новый вариант этого плана через FastGen: старые локальные картинки без ссылки нельзя отправить в этот API.')
+            reference = source_reference(image)
+            if not reference:
+                if progress:
+                    progress(f'{self.label} через Elysium: ищу сохранённую ссылку для точной копии кадра. Генерация пока не отправляется.')
+                if self._source_candidates is None:
+                    root = Path(data_dir()) / 'jobs'
+                    self._source_candidates = list(root.rglob('*.source.json')) if root.is_dir() else []
+                if restore_source(image, self._source_candidates):
+                    reference = source_reference(image)
+            if not reference:
+                raise ElysiumVideoError('Для этого кадра не найдена сохранённая HTTPS-ссылка. Запрос в Elysium не отправлен. Нужна исходная ссылка на эту картинку или новый вариант только этого плана через FastGen; готовые картинки и озвучку удалять не нужно.')
+            url = reference['url']
             inputs = {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
                       'aspect_ratio': '16:9', 'first_frame_url': url}
             if self.model == KLING_MODEL:

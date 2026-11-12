@@ -86,7 +86,7 @@ def test_rejected_post_keeps_error_code_without_auto_retry(setup, status):
 def test_missing_source_url_stops_before_submission(setup):
     client, session, _, image, root = setup
     Path(str(image) + '.source.json').unlink()
-    with pytest.raises(ev.ElysiumVideoError, match='исходной HTTPS'):
+    with pytest.raises(ev.ElysiumVideoError, match='сохранённая HTTPS'):
         client.generate('wave', image, root / 'out.mp4', 5)
     session.post.assert_not_called()
 
@@ -94,7 +94,7 @@ def test_missing_source_url_stops_before_submission(setup):
 def test_changed_image_cannot_reuse_old_url(setup):
     client, session, _, image, root = setup
     Image.new('RGB', (32, 18), 'blue').save(image)
-    with pytest.raises(ev.ElysiumVideoError, match='исходной HTTPS'):
+    with pytest.raises(ev.ElysiumVideoError, match='сохранённая HTTPS'):
         client.generate('wave', image, root / 'out.mp4', 5)
     session.post.assert_not_called()
 
