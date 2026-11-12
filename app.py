@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.2-dev"
+VERSION = "2.0.3-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -194,8 +194,9 @@ def estimate_plan(opts, *, limits=True):
     if mode == "images" and vf:
         per_min = 0.15 + 1.05 * min(1.0, vf / max(1, scenes))  # оживлённые сцены ≈ как в режиме видео
     # оживление через fast-gen: свой часовой лимит (Video Lite — 15 клипов в час), а на ключе без видео его нет вовсе
-    video_off = bool(fg and clips and len(providers) == 1 and vlimit == 0)
-    vwait = max(0, int(math.ceil(clips / len(providers) / vlimit)) - 1) if fg and clips and vlimit and clips / len(providers) > vlimit else 0
+    fg_video = fg and cfg.get('video_engine') != 'elysium'
+    video_off = bool(fg_video and clips and len(providers) == 1 and vlimit == 0)
+    vwait = max(0, int(math.ceil(clips / len(providers) / vlimit)) - 1) if fg_video and clips and vlimit and clips / len(providers) > vlimit else 0
 
     hd = bool(opts.get("hd", cfg.get("hd_images", False)))
 
@@ -517,6 +518,8 @@ def save_cfg(cfg):
     cfg.setdefault("tts_voice", "")
     cfg.setdefault("openai_api_key", "")
     cfg.setdefault("openai_model", "gpt-4.1-mini")
+    cfg.setdefault("video_engine", "providers")
+    cfg.setdefault("elysium_video_resolution", "720p")
     cfg.setdefault("elysium_api_key", "")
     cfg.setdefault("elysium_model", "gpt-4.1-mini")
     cfg.setdefault("text_engine", "fastgen")
@@ -797,7 +800,11 @@ def production_check(opts):
     clips=estimate.get('clips',0)
     providers=pipeline.normalize_providers(opts.get('providers'))
     access='not_needed' if not clips else 'unverified'
-    if clips and providers==['fastgen'] and cfg.get('fastgen_api_key'):
+    if clips and cfg.get('video_engine') == 'elysium':
+        if not cfg.get('elysium_api_key'):
+            blockers.append('Для видео Gemini введите ключ Elysium на экране «Доступ».')
+        warnings.append('Видео: Gemini Omni Flash 1.2 через Elysium. Оплата по тарифу Elysium; доступ FastGen к видео не нужен.')
+    if clips and cfg.get('video_engine') != 'elysium' and providers==['fastgen'] and cfg.get('fastgen_api_key'):
         try:
             usage=FastGen(cfg['fastgen_api_key'],timeout=15).usage()
             allowed=(usage.get('capabilities') or {}).get('video.generate')
@@ -1133,6 +1140,7 @@ class Api:
             "source_analysis_model": cfg.get("source_analysis_model", ""), "source_montage": cfg.get("source_montage", True), "source_analysis_engine": cfg.get("source_analysis_engine", "fastgen"),
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
+            "video_engine": cfg.get("video_engine", "providers"), "elysium_video_resolution": cfg.get("elysium_video_resolution", "720p"),
             "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
             "openai": mask(cfg.get("openai_api_key", "")),
             "has_openai": bool(cfg.get("openai_api_key")),
@@ -1200,6 +1208,10 @@ class Api:
             if k + "_base_url" in data:
                 v = str(data[k + "_base_url"] or "").strip().rstrip("/")
                 cfg[k + "_base_url"] = v if v.startswith(("http://", "https://")) else ""
+        if data.get("video_engine") in ("providers", "elysium"):
+            cfg["video_engine"] = data["video_engine"]
+        if data.get("elysium_video_resolution") in ("720p", "1080p"):
+            cfg["elysium_video_resolution"] = data["elysium_video_resolution"]
         if data.get("mode") in pipeline.MODES:
             cfg["mode"] = data["mode"]
         if style_key(data.get("style")):
@@ -1296,6 +1308,15 @@ class Api:
         with LOCK:
             if not (STATE["running"] or STATE["preparing"] or STATE.get("queue_active")):
                 pipeline.CANCEL.clear()
+
+    def check_elysium_video(self):
+        self._reset_idle_cancel()
+        cfg = load_cfg()
+        try:
+            from elysium_video import ElysiumVideo
+            return {"ok": True, "message": ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p")).check()}
+        except Exception as error:
+            return {"ok": False, "error": str(error)}
 
     def check_tts(self, service):
         self._reset_idle_cancel()
@@ -1541,6 +1562,8 @@ class Api:
             eng = cfg.get("qa_engine") or "gemini"
             if not cfg.get(f"{eng}_api_key"):
                 return f"Включён автоотбор картинок, введите ключ {pipeline.QA_ENGINES.get(eng, ('', '', None))[0]} в строке «Автоотбор» или выключите опцию."
+        if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key"):
+            return "Для видео Gemini через Elysium введите ключ Elysium."
         has_fg = bool(cfg.get("fastgen_api_key"))
         stt = cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper"); llm = cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")
         if stt == "assemblyai" and not cfg.get("assemblyai_api_key"):

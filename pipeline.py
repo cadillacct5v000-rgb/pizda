@@ -5,6 +5,7 @@
 
 Запуск из консоли:  python pipeline.py файл.mp3 [--provider fastgen|nonstop|both] [--mode images|video] [--style cinematic] [--refs]
 """
+from pathlib import Path
 from contextlib import contextmanager
 import concurrent.futures as cf
 import collections
@@ -1244,6 +1245,8 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                         try:
                             api.download_result(st["results"][0], out_path + ".part")
                             os.replace(out_path + ".part", out_path)
+                            if st["results"][0].get("download_url"):
+                                write_json(out_path + ".source.json", {"url": st["results"][0]["download_url"], "sha256": hashlib.sha256(Path(out_path).read_bytes()).hexdigest()})
                             gate.request_done(True, credits)
                             return "fastgen:" + op
                         except Cancelled:
@@ -2167,47 +2170,60 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
     msg = f"оживляю {len(scenes)} из {total_scenes} сцен: {why}"
     log(msg)
     say("videos", 0, len(scenes), msg)
-    vid_dir = os.path.join(job_dir, "videos")
+    video_identity = ctx.get("video_identity")
+    vid_dir = os.path.join(job_dir, "videos" + ("_" + video_identity if video_identity else ""))
     os.makedirs(vid_dir, exist_ok=True)
-    state_path = os.path.join(job_dir, "videos.json")
+    state_path = os.path.join(vid_dir, "state.json") if video_identity else os.path.join(job_dir, "videos.json")
     state = read_json(state_path, {})
     video_gen = {}  # g=g в lambda обязателен: иначе все замыкания берут последний g (GoogleGate без acquire)
-    if "fastgen" in ctx["bases"]:
-        try:
-            g = RateGate(ctx["api"], kind="video")
-            if g.capabilities.get("video.generate", True):
-                video_gen["fastgen"] = (g, lambda s, img, out, pr, g=g: gen_fastgen_video(ctx["api"], g, s, img, out, pr))
-                need = sum(1 for s in scenes if not os.path.exists(os.path.join(vid_dir, f"{s['index']:04d}.mp4")))
-                if g.hour_limit and need > g.hour_limit:
-                    msg = (f"внимание: {need} клипов для оживления, а лимит fast-gen {g.hour_limit} видео в час — "
-                           f"это около {need / g.hour_limit:.1f} ч, программа будет ждать лимит автоматически. Чтобы не ждать: "
-                           f"«Стоп», затем режим «Только картинки» с ползунком «Оживить первые» — готовые картинки и клипы сохранятся")
-                    log(msg)
-                    say("videos", 0, 0, msg)
-            else:
-                log("fast-gen: на этом ключе видео недоступно (video.generate=false)")
-        except Cancelled:
-            raise
-        except Exception as e:
-            log(f"fast-gen видео: не удалось прочитать лимиты: {e}")
-    if "nonstop" in ctx["bases"]:
-        g = ctx["gates"]["nonstop"]
-        video_gen["nonstop"] = (g, lambda s, img, out, pr, g=g: gen_nonstop_video(ctx["nonstop"], g, s, img, out, pr))
-    if "yougen" in ctx["bases"]:
-        g = ctx["gates"]["yougen"]
-        video_gen["yougen"] = (g, lambda s, img, out, pr, g=g: gen_yougen_video(ctx["yougen"], g, s, img, out, pr))
-    if "royal" in ctx["bases"]:
-        g = ctx["gates"]["royal"]
-        video_gen["royal"] = (g, lambda s, img, out, pr, g=g: gen_royal_video(ctx["royal"], g, s, img, out, pr))
-    if "google" in ctx["bases"]:
-        g = ctx["gates"]["google"]
-        video_gen["google"] = (g, lambda s, img, out, pr, g=g: gen_google_video(ctx["google"], g, s, img, out, pr))
-    provs = [p for p in ctx["bases"] if p in video_gen]
-    if "syntx" in ctx["bases"]:
-        g = SyntxGate(ctx["syntx"])
-        g.threads = 2
-        video_gen["syntx"] = (g, lambda s, img, out, pr, g=g: gen_syntx(ctx["syntx"], g, s, out, image=img))
+    if ctx.get("video_engine") == "elysium":
+        from elysium_video import ElysiumVideo
+        cfg = ctx["video_config"]
+        api = ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"))
+        class Gate:
+            threads = 1
+        def elysium_clip(scene, image, output, report):
+            return api.generate(video_prompt(scene), image, output, scene['duration'],
+                                lambda message: report('videos', 0, len(scenes), message))
+        video_gen = {"elysium": (Gate(), elysium_clip)}
+        provs = ["elysium"]
+    else:
+        if "fastgen" in ctx["bases"]:
+            try:
+                g = RateGate(ctx["api"], kind="video")
+                if g.capabilities.get("video.generate", True):
+                    video_gen["fastgen"] = (g, lambda s, img, out, pr, g=g: gen_fastgen_video(ctx["api"], g, s, img, out, pr))
+                    need = sum(1 for s in scenes if not os.path.exists(os.path.join(vid_dir, f"{s['index']:04d}.mp4")))
+                    if g.hour_limit and need > g.hour_limit:
+                        msg = (f"внимание: {need} клипов для оживления, а лимит fast-gen {g.hour_limit} видео в час — "
+                               f"это около {need / g.hour_limit:.1f} ч, программа будет ждать лимит автоматически. Чтобы не ждать: "
+                               f"«Стоп», затем режим «Только картинки» с ползунком «Оживить первые» — готовые картинки и клипы сохранятся")
+                        log(msg)
+                        say("videos", 0, 0, msg)
+                else:
+                    log("fast-gen: на этом ключе видео недоступно (video.generate=false)")
+            except Cancelled:
+                raise
+            except Exception as e:
+                log(f"fast-gen видео: не удалось прочитать лимиты: {e}")
+        if "nonstop" in ctx["bases"]:
+            g = ctx["gates"]["nonstop"]
+            video_gen["nonstop"] = (g, lambda s, img, out, pr, g=g: gen_nonstop_video(ctx["nonstop"], g, s, img, out, pr))
+        if "yougen" in ctx["bases"]:
+            g = ctx["gates"]["yougen"]
+            video_gen["yougen"] = (g, lambda s, img, out, pr, g=g: gen_yougen_video(ctx["yougen"], g, s, img, out, pr))
+        if "royal" in ctx["bases"]:
+            g = ctx["gates"]["royal"]
+            video_gen["royal"] = (g, lambda s, img, out, pr, g=g: gen_royal_video(ctx["royal"], g, s, img, out, pr))
+        if "google" in ctx["bases"]:
+            g = ctx["gates"]["google"]
+            video_gen["google"] = (g, lambda s, img, out, pr, g=g: gen_google_video(ctx["google"], g, s, img, out, pr))
         provs = [p for p in ctx["bases"] if p in video_gen]
+        if "syntx" in ctx["bases"]:
+            g = SyntxGate(ctx["syntx"])
+            g.threads = 2
+            video_gen["syntx"] = (g, lambda s, img, out, pr, g=g: gen_syntx(ctx["syntx"], g, s, out, image=img))
+            provs = [p for p in ctx["bases"] if p in video_gen]
     workers = sum(video_gen[p][0].threads for p in provs)
     if not provs:
         say("videos", 0, 0, "оживление недоступно на выбранных ключах — кадры останутся с плавным движением")
@@ -2217,10 +2233,11 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
     done_count = len(scenes) - len(todo)
     say("videos", done_count, len(scenes), f"оживляю картинки ({workers} потоков, это самый долгий этап)")
     lock = threading.Lock()
+    video_failed = threading.Event()
 
     def work(s):
         nonlocal done_count
-        if CANCEL.is_set():
+        if CANCEL.is_set() or video_failed.is_set():
             return
         img = os.path.join(img_dir, f"{s['index']:04d}.png")
         out = os.path.join(vid_dir, f"{s['index']:04d}.mp4")
@@ -2241,6 +2258,10 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
                     break
         except Cancelled:
             return
+        except Exception:
+            if ctx.get("video_engine") == "elysium":
+                video_failed.set()
+            raise
         with lock:
             state[str(s["index"])] = {"ok": bool(model), "model": model}
             write_json(state_path, state)
@@ -2929,6 +2950,10 @@ def make_context(cfg, providers):
         if p not in providers:
             for n, k in enumerate(keys[p]):
                 add(p, n, k, False)
+    ctx["video_engine"] = cfg.get("video_engine", "providers")
+    ctx["video_config"] = dict(cfg)
+    if ctx["video_engine"] == "elysium":
+        ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", "google/gemini-omni-flash-1.2", cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p")]).encode()).hexdigest()[:12]
     return ctx
 
 
@@ -3228,6 +3253,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
                 progress("refs", 0, 0, "дорисовываю портреты героев")
             refs = ref_fut.result()
             ref_pool.shutdown(wait=True)
+        if ctx.get("video_identity"):
+            for scene in scenes:
+                scene["video_identity"] = ctx["video_identity"]
         if storyboard:
             import storyboard_cache
             asset_directory = os.path.join(data_dir(), "jobs", "storyboard-assets", sb.digest([profile, FASTGEN_QUALITY, hd, providers]))

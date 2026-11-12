@@ -19,8 +19,11 @@ def image_key(scene):
 
 
 def video_key(scene, image):
-    return digest([image_key(scene), hashlib.sha256(Path(image).read_bytes()).hexdigest(), scene.get('motion'),
-                   max(3, min(10, math.ceil(scene['duration'])))])
+    identity = [image_key(scene), hashlib.sha256(Path(image).read_bytes()).hexdigest(), scene.get('motion'),
+                max(3, min(10, math.ceil(scene['duration'])))]
+    if scene.get('video_identity'):
+        identity.append(scene['video_identity'])
+    return digest(identity)
 
 
 def valid(path, kind):
@@ -46,9 +49,11 @@ def restore(scenes, job_dir, cache_dir):
         cached_image = cache_dir / ('i_' + image_key(scene) + '.png')
         if not image.exists() and valid(cached_image, 'image'):
             shutil.copyfile(cached_image, image)
+            if Path(str(cached_image) + ".source.json").is_file():
+                shutil.copyfile(str(cached_image) + ".source.json", str(image) + ".source.json")
         if not image.exists():
             continue
-        video = job_dir / 'videos' / f"{scene['index']:04d}.mp4"
+        video = job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4"
         cached_video = cache_dir / ('v_' + video_key(scene, image) + '.mp4')
         video.parent.mkdir(parents=True, exist_ok=True)
         if not video.exists() and valid(cached_video, 'video'):
@@ -64,9 +69,11 @@ def publish(scenes, job_dir, cache_dir):
             continue
         for kind, source, destination in [
             ('image', image, cache_dir / ('i_' + image_key(scene) + '.png')),
-            ('video', job_dir / 'videos' / f"{scene['index']:04d}.mp4", cache_dir / ('v_' + video_key(scene, image) + '.mp4'))]:
+            ('video', job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4", cache_dir / ('v_' + video_key(scene, image) + '.mp4'))]:
             if (destination.exists() and valid(destination, kind)) or not valid(source, kind):
                 continue
             temporary = destination.with_suffix('.part')
             shutil.copyfile(source, temporary)
             temporary.replace(destination)
+            if kind == "image" and Path(str(source) + ".source.json").is_file():
+                shutil.copyfile(str(source) + ".source.json", str(destination) + ".source.json")

@@ -255,3 +255,11 @@ Offline fixture coverage: source-style identity preserved, creative metadata/pla
 Tests cover section-range downloading and cache isolation by source/time, rejection of oversized source responses, analysis/transcription only on a bounded AV file, prohibition of full-video/full-transcript fallbacks, invalid range and denied video preflight before paid work, and propagation of all selected production options through the short worker. Real FFmpeg integration renders a short storyboard with audio, ASS captions, 25/60 FPS and retimed exact duration. An oversized model script is rejected before narration. Browser E2E exercises invalid-start rejection, a single sample API request, no full-source rewrite worker, output navigation and loading the marked short storyboard. Provider calls use fixtures; live YouTube section availability and paid model quality are not inferred from mocks.
 
 Local combined suite for 2.0.2: 343 passed, 4 Windows-only skipped, 13 subtests passed. JavaScript bridge: 53 methods and 6 recovery checks. New sample test cases: 18 passed. Browser E2E and native-import/asset self-test passed.
+
+## Gemini Video через Elysium, 2.0.3
+
+- Полный Linux-набор: 358 passed, 4 Windows-only skipped, 13 subtests passed.
+- 15 новых проверок Elysium: точный ID/режим/первый кадр, отсутствие повторной отправки при таймауте, восстановление ID, отказ до оплаты без ссылки, раздельный провайдер, настоящий MP4 и FFprobe.
+- Browser E2E: выбор Gemini Video, сохранение разрешения, сохранение FastGen для картинок; прежние сценарии редактора и 30-секундной пробы также пройдены.
+- Живой публичный медиакаталог Elysium прочитан; платная генерация не выполнялась.
+- Нативная Windows-сборка 2.0.3 пока не запускалась: автоматическая проверка отклонила публикацию исходников для CI, запрошено явное разрешение пользователя.
