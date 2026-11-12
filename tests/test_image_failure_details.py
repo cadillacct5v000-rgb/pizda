@@ -87,3 +87,9 @@ def test_redraw_invalidates_elysium_video(tmp_path):
     clip = directory / '0007.mp4'; clip.write_bytes(b'fixture')
     pipeline.redo_files(str(tmp_path), 7)
     assert not clip.exists()
+
+
+def test_new_video_cache_excludes_pre_qa_fix_clips():
+    config = {'video_engine': 'elysium', 'elysium_api_key': 'fixture'}
+    old_identity = hashlib.sha256(json.dumps(['elysium', 'google/gemini-omni-flash-1.2', None, '720p']).encode()).hexdigest()[:12]
+    assert pipeline.make_context(config, [])['video_identity'] != old_identity

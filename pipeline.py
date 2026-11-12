@@ -2979,7 +2979,7 @@ def make_context(cfg, providers):
     ctx["video_engine"] = cfg.get("video_engine", "providers")
     ctx["video_config"] = dict(cfg)
     if ctx["video_engine"] == "elysium":
-        ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", "google/gemini-omni-flash-1.2", cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p")]).encode()).hexdigest()[:12]
+        ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", "google/gemini-omni-flash-1.2", cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"), "qa-final-frame-v1"]).encode()).hexdigest()[:12]
     return ctx
 
 
