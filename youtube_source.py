@@ -279,3 +279,60 @@ def video(url, out_dir, ffmpeg_dir, progress=None, *, cookie_file=None, browser=
         netutil.check_cancel()
         os.replace(candidate, output)
     return str(output)
+
+
+def segment(url, out_dir, ffmpeg_dir, progress=None, *, start=0, seconds=30, cookie_file=None, browser=None):
+    """Download only a bounded AV reference window; never fall back to full-video analysis."""
+    import hashlib
+    import math
+    import yt_dlp
+    from yt_dlp.utils import download_range_func
+    from media_tools import ffmpeg_bin, run_media
+    if isinstance(start, bool) or isinstance(seconds, bool):raise YouTubeError('Начало и длительность должны быть числами.')
+    try:start, seconds = float(start), float(seconds)
+    except (ValueError, TypeError) as error:raise YouTubeError('Некорректный отрезок предпросмотра.') from error
+    if not math.isfinite(start) or start < 0 or not math.isfinite(seconds) or not 1 <= seconds <= 30:
+        raise YouTubeError('Выберите начало от нуля и длительность от 1 до 30 секунд.')
+    vid=video_id(url)
+    token=hashlib.sha256(json.dumps([vid,start,seconds]).encode()).hexdigest()[:16]
+    directory=Path(out_dir)/('sample_'+token);directory.mkdir(parents=True,exist_ok=True)
+    output=directory/'source.mp4'
+    def info(path):
+        if not path.is_file() or not path.stat().st_size:return None
+        result=run_media([ffmpeg_bin('ffprobe'),'-v','error','-show_streams','-show_format','-of','json',str(path)])
+        try:
+            value=json.loads(result.stdout);duration=float(value['format']['duration'])
+            kinds={v.get('codec_type') for v in value['streams']}
+            if result.returncode or not {'audio','video'} <= kinds or not math.isfinite(duration) or duration<=0:return None
+            return duration
+        except (ValueError,KeyError,TypeError):return None
+    cached=info(output)
+    if cached and cached<=seconds+.15:
+        if progress:progress('исходный отрезок уже сохранён; полный ролик не загружается')
+        return str(output)
+    if progress:progress(f'загружаю только исходный отрезок {start:g}–{start+seconds:g} с со звуком')
+    opts=options(cookie_file,browser)
+    with tempfile.TemporaryDirectory(prefix='.sample_',dir=directory) as temporary:
+        opts.update(format='bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/bestvideo[height<=480]+bestaudio/best',
+                    ffmpeg_location=ffmpeg_dir,outtmpl=str(Path(temporary)/'segment.%(ext)s'),merge_output_format='mp4',
+                    download_ranges=download_range_func(None,[(start,start+seconds)]),force_keyframes_at_cuts=True)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:ydl.download([f'https://www.youtube.com/watch?v={vid}'])
+        except Exception as error:
+            netutil.check_cancel()
+            raise YouTubeError('Не удалось загрузить отрезок. '+error_hint(error)) from error
+        candidates=[p for p in Path(temporary).iterdir() if p.suffix.lower() in ('.mp4','.mkv','.webm') and info(p)]
+        if not candidates:raise YouTubeError('В выбранном отрезке нет пригодного видео со звуком. Полный ролик вместо него не обрабатывается.')
+        candidate=max(candidates,key=lambda p:p.stat().st_size)
+        duration=info(candidate)
+        if duration>seconds+2:
+            raise YouTubeError('Загрузчик вернул больше выбранного отрезка. Анализ полного ролика остановлен; повторите загрузку отрезка.')
+        normalized=Path(temporary)/'normalized.mp4'
+        result=run_media([ffmpeg_bin(),'-y','-v','error','-i',str(candidate),'-t',str(seconds),
+                          '-vf','scale=640:360:force_original_aspect_ratio=decrease,setsar=1,setpts=PTS-STARTPTS',
+                          '-af','asetpts=PTS-STARTPTS','-c:v','libx264','-preset','veryfast','-crf','22',
+                          '-c:a','aac','-ar','44100','-ac','1','-movflags','+faststart',str(normalized)])
+        actual=info(normalized)
+        if result.returncode or not actual or actual>seconds+.15:raise YouTubeError('Не удалось подготовить ограниченный отрезок видео.')
+        netutil.check_cancel();os.replace(normalized,output)
+    return str(output)

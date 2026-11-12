@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.1-dev"
+VERSION = "2.0.2-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -681,6 +681,34 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
         keep_awake(False)
 
 
+def run_youtube_sample(opts,cfg,start,seconds):
+    import sample_preview
+    keep_awake(True)
+    try:
+        rw=opts['rewrite']
+        board,target=sample_preview.prepare(cfg,rw,Path(data_dir(),'jobs','youtube_samples'),start=start,seconds=seconds,progress=progress_cb)
+        pipeline.check_cancel()
+        with LOCK:
+            store_storyboard(board)
+            STATE.update(script=board['script'],source_profile=board['profile'],source_profile_id=uuid.uuid4().hex,
+                         sample_board_id=board['id'],active_board_id=board['id'],sample_info=board['profile']['sample'])
+        result=pipeline.make_video(script_text=board['script'],provider=opts['providers'],mode=opts.get('mode','images'),
+                     style_key=opts.get('style'),use_refs=bool(opts.get('use_refs')),subtitles=bool(opts.get('subtitles')),
+                     motion=bool(opts.get('motion')),hd=bool(opts.get('hd')),video_first=_vf(opts.get('video_first')),
+                     tts_service=opts.get('tts') or cfg.get('tts_service'),tts_voice=opts.get('voice'),storyboard=board,
+                     source_profile=board['profile'],preview_range={'start':0.,'seconds':target},sample_seconds=target,
+                     render_fps=opts['render_fps'],progress_cb=progress_cb,reset_cancel=False)
+        with LOCK:STATE['result']=result
+    except pipeline.Cancelled:
+        with LOCK:STATE.update(cancelled=True,message='Проба остановлена; готовые части сохранены')
+    except (Exception,SystemExit) as error:
+        pipeline.log('Проба YouTube: '+str(error))
+        with LOCK:STATE.update(error=str(error))
+    finally:
+        with LOCK:STATE.update(running=False,ended_at=time.time())
+        keep_awake(False)
+
+
 def load_storyboard(board_id):
     import storyboard as sb
     if not isinstance(board_id, str) or len(board_id) != 24 or any(ch not in "0123456789abcdef" for ch in board_id):
@@ -857,6 +885,46 @@ def check_update():
 
 
 class Api:
+    def youtube_sample(self, opts):
+        import source_analysis
+        import youtube_source
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):
+                    raise ValueError('Программа уже занята.')
+            cfg=load_cfg()
+            rw=dict(opts.get('rewrite') or {})
+            rw.update(on=True,source='youtube',analyze_video=True,montage=True)
+            youtube_source.video_id(rw.get('url',''))
+            sample=opts.get('sample') or {}
+            if isinstance(sample.get('start',0),bool) or isinstance(sample.get('seconds',30),bool):raise ValueError('Некорректный отрезок пробы.')
+            start=float(sample.get('start',0));seconds=float(sample.get('seconds',30))
+            if not math.isfinite(start) or start<0 or not math.isfinite(seconds) or not 1<=seconds<=30:
+                raise ValueError('Начало отрезка должно быть от нуля; длительность — от 1 до 30 секунд.')
+            options={**opts,'rewrite':rw,'source':'script','script':'','storyboard_id':None,'source_profile_id':None}
+            options['providers']=pipeline.normalize_providers(options.get('providers'))
+            options['render_fps']=pipeline.validate_fps(options.get('render_fps',cfg.get('render_fps',25)))
+            if options.get('mode','images') not in pipeline.MODES:raise ValueError('Неверный режим видео.')
+            error=self._validate(options,options['providers'])
+            if error:raise ValueError(error)
+            source_analysis._provider(cfg)  # Check missing vision credentials before any paid transcription.
+            check=production_check({**options,'rewrite':{'on':False},'script':'Preview narration. '*36})
+            if check.get('blockers'):raise ValueError(' '.join(check['blockers']))
+            cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
+            cfg.update(mode=options.get('mode','images'),quality='quality' if options.get('use_refs') else 'speed',
+                       image_providers=options['providers'],qa_images=bool(options.get('qa')),hd_images=bool(options.get('hd')),
+                       subtitles=bool(options.get('subtitles')),render_fps=options['render_fps'],studio_configured=True,youtube_sample_start=start,
+                       rewrite_url=rw['url'])
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Программа уже занята.')
+                save_cfg(cfg);pipeline.CANCEL.clear();pipeline.clear_wait();pipeline.LAST_JOB_DIR=None
+                STATE.update(running=True,preparing=False,stage='prepare',done=0,total=1,message='Готовлю только отрезок YouTube',
+                             error=None,result=None,log=[],cancelled=False,started_at=time.time(),ended_at=None,job_dir=None,
+                             scenes=0,queue=None,active_board_id=None,sample_board_id=None,is_preview=True,sample_info={'start':start,'requested_seconds':seconds})
+            threading.Thread(target=run_youtube_sample,args=(options,cfg,start,seconds),daemon=True).start()
+            return {'ok':True}
+        except (Exception,SystemExit) as error:return {'ok':False,'error':str(error)}
+
     def available_models(self, engine):
         """GET only: no generation, no API key in returned diagnostics."""
         import provider_access
@@ -1071,7 +1139,7 @@ class Api:
             "text_engine": cfg.get("text_engine", "fastgen"),
             "openai_model": cfg.get("openai_model", "gpt-4.1-mini"),
             "theme": cfg.get("theme", "dark"),
-            "studio": studio.settings(cfg), "studio_configured": bool(cfg.get("studio_configured")),
+            "studio": studio.settings(cfg), "studio_configured": bool(cfg.get("studio_configured")), "youtube_sample_start": cfg.get("youtube_sample_start",0),
             "providers": [p for p in (cfg.get("image_providers") or []) if p in pipeline.PROVIDERS],
             "keys": {p: [mask(k) for k in pipeline.provider_keys(cfg, p)] for p in pipeline.PROVIDERS},
             "lang": cfg.get("lang", "ru"),
@@ -1563,7 +1631,7 @@ class Api:
             STATE["job_dir"] = None
             STATE["ended_at"] = None
             pipeline.clear_wait()
-            STATE.update({"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
+            STATE.update({"sample_board_id":None,"sample_info":None,"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
                           "log": [], "result": None, "error": None, "script": None, "source_profile": None, "source_profile_id": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_rewrite, args=(rw,), daemon=True).start()
         return {"ok": True}
@@ -1630,7 +1698,7 @@ class Api:
             STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "message": "запуск",
                           "log": [], "result": None, "error": None, "cancelled": False, "started_at": time.time()})
         with LOCK:
-            STATE.update(active_board_id=board["id"] if board else None, is_preview=preview_range is not None)
+            STATE.update(active_board_id=board["id"] if board else None, is_preview=preview_range is not None,sample_board_id=None,sample_info=None)
         cfg = load_cfg()
         tts = opts.get("tts") or cfg.get("tts_service") or "voicegen"
         voice = (opts.get("voice") or "").strip()
@@ -1671,6 +1739,7 @@ class Api:
                 return {"ok": False, "error": "Раскадровка ещё создаётся." if STATE.get('preparing') else "Сохранённой раскадровки пока нет. Нажмите «Создать раскадровку»."}
             board = load_storyboard(board_id)
             public = {k: copy.deepcopy(board[k]) for k in ("id", "script", "rows")}
+            public["sample"] = copy.deepcopy(board["profile"].get("sample"))
             public["creative_direction"] = copy.deepcopy(board["profile"].get("creative_direction") or {})
             public["visual_style"] = copy.deepcopy(board["profile"].get("visual_style") or {})
             public["sources"] = [{"id": shot["index"], "description": shot["description"][:250]}
@@ -1818,7 +1887,7 @@ class Api:
             STATE["job_dir"] = None
             STATE["ended_at"] = None
             pipeline.clear_wait()
-            STATE.update({"queue_active": True, "running": True, "stage": "start", "message": "очередь: запуск", "log": [], "result": None, "error": None, "cancelled": False})
+            STATE.update({"sample_board_id":None,"sample_info":None,"queue_active": True, "running": True, "stage": "start", "message": "очередь: запуск", "log": [], "result": None, "error": None, "cancelled": False})
             QUEUE_STOP = False
         common = {"provider": provider, "mode": opts.get("mode", "images"), "style": style, "use_refs": cfg.get("quality") == "quality",
                   "subtitles": bool(opts.get("subtitles")), "motion": bool(opts.get("motion")), "hd": bool(opts.get("hd")),
@@ -2114,6 +2183,9 @@ def main():
             assert ProjectStore(root).get(saved['id'])['options']['render_fps'] == 60
             assert pipeline.validate_fps(60) == 60 and 'syntx' in pipeline.PROVIDERS
             assert syntx_api.SyntxGate
+            import sample_preview
+            assert callable(sample_preview.prepare) and callable(Api().youtube_sample)
+            assert 'youtube_sample' in Path(HTML_PATH).read_text(encoding='utf-8')
             assert studio.settings()['caption_style']=='source'
             for asset in ('studio_ui.js','assets/studio.css','assets/studio-wallpaper.svg','THIRD_PARTY_NOTICES.txt'):
                 assert Path(RES_DIR,asset).is_file(),asset

@@ -3102,7 +3102,7 @@ def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None):
 
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None):
+               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None, sample_seconds=None):
     global FASTGEN_QUALITY, HD_IMAGES, FPS
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
@@ -3129,6 +3129,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             shot = source_shots.get(row["source_shot"])
             if row["source_shot"] is not None and (not shot or not os.path.isfile(shot.get("reference_frame", ""))):
                 raise sb.StoryboardError("Референсы исходника больше недоступны. Повторите анализ YouTube перед генерацией.")
+    if sample_seconds is not None:
+        if isinstance(sample_seconds,bool) or not math.isfinite(float(sample_seconds)) or not 1<=float(sample_seconds)<=30 or not storyboard:
+            raise ValueError('Проба требует короткой раскадровки и длительности 1–30 секунд.')
     if preview_range is not None and not storyboard:
         raise ValueError("Предпросмотр требует сохранённой раскадровки.")
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite, source_profile)
@@ -3173,7 +3176,10 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     if storyboard:
         import storyboard as sb
         aligned, score = sb.align(storyboard, tr["words"], duration, FPS)
-        audio_path, timed_words, aligned = sb.retime_audio(audio_path, tr["words"], aligned, job_dir)
+        if sample_seconds is not None:
+            aligned=sb.fit_sample(aligned,sample_seconds,FPS)
+            progress('scenes',0,len(aligned),'подстраиваю темп короткой озвучки под длительность пробы без изменения высоты голоса')
+        audio_path, timed_words, aligned = sb.retime_audio(audio_path, tr["words"], aligned, job_dir,FPS)
         tr = {**tr, "words": timed_words}
         duration = aligned[-1]["end"]
         scenes = sb.scenes(storyboard, aligned, FPS)

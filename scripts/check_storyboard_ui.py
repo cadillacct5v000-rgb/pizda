@@ -252,6 +252,37 @@ with sync_playwright() as p:
  # Choosing a saved version explicitly restores that version's controls.
  page.evaluate('restoreStoryboard()')
  page.wait_for_function('document.getElementById("btn_go").disabled === false')
+ # Direct 30-second trial has its own worker and never prepares the full source.
+ import copy
+ import storyboard as sb
+ sample_requests=[]
+ def fixture_sample(opts,cfg,start,seconds):
+  sample_requests.append((opts,start,seconds))
+  limited=copy.deepcopy(profile);limited['sample']={'start':start,'requested_seconds':seconds,'source_seconds':seconds,'source_id':'dQw4w9WgXcQ'}
+  result=sb.seal({'version':1,'script':script,'profile':limited,'rows':[{'id':'plan-00000','narration':script,'source_shot':0,'confidence':'high','reason':'fixture','prompt':'Original ink sample','motion':'static','take':0,'duration':None}]})
+  with app.LOCK:
+   app.store_storyboard(result)
+   app.STATE.update(running=False,result=str(root/'sample.mp4'),script=script,active_board_id=result['id'],sample_board_id=result['id'],sample_info=limited['sample'],stage='done',ended_at=time.time())
+ app.run_youtube_sample=fixture_sample
+ page.evaluate("async () => {await pywebview.api.save_config({qa:false});$('use_qa').checked=false;$('render_fps').value='60';go(4);}")
+ page.wait_for_selector('#screen4.active #youtube_sample')
+ page.locator('#youtube_source_url').fill('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+ page.locator('#youtube_sample_start').fill('-1')
+ page.locator('#youtube_sample').click()
+ assert len(sample_requests)==0
+ page.locator('#youtube_sample_start').fill('0')
+ page.evaluate("document.getElementById('dropzone').scrollTop=0")
+ page.screenshot(path=str(ROOT/'test-results/youtube-sample-entry.png'),full_page=True)
+ page.locator('#youtube_sample').click()
+ page.wait_for_selector('#screen6.active')
+ page.wait_for_selector('#btn_board_return:not([hidden])')
+ assert len(sample_requests)==1 and sample_requests[0][1:]==(0.,30.)
+ assert sample_requests[0][0]['render_fps']==60
+ assert len(rewritten)==1, 'The trial must not run the full-source rewrite worker'
+ page.locator('#btn_board_return').click()
+ page.wait_for_selector('#screen5.active')
+ assert page.evaluate('boardState.sample.source_seconds')==30
+ assert 'Проба' in page.locator('#board_count').text_content()
  assert not errors,errors
  b.close()
-print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery.')
+print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery, bounded 30-second source trial and marked result-board navigation.')

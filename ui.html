@@ -520,9 +520,9 @@
         <div class="qhead" id="p_queue"></div>
         <ul class="stages" id="stages"></ul>
         <div class="bar"><i id="stage_bar"></i></div>
-        <div class="time" id="p_time"></div><div id="p_err"></div>
+        <div class="time" id="p_time"></div><div id="p_message" class="studio-note" role="status"></div><div id="p_err"></div>
         <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small></div>
-        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
+        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="renderReview(boardState?.script || F.script);go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
         <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button></div>
@@ -628,7 +628,7 @@ function go(n) {
   setTimeout(() => {
     from.classList.remove('leaving', 'active'); cur = n;
     for (let i = 1; i <= 6; i++) $('screen' + i).classList.toggle('active', i === n);
-    if (n === 4) renderAccess();
+    if (n === 4) {renderAccess();$('dropzone').scrollTop=0;}
   }, 240);
 }
 function provs() { return Array.from(document.querySelectorAll('input[name=prov]:checked')).map(x => x.value); }
@@ -670,7 +670,25 @@ const dz = $('dropzone');
 document.addEventListener('dragover', e => e.preventDefault()); document.addEventListener('drop', e => e.preventDefault());
 
 async function pick() { const p = await pywebview.api.pick_file(); if (p) setAudio(p); }
-let youtubeAutoBoard = false;
+let youtubeAutoBoard = false, youtubeSampleStart = 0;
+async function startYouTubeSample() {
+  if (boardBusy || (typeof studioBusy !== 'undefined' && studioBusy)) return;
+  syncAll();
+  const url=$('youtube_source_url').value.trim();
+  const start=Number($('youtube_sample_start').value);
+  if(!url || !Number.isFinite(start) || start<0){$('s_prep').textContent='Вставьте ссылку и выберите начало отрезка от нуля.';return;}
+  youtubeSampleStart=start;F.rwUrl=url;source='script';$('use_tts').checked=true;mark();
+  await saveKeys();
+  const o=opts();o.storyboard_id=null;o.source_profile_id=null;o.sample={start,seconds:30};
+  o.rewrite={...o.rewrite,on:true,source:'youtube',url,analyze_video:true,montage:true};
+  o.studio=window.studioFields?studioFields():{};
+  const result=await pywebview.api.youtube_sample(o);
+  if(!result.ok){renderAccess();$('s_prep').textContent=result.error;return;}
+  resetStoryboard();if(window.studioBoardReady)studioBoardReady();
+  source='script';$('use_tts').checked=true;$('use_rw').checked=false;F.script='';queueMode=false;
+  $('result').classList.remove('show');$('error').textContent='';$('btn_again').disabled=true;$('btn_cancel').disabled=false;
+  shownPct=0;buildStages(mode());buildFrames(0);$('g_title').textContent='Предпросмотр · 30 секунд';go(6);poll();
+}
 async function prepareYouTube() {
   if (boardBusy || (typeof studioBusy !== 'undefined' && studioBusy)) return;
   syncAll();
@@ -733,6 +751,7 @@ function renderReview(script) {
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
   row(t('rv_services'), p.map(k => SVC_TITLES[k]).join(', ') || t('rv_none'));
+  if(boardState?.sample)row('Проба исходника',`${boardState.sample.start}–${boardState.sample.start+boardState.sample.source_seconds} с · только этот отрезок`);
   if(boardState)row(L==='ru'?'Постановка':'Storyboard', ({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   if (reviewSourceProfile) {
     row(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style', reviewSourceProfile.visual_style.description);
@@ -930,6 +949,7 @@ async function poll() {
   $('p_stage').textContent = (t('stages')[st.stage] || st.stage_name || '').toUpperCase();
   $('p_time').textContent = st.running ? t('elapsed') + fmt(st.elapsed).toUpperCase() : (st.result && st.elapsed ? t('spent') + fmt(st.elapsed).toUpperCase() : '');
   showWait(st.running ? st.wait : null);
+  if($('p_message'))$('p_message').textContent=st.message||'';
   $('log').textContent = (st.log || []).join('\n');
   if (st.scenes && st.scenes !== total) buildFrames(st.scenes);
   let g;
@@ -948,6 +968,10 @@ async function poll() {
       if (it.video && !d.querySelector('.live')) { const b = document.createElement('span'); b.className = 'live'; b.textContent = 'LIVE'; d.appendChild(b); }
     }, k * 160);
   });
+  if (st.sample_board_id && typeof boardState !== 'undefined' && boardState?.id !== st.sample_board_id) {
+    try { const saved=await pywebview.api.get_storyboard(st.sample_board_id);if(saved.ok){boardState=saved.board;boardDirty=false;boardPage=0;F.script=boardState.script;reviewSourceProfile=null;reviewProfileId=null;} }
+    catch(e){console.warn('Sample board load:',e);}
+  }
   if (st.stage === 'images' && st.running) { let n = 0; document.querySelectorAll('.frame.pending').forEach(d => { d.classList.toggle('active', n < 6); n++; }); }
   if (st.queue && !st.queue_active) { $('result').classList.add('show'); $('r_path').innerHTML = queueSummary(st); $('g_title').textContent = t('frames_done'); queueItems = st.queue_items || queueItems; }
   else if (st.result && !st.queue_active) { $('result').classList.add('show'); $('r_path').textContent = st.result; $('g_title').textContent = t('frames_done'); }
@@ -966,6 +990,7 @@ async function loadConfig(keepScreen) {
   for (const k of ['fastgen','elysium','openai','anthropic','gemini']) rwKeys[k] = c['has_' + k] ? (k === 'fastgen' ? (c.keys.fastgen[0] || '') : c[k]) : '';
   analyzeVideo = c.youtube_analyze_video !== false;
   sourceMontage = c.source_montage !== false; analysisEngine = c.source_analysis_engine || 'fastgen'; analysisModel = c.source_analysis_model || '';
+  youtubeSampleStart = Number(c.youtube_sample_start)||0;
   youtubeBrowser = c.youtube_browser || ''; youtubeCookieFile = c.youtube_cookie_file || '';
   rwEngine = c.rewrite_engine || 'fastgen'; rwSrc = c.rewrite_source || 'youtube'; $('use_rw').checked = !!c.rewrite;
   if (!keepScreen) { F.rwUrl = c.rewrite_url || ''; F.rwWords = c.rewrite_words || 1500; F.rwLang = c.rewrite_lang || 'польском'; }
@@ -1019,7 +1044,10 @@ const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n
 function renderAccess() {
   const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value), H = [];
   H.push(row(L === 'ru' ? 'Исходный ролик YouTube' : 'Source YouTube video', '',
-    `<input type="text" inputmode="url" id="youtube_source_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"><button class="primary" id="youtube_prepare" onclick="prepareYouTube()">${L === 'ru' ? 'Подготовить свою версию' : 'Prepare my version'}</button>`));
+    `<input type="text" inputmode="url" id="youtube_source_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"><button class="primary" id="youtube_prepare" onclick="prepareYouTube()">${L === 'ru' ? 'Подготовить весь ролик' : 'Prepare full video'}</button>`));
+  H.push(row(L === 'ru' ? 'Предпросмотр 30 секунд' : '30-second trial', '',
+    `<label class="sample-start">${L==='ru'?'Начало в исходнике, с':'Source start, s'} <input type="number" id="youtube_sample_start" min="0" step="1" value="${esc(youtubeSampleStart)}"></label><button id="youtube_sample" class="ghost" onclick="startYouTubeSample().catch(e => $('s_prep').textContent=String(e))">${L==='ru'?'Сделать предпросмотр 30 с':'Create 30 s trial'}</button>`));
+  H.push(`<div class="note">${L==='ru'?'Проба готовит сценарий, анализирует кадры и озвучивает только выбранный отрезок. Картинки/видео, HD, FPS, голос и субтитры — по вашим настройкам. Запросы оплачиваются сервисами. При конце исходника раньше 30 с проба короче.':'Only the selected window is analysed, rewritten and narrated, with your media, quality, voice and caption settings. Provider charges apply.'}</div>`);
   H.push(`<div class="note youtube-entry-note">${L === 'ru' ? 'Вставьте ссылку: программа подготовит сценарий, проанализирует стиль и создаст постановку. Писать сценарий вручную не нужно. Анализ и текстовые запросы оплачиваются выбранными сервисами; перед генерацией видео можно проверить планы.' : 'Paste a link to prepare narration, source style and a storyboard. Analysis and text requests use your selected services. Review plans before rendering.'}</div>`);
   for (const k of p) {
     if (!keyRows[k].length) keyRows[k].push({idx:-1, value:''});
@@ -1494,6 +1522,7 @@ function renderStoryboard() {
   const rows = boardState.rows.slice(boardPage * 20, boardPage * 20 + 20);
   $('board_count').textContent = boardText(`Планов: ${boardState.rows.length}. Страница ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`, `Plans: ${boardState.rows.length}. Page ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`);
   $('board_count').textContent += ' · ' + (({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
+  if(boardState.sample)$('board_count').textContent += ` · Проба ${boardState.sample.source_seconds.toFixed(1)} с`;
   $('board_rows').innerHTML = rows.map((r, i) => `<article class="board-row" data-row="${esc(r.id)}">
     <div class="board-ref"><img alt="${boardText('Референс исходного плана', 'Source shot reference')}" data-reference="${esc(r.id)}"><strong>${boardText('План', 'Plan')} ${boardPage * 20 + i + 1}</strong>
     <span class="board-confidence ${r.confidence === 'low' ? 'low' : ''}">${esc(({high:boardText('Уверенная привязка','Strong match'),medium:boardText('Проверьте привязку','Review match'),low:boardText('Нужно проверить','Needs review'),manual:boardText('Выбрано вручную','Manually selected')})[r.confidence] || r.confidence)}</span>
@@ -1562,6 +1591,7 @@ async function storyboardPreview() {
     <div class="studio-actions">
       <button id="studio_script_btn" onclick="studioAction('script')">Улучшить сценарий<small>Сильнее начало, яснее объяснения, меньше повторов. Сохраняем факты и язык.</small></button>
       <button id="studio_board_btn" onclick="studioAction('board')">Создать улучшенную постановку<small>Крупности, детали, назначение планов и короткие акценты. Создаёт отдельную версию.</small></button>
+      <button id="studio_sample_btn" onclick="showYouTubeSample()">Проба 30 секунд по YouTube<small>Улучшить сценарий и визуал только начала ролика, затем посмотреть готовый фрагмент.</small></button>
       <button id="studio_report_btn" onclick="studioReport()">Редакторская проверка<small>Длинные фразы, повторы, слабые привязки и однообразные планы. Без платного запроса.</small></button>
       <button id="studio_package_btn" onclick="studioAction('packaging')">Подготовить упаковку<small>5 заголовков, 3 варианта начала и 3 концепции обложки с промптами.</small></button>
       <button id="studio_check_btn" onclick="studioPreflight()">Проверить готовность к генерации<small>Число планов, режим, настройки и подтверждённый доступ к видео.</small></button>

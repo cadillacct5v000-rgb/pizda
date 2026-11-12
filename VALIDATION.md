@@ -248,3 +248,10 @@ Offline fixture coverage: source-style identity preserved, creative metadata/pla
 ## 2.0.1 Studio recovery
 
 325 local Python tests passed, 4 Windows-only skipped, 13 subtests passed. Six regressions cover correction of only bad plan IDs, preservation of valid prompt/motion/reference fields, partial batch checkpoints, retry of only missing plans, rejection of unknown refs, exact 2.0 cache signatures, locally normalized nullable overlay/enums, and recovery of 2.0 raw schema-invalid answers without resending source descriptions. Browser tests exercise the exact «Создать улучшенную постановку» action with malformed metadata and verify the old board cannot be silently rendered; explicit saved-board selection restores controls. A separate browser flow starts with an empty script and rewrite off, pastes a YouTube URL and receives a prepared enhanced storyboard through fixture workers. User-uploaded two 30-second previews were compared: identical decoded audio; cropped upper-80% visual SSIM 0.999089, confirming no meaningful scene change in those samples. No paid live generation was run.
+
+
+## Bounded source trial (2.0.2)
+
+Tests cover section-range downloading and cache isolation by source/time, rejection of oversized source responses, analysis/transcription only on a bounded AV file, prohibition of full-video/full-transcript fallbacks, invalid range and denied video preflight before paid work, and propagation of all selected production options through the short worker. Real FFmpeg integration renders a short storyboard with audio, ASS captions, 25/60 FPS and retimed exact duration. An oversized model script is rejected before narration. Browser E2E exercises invalid-start rejection, a single sample API request, no full-source rewrite worker, output navigation and loading the marked short storyboard. Provider calls use fixtures; live YouTube section availability and paid model quality are not inferred from mocks.
+
+Local combined suite for 2.0.2: 343 passed, 4 Windows-only skipped, 13 subtests passed. JavaScript bridge: 53 methods and 6 recovery checks. New sample test cases: 18 passed. Browser E2E and native-import/asset self-test passed.

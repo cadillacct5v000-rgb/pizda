@@ -92,3 +92,6 @@ html[data-wallpaper=graphite] .bgl::before {filter:grayscale(1);opacity:.35;}
 .studio-settings label {text-transform:none;letter-spacing:.025em;font-size:13px;}
 @media(max-width:1000px){.stepname{display:none;}}
 @media(max-width:760px){.studio-layout{max-height:none;overflow:visible}.studio-settings{overflow:visible}}
+
+.sample-start {display:flex;align-items:center;gap:10px;color:var(--ink2);font-size:13px;text-transform:none;letter-spacing:0;}
+.sample-start input {max-width:110px;min-width:80px!important;}

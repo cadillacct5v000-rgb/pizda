@@ -137,3 +137,9 @@ async function refreshStudioVersions() {
   }catch(error){studioStatus(String(error),true);}
 }
 for(const id of ['studio_captions','studio_wallpaper']) $(id).addEventListener('change',previewStudioCaptions);
+
+function showYouTubeSample() {
+  if(studioBusy)return;
+  youtubeSampleStart=0;closeStudio();go(4);
+  setTimeout(()=>{$('youtube_source_url')?.focus();},280);
+}

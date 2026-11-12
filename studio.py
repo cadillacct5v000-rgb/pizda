@@ -126,6 +126,11 @@ def improve_script(text, profile, cfg, directory, progress=None, client=None, *,
                 'Return {"script":"complete improved narration for this section"}. No editing notes inside narration. '
                 +brief(cfg,plan_fields=False)+'\nReference JSON:\n'+json.dumps({'section':index+1,'total':len(chunks),'source':chunk,
                 'previous_output':parts[-1][-1200:] if parts else '', 'narrative_style':(profile or {}).get('narrative_style','')},ensure_ascii=False))
+        sample=(profile or {}).get('sample') or {}
+        if sample:
+            prompt=('This is ONLY a short trial from a selected source excerpt. Do not expand into a full-video script or continue beyond the supplied excerpt. '
+                    f'Target duration: {sample.get("source_seconds",30)} seconds; keep narration concise, at most 4 words per second '
+                    '(10 characters per second for CJK). Preserve the excerpt facts and finish naturally.\n')+prompt
         if language:
             import rewrite
             prompt=rewrite.lang_rule(language)+'\n'+prompt
@@ -133,10 +138,16 @@ def improve_script(text, profile, cfg, directory, progress=None, client=None, *,
             prompt='Write in the SAME LANGUAGE as the supplied script.\n'+prompt
         result=_query(client,prompt,directory/f'part_{index:04d}.json',progress)
         output=result.get('script') if isinstance(result,dict) else None
-        if _issue(output,len(chunk.split()),language or ''):
+        oversized=False
+        if sample and isinstance(output,str):
+            cjk=len(re.findall(r'[\u3400-\u9fff\u3040-\u30ff]',output))>10
+            count=len(sb.tokens(output)) if cjk else len(output.split())
+            oversized=count>max(24,float(sample.get('source_seconds',30))*(10 if cjk else 4))
+        if _issue(output,len(chunk.split()),language or '') or oversized:
             bad=directory/f'part_{index:04d}.json'
             bad.unlink(missing_ok=True)
             model_reply.invalidate(bad.with_suffix('.reply.json'))
+            if oversized:raise ValueError('Модель раздула сценарий короткой пробы. Озвучка и генерация кадров не запущены; повторите подготовку только отрезка.')
             raise ValueError('Модель вернула пустую или слишком короткую часть сценария; результат не принят.')
         parts.append(output.strip())
     output='\n\n'.join(parts)

@@ -409,6 +409,25 @@ def _run(args, **kwargs):
     return result
 
 
+def fit_sample(aligned, seconds, fps=25):
+    """Distribute a bounded preview duration without dropping narration or changing pitch."""
+    if not aligned or not math.isfinite(float(seconds)) or not 1 <= float(seconds) <= 30:
+        raise StoryboardError('Длительность пробы: от 1 до 30 секунд.')
+    total=aligned[-1]['end'];target_frames=round(float(seconds)*fps)
+    if not .5 <= total/float(seconds) <= 2:
+        raise StoryboardError('Сценарий пробы слишком короткий или длинный для 30 секунд. Изменение темпа речи более чем вдвое остановлено до генерации кадров.')
+    output=[];previous=0
+    for index,row in enumerate(aligned):
+        end=target_frames if index==len(aligned)-1 else round(row['end']/total*target_frames)
+        frames=end-previous
+        if frames<1:raise StoryboardError('В пробе слишком много коротких планов для выбранной частоты кадров.')
+        duration=frames/fps
+        if not .5 <= row['actual_duration']/duration <= 2:
+            raise StoryboardError('Один из планов пробы требует изменения темпа более чем вдвое. Проверьте сценарий.')
+        output.append({**row,'duration':duration});previous=end
+    return output
+
+
 def retime_audio(audio, words, aligned, directory, fps=25):
     """Honor manual durations by retiming each corresponding narration passage."""
     if not any(row['duration'] is not None for row in aligned):
