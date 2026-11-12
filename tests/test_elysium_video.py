@@ -247,3 +247,64 @@ def test_video_poll_progress_keeps_completed_count(setup, monkeypatch):
     scenes = [{'index': i, 'duration': 5, 'prompt': 'drawing', 'motion': 'wave'} for i in range(2)]
     pipeline.generate_all_videos(ctx, scenes, str(images), str(root), lambda *args: events.append(args))
     assert [event[1] for event in events if event[3] == 'waiting'] == [0, 1]
+
+
+@pytest.mark.parametrize('mode,duration,expected', [('std', 2.2, '3'), ('pro', 4.2, '5'), ('std', 30, '15')])
+def test_kling_payload_uses_catalog_schema_and_keeps_failed_id(setup, mode, duration, expected):
+    _, session, store, image, root = setup
+    client = ev.ElysiumVideo('test-secret', model=ev.KLING_MODEL, kling_mode=mode,
+                             store=store, session=session)
+    session.post.return_value = response({'id': 'kling_task', 'status': 'queued'})
+    session.get.return_value = response({'status': 'failed', 'error': {'code': 'generation_failed'}})
+    for _ in range(2):
+        with pytest.raises(ev.ElysiumVideoError, match='generation_failed'):
+            client.generate('wave', image, root / 'kling.mp4', duration)
+    assert session.post.call_count == 1
+    body = session.post.call_args.kwargs['json']
+    assert body == {'model': 'kling-3.0/video', 'operation': 'generate', 'prompt': 'wave',
+                    'input': {'prompt': 'wave', 'duration': expected, 'image_urls': ['https://cdn.example/frame.png'],
+                              'mode': mode, 'sound': False, 'aspect_ratio': '16:9',
+                              'multi_shots': False, 'multi_prompt': []}}
+    assert session.get.call_count == 2
+
+
+def test_models_and_kling_quality_have_independent_receipts(setup):
+    gemini, session, store, image, root = setup
+    session.post.side_effect = [response({'id': 'gemini_task'}), response({'id': 'kling_std'}), response({'id': 'kling_pro'})]
+    session.get.return_value = response({'status': 'failed'})
+    clients = [gemini] + [ev.ElysiumVideo('test-secret', model=ev.KLING_MODEL, kling_mode=mode,
+                                        session=session, store=store) for mode in ('std', 'pro')]
+    for client in clients + clients:
+        with pytest.raises(ev.ElysiumVideoError):
+            client.generate('wave', image, root / 'out.mp4', 5)
+    assert session.post.call_count == 3
+    assert [c.args[0].rsplit('/', 1)[-1] for c in session.get.call_args_list] == ['gemini_task', 'kling_std', 'kling_pro'] * 2
+
+
+def test_kling_check_is_read_only_and_checks_selected_model(setup):
+    _, session, store, *_ = setup
+    client = ev.ElysiumVideo('test-secret', model=ev.KLING_MODEL, session=session, store=store)
+    session.get.side_effect = [response({}), response({'data': [{'id': ev.KLING_MODEL, 'operations': [{'name': 'generate'}]}]})]
+    assert ev.KLING_MODEL in client.check()
+    session.post.assert_not_called()
+
+
+def test_model_cache_identity_preserves_gemini_and_separates_kling():
+    cfg = {'video_engine': 'elysium', 'elysium_video_resolution': '720p'}
+    legacy = hashlib.sha256(json.dumps(['elysium', ev.MODEL, None, '720p', 'qa-final-frame-v1']).encode()).hexdigest()[:12]
+    assert pipeline.make_context(cfg, [])['video_identity'] == legacy
+    std = pipeline.make_context({**cfg, 'elysium_video_model': ev.KLING_MODEL}, [])['video_identity']
+    pro = pipeline.make_context({**cfg, 'elysium_video_model': ev.KLING_MODEL, 'elysium_kling_mode': 'pro'}, [])['video_identity']
+    assert len({legacy, std, pro}) == 3
+
+
+def test_video_model_settings_save_without_changing_images_or_voice(monkeypatch):
+    cfg = {'image_providers': ['fastgen'], 'tts_service': 'elevenlabs', 'elysium_api_key': 'test-secret'}
+    monkeypatch.setattr(app, 'load_cfg', lambda: dict(cfg))
+    monkeypatch.setattr(app, 'save_cfg', lambda value: cfg.update(value))
+    api = app.Api()
+    api.save_config({'video_engine': 'elysium', 'elysium_video_model': ev.KLING_MODEL, 'elysium_kling_mode': 'pro'})
+    assert cfg['elysium_video_model'] == ev.KLING_MODEL and cfg['elysium_kling_mode'] == 'pro'
+    assert cfg['image_providers'] == ['fastgen'] and cfg['tts_service'] == 'elevenlabs'
+    api.save_config({'elysium_video_model': 'unsupported', 'elysium_kling_mode': '4K'})
+    assert cfg['elysium_video_model'] == ev.KLING_MODEL and cfg['elysium_kling_mode'] == 'pro'

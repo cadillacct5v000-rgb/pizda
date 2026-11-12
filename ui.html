@@ -990,7 +990,7 @@ async function loadConfig(keepScreen) {
   for (const k of ['fastgen','elysium','openai','anthropic','gemini']) rwKeys[k] = c['has_' + k] ? (k === 'fastgen' ? (c.keys.fastgen[0] || '') : c[k]) : '';
   analyzeVideo = c.youtube_analyze_video !== false;
   sourceMontage = c.source_montage !== false; analysisEngine = c.source_analysis_engine || 'fastgen'; analysisModel = c.source_analysis_model || '';
-  videoEngine = c.video_engine || 'providers'; elysiumVideoResolution = c.elysium_video_resolution || '720p';
+  videoEngine = c.video_engine || 'providers'; elysiumVideoResolution = c.elysium_video_resolution || '720p'; elysiumVideoModel=c.elysium_video_model||'google/gemini-omni-flash-1.2'; elysiumKlingMode=c.elysium_kling_mode||'std';
   youtubeSampleStart = Number(c.youtube_sample_start)||0;
   youtubeBrowser = c.youtube_browser || ''; youtubeCookieFile = c.youtube_cookie_file || '';
   rwEngine = c.rewrite_engine || 'fastgen'; rwSrc = c.rewrite_source || 'youtube'; $('use_rw').checked = !!c.rewrite;
@@ -1022,7 +1022,7 @@ const F = {script:'', rwUrl:'', rwText:'', rwWords:1500, rwLang:'польско�
 const LANG_NAMES = {'английском':'Английский','китайском':'Китайский','хинди':'Хинди','испанском':'Испанский','арабском':'Арабский','французском':'Французский','бенгальском':'Бенгальский','португальском':'Португальский','русском':'Русский','урду':'Урду','индонезийском':'Индонезийский','немецком':'Немецкий','японском':'Японский','турецком':'Турецкий','вьетнамском':'Вьетнамский','корейском':'Корейский','итальянском':'Итальянский','персидском':'Персидский','польском':'Польский','украинском':'Украинский','голландском':'Голландский','румынском':'Румынский','греческом':'Греческий','чешском':'Чешский','венгерском':'Венгерский','шведском':'Шведский','казахском':'Казахский','узбекском':'Узбекский','азербайджанском':'Азербайджанский','иврите':'Иврит','финском':'Финский','датском':'Датский','норвежском':'Норвежский'};
 const LANGS = Object.keys(LANG_NAMES);
 const langName = v => LANG_NAMES[v] || v;
-let videoEngine = 'providers', elysiumVideoResolution = '720p';
+let videoEngine = 'providers', elysiumVideoResolution = '720p', elysiumVideoModel='google/gemini-omni-flash-1.2', elysiumKlingMode='std';
 const single = {}, models = {elysium_model:'gpt-4.1-mini',llm_model:'openai/gpt-5-2', openai_model:'gpt-4.1-mini', anthropic_model:'claude-sonnet-5-5', gemini_model:'gemini-3.6-flash'};
 const MODEL_OPTS = {elysium_model:[['gpt-4.1-mini','gpt-4.1-mini']],llm_model:[['openai/gpt-5-2','gpt-5-2'],['openai/gpt-5-1','gpt-5-1'],['openai/gpt-4.1-mini','gpt-4.1-mini'],['openai/gpt-4o-mini','gpt-4o-mini'],['google/gemini-3.6-flash','gemini-3.6-flash'],['google/gemini-3.5-flash-lite','gemini-3.5-flash-lite'],['google/gemini-3.1-pro','gemini-3.1-pro'],['openai/gpt-4.1','gpt-4.1']],
   openai_model:[['gpt-4.1-mini','gpt-4.1-mini'],['gpt-5.4-mini','gpt-5.4-mini'],['gpt-5.4','gpt-5.4'],['gpt-5.2','gpt-5.2'],['gpt-5-mini','gpt-5-mini'],['gpt-4.1','gpt-4.1'],['gpt-4o-mini','gpt-4o-mini']],
@@ -1076,13 +1076,15 @@ function renderAccess() {
     // Provider URLs are rendered once below, including vision-only providers.
   }
   H.push(row(L==='ru'?'Оживление картинок':'Image animation', LINKS.elysium,
-    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers'],['elysium','Gemini Omni 1.2 · Elysium']], videoEngine)));
+    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers'],['elysium','Gemini / Kling · Elysium']], videoEngine)));
   if (videoEngine === 'elysium') {
-    H.push(row('Gemini Video · Elysium', LINKS.elysium,
-      '<span class="note">google/gemini-omni-flash-1.2</span>' + sel('elysium_video_resolution',[['720p','720p'],['1080p','1080p']],elysiumVideoResolution)
+    H.push(row('Video · Elysium', LINKS.elysium,
+      sel('elysium_video_model',[['google/gemini-omni-flash-1.2','Gemini Omni Flash 1.2'],['kling-3.0/video','Kling 3.0 · kling-3.0/video']],elysiumVideoModel)
+      + (elysiumVideoModel==='kling-3.0/video' ? sel('elysium_kling_mode',[['std','Standard'],['pro','Pro']],elysiumKlingMode) : sel('elysium_video_resolution',[['720p','720p'],['1080p','1080p']],elysiumVideoResolution))
       + keyIn('k_video_elysium','elysium',0,single.elysium||'',t('ph_key')) + eye('k_video_elysium')
       + '<button class="ghost" id="check_video_elysium">'+(L==='ru'?'Проверить без генерации':'Check without generation')+'</button>', 's_video_elysium'));
     H.push(baseRow('elysium'));
+    if (elysiumVideoModel==='kling-3.0/video') H.push('<div class="note">'+(L==='ru'?'Kling создаёт видео без звука; используется выбранная озвучка. Standard дешевле Pro. Смена модели запускает новые платные клипы для выбранных планов; старые клипы сохраняются отдельно.':'Kling generates silent video using the selected narration. Standard costs less than Pro. Switching models creates new billable clips for selected plans; previous clips remain saved separately.')+'</div>');
     H.push('<div class="note">'+(L==='ru'?'Картинки создаёт выбранный сервис, видео — Elysium, голос — выбранная озвучка. Для оживления включите «Только видео», «50 на 50» или «Оживить первые». Для первой пробы используйте новые картинки FastGen: старым локальным кадрам без исходной ссылки нужен новый вариант плана.':'Images, video and voice use their own selected providers. Enable video/mixed mode or animate the first scenes. Use fresh FastGen images for the first trial; older local frames without a source URL need a new take.')+'</div>');
   }
   if ($('use_qa').checked) {
@@ -1187,6 +1189,8 @@ function bindAccess() {
     if (!v.includes('•')) pywebview.api.save_config({[k]: v});
   }));
   on('video_engine', 'change', async () => { syncAll(); videoEngine=$('video_engine').value; await saveKeys(); renderAccess(); });
+  on('elysium_video_model', 'change', async () => { syncAll(); elysiumVideoModel=$('elysium_video_model').value; await saveKeys(); renderAccess(); });
+  on('elysium_kling_mode', 'change', async () => { elysiumKlingMode=$('elysium_kling_mode').value; await saveKeys(); });
   on('elysium_video_resolution', 'change', async () => { elysiumVideoResolution=$('elysium_video_resolution').value; await saveKeys(); });
   on('check_video_elysium', 'click', async () => { await saveKeys(); const e=$('s_video_elysium'); e.textContent='Проверяю каталог…'; const r=await pywebview.api.check_elysium_video(); e.textContent=r.ok?r.message:r.error; });
   on('stt_sel', 'change', () => { syncAll(); stt = $('stt_sel').value; pywebview.api.save_config({stt_engine: stt}); renderAccess(); });
@@ -1307,7 +1311,7 @@ function applyLang() {
 async function saveKeys() {
   syncAll();
   const p = provs(), fg = p.includes('fastgen');
-  const data = {...models, video_engine:videoEngine, elysium_video_resolution:elysiumVideoResolution, keys: {}};
+  const data = {...models, video_engine:videoEngine, elysium_video_model:elysiumVideoModel, elysium_kling_mode:elysiumKlingMode, elysium_video_resolution:elysiumVideoResolution, keys: {}};
   for (const k of IMG) if (p.includes(k) || (source === 'script' && tts === k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
   if (rwOn() && analyzeVideo && analysisEngine !== 'fastgen' && single[analysisEngine] && !single[analysisEngine].includes('•')) data[analysisEngine] = single[analysisEngine];
   for (const k of ['elysium','openai','anthropic','gemini','assemblyai','openrouter']) if (typeof single[k] === 'string' && !single[k].includes('•')) data[k] = single[k];

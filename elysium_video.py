@@ -14,6 +14,8 @@ from fastgen_api import data_dir
 from native_projects import ProjectStore
 
 MODEL = 'google/gemini-omni-flash-1.2'
+KLING_MODEL = 'kling-3.0/video'
+MODELS = (MODEL, KLING_MODEL)
 DEFAULT_BASE = 'https://elysiumai.garden/v1'
 
 
@@ -22,14 +24,20 @@ class ElysiumVideoError(RuntimeError):
 
 
 class ElysiumVideo:
-    def __init__(self, key, base=None, resolution='720p', *, store=None, session=None, poll=5, max_wait=1800):
+    def __init__(self, key, base=None, resolution='720p', *, model=MODEL, kling_mode='std', store=None, session=None, poll=5, max_wait=1800):
         if not key:
-            raise ElysiumVideoError('Введите ключ Elysium для оживления Gemini.')
+            raise ElysiumVideoError('Введите ключ Elysium для оживления картинок.')
         self.base = (base or DEFAULT_BASE).rstrip('/')
         if urlparse(self.base).scheme != 'https':
             raise ElysiumVideoError('Для Elysium Video нужен адрес HTTPS.')
         if resolution not in ('720p', '1080p'):
             raise ElysiumVideoError('Выберите 720p или 1080p.')
+        if model not in MODELS:
+            raise ElysiumVideoError('Выберите поддерживаемую видеомодель Elysium.')
+        if kling_mode not in ('std', 'pro'):
+            raise ElysiumVideoError('Выберите Kling Standard или Pro.')
+        self.model, self.kling_mode = model, kling_mode
+        self.label = 'Kling 3.0' if model == KLING_MODEL else 'Gemini'
         self.resolution = resolution
         self._secret = key
         self.session = session or requests.Session()
@@ -93,15 +101,15 @@ class ElysiumVideo:
         # Authenticated GET; no generation or billing. Catalog presence is not a paid access test.
         self._get('/models')
         catalog = self._get('/media/models')
-        model = next((m for m in catalog.get('data', []) if m.get('id') == MODEL), None)
+        model = next((m for m in catalog.get('data', []) if m.get('id') == self.model), None)
         if not model or not any(o.get('name') == 'generate' for o in model.get('operations', [])):
-            raise ElysiumVideoError(f'В медиакаталоге Elysium нет {MODEL}.')
-        return f'Ключ принят; {MODEL} есть в каталоге. Генерация не запускалась; права и списание проверяются при запуске клипа.'
+            raise ElysiumVideoError(f'В медиакаталоге Elysium нет {self.model}.')
+        return f'Ключ принят; {self.model} есть в каталоге. Генерация не запускалась; права и списание проверяются при запуске клипа.'
 
     def generate(self, prompt, image, out_path, duration, progress=None):
         seconds = max(3, min(15, math.ceil(float(duration))))
         image_hash = hashlib.sha256(Path(image).read_bytes()).hexdigest()
-        identity = [self.base, self.account, MODEL, self.resolution, seconds, prompt, image_hash]
+        identity = [self.base, self.account, self.model, self.resolution if self.model == MODEL else self.kling_mode, seconds, prompt, image_hash]
         operation = 'elysium-video:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         state = self.store.operation(operation) or {}
         if state.get('status') == 'failed' and not state.get('id'):
@@ -117,12 +125,16 @@ class ElysiumVideo:
             url = reference.get('url', '')
             if reference.get('sha256') != image_hash or urlparse(url).scheme != 'https':
                 raise ElysiumVideoError('У картинки нет исходной HTTPS-ссылки для Elysium. Создайте новый вариант этого плана через FastGen: старые локальные картинки без ссылки нельзя отправить в этот API.')
-            body = {'model': MODEL, 'operation': 'generate', 'prompt': prompt,
-                    'input': {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
-                              'aspect_ratio': '16:9', 'first_frame_url': url}}
+            inputs = {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
+                      'aspect_ratio': '16:9', 'first_frame_url': url}
+            if self.model == KLING_MODEL:
+                inputs = {'prompt': prompt, 'duration': str(seconds), 'image_urls': [url],
+                          'aspect_ratio': '16:9', 'mode': self.kling_mode, 'sound': False,
+                          'multi_shots': False, 'multi_prompt': []}
+            body = {'model': self.model, 'operation': 'generate', 'prompt': prompt, 'input': inputs}
             netutil.check_cancel()
             if progress:
-                progress('Gemini через Elysium: отправляю новое видеозадание для этой картинки. Генерация оплачивается сервисом.')
+                progress(f'{self.label} через Elysium: отправляю новое видеозадание для этой картинки. Генерация оплачивается сервисом.')
             self.store.operation(operation, {'status': 'submitting'})
             try:
                 response = self.session.post(self.base + '/videos', json=body, timeout=120)
@@ -146,7 +158,7 @@ class ElysiumVideo:
         while time.monotonic() < deadline:
             netutil.check_cancel()
             if progress:
-                progress(f'Gemini через Elysium: проверяю статус задания {task}. Новая генерация не отправляется.')
+                progress(f'{self.label} через Elysium: проверяю статус задания {task}. Новая генерация не отправляется.')
             try:
                 result = self._get('/videos/' + quote(task, safe=''))
             except ElysiumVideoError as error:
@@ -180,11 +192,11 @@ class ElysiumVideo:
                         raise ElysiumVideoError('Elysium вернул файл без видеопотока. ID сохранён, повторите скачивание.')
                     os.replace(temporary, out_path)
                     self.store.operation(operation, {**state, 'billing': metadata.get('billing')})
-                    return 'elysium:' + MODEL
+                    return 'elysium:' + self.model
                 finally:
                     if os.path.exists(temporary):
                         os.remove(temporary)
             if progress:
-                progress(f'Gemini через Elysium: {status or "ожидание"}; задание {task}. Повторной отправки нет.')
+                progress(f'{self.label} через Elysium: {status or "ожидание"}; задание {task}. Повторной отправки нет.')
             netutil.pause(self.poll)
         raise ElysiumVideoError('Elysium ещё готовит видео. ID сохранён: повторный запуск продолжит ожидание этого же задания.')

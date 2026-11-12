@@ -6,6 +6,8 @@
   "secretslider_api_key": "",
   "google_api_key": "",
   "video_engine": "providers",
+  "elysium_video_model": "google/gemini-omni-flash-1.2",
+  "elysium_kling_mode": "std",
   "elysium_video_resolution": "720p",
   "openai_api_key": "",
   "anthropic_api_key": "",

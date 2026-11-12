@@ -2205,7 +2205,7 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
     if ctx.get("video_engine") == "elysium":
         from elysium_video import ElysiumVideo
         cfg = ctx["video_config"]
-        api = ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"))
+        api = ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"), model=cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), kling_mode=cfg.get("elysium_kling_mode", "std"))
         class Gate:
             threads = 1
         def elysium_clip(scene, image, output, report):
@@ -2979,7 +2979,9 @@ def make_context(cfg, providers):
     ctx["video_engine"] = cfg.get("video_engine", "providers")
     ctx["video_config"] = dict(cfg)
     if ctx["video_engine"] == "elysium":
-        ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", "google/gemini-omni-flash-1.2", cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"), "qa-final-frame-v1"]).encode()).hexdigest()[:12]
+        model = cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2")
+        quality = cfg.get("elysium_kling_mode", "std") if model == "kling-3.0/video" else cfg.get("elysium_video_resolution", "720p")
+        ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", model, cfg.get("elysium_base_url"), quality, "qa-final-frame-v1"]).encode()).hexdigest()[:12]
     return ctx
 
 

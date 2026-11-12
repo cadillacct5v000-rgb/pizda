@@ -297,7 +297,19 @@ with sync_playwright() as p:
  page.evaluate('loadConfig(true)')
  page.wait_for_selector('#k_video_elysium')
  assert page.locator('#video_engine').input_value()=='elysium'
- assert 'google/gemini-omni-flash-1.2' in page.locator('#dropzone').text_content()
+ assert page.locator('#elysium_video_model').input_value()=='google/gemini-omni-flash-1.2'
+ page.locator('#elysium_video_model').select_option('kling-3.0/video')
+ page.wait_for_selector('#elysium_kling_mode')
+ assert page.locator('#elysium_video_resolution').count()==0
+ page.locator('#elysium_kling_mode').select_option('pro')
+ page.wait_for_function("elysiumKlingMode === 'pro'")
+ page.wait_for_timeout(300)
+ page.evaluate('loadConfig(true)')
+ page.wait_for_selector('#elysium_kling_mode')
+ assert page.locator('#elysium_video_model').input_value()=='kling-3.0/video'
+ assert page.locator('#elysium_kling_mode').input_value()=='pro'
+ assert app.load_cfg()['elysium_video_model']=='kling-3.0/video'
+ assert app.load_cfg()['image_providers']==['fastgen']
  assert not errors,errors
  b.close()
 print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery, bounded 30-second source trial and marked result-board navigation.')

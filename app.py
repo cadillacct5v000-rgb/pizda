@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.6-dev"
+VERSION = "2.0.7-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -238,7 +238,7 @@ def build_report():
     lines = [f"Kadro.Gen {VERSION} · {platform.system()} {platform.release()} · папка данных: {'рядом с программой' if data_dir() == app_dir() else data_dir()}",
              f"сервисы: {', '.join(cfg.get('image_providers') or []) or '—'} · режим: {cfg.get('mode')} · {cfg.get('quality')} · моушн: {cfg.get('motion')} · HD: {cfg.get('hd_images')} · субтитры: {cfg.get('subtitles')}",
              f"речь: {cfg.get('stt_engine')} · тексты: {cfg.get('llm_engine')} ({cfg.get('llm_model')}) · источник: {cfg.get('source')} · озвучка: {cfg.get('tts_service')}",
-             f"видео: {cfg.get('video_engine', 'providers')} · разрешение Elysium: {cfg.get('elysium_video_resolution', '720p')} · оживить первые: {cfg.get('video_first', 0)}",
+             f"видео: {cfg.get('video_engine', 'providers')} · модель Elysium: {cfg.get('elysium_video_model', 'google/gemini-omni-flash-1.2')} · Kling: {cfg.get('elysium_kling_mode', 'std')} · разрешение Gemini: {cfg.get('elysium_video_resolution', '720p')} · оживить первые: {cfg.get('video_first', 0)}",
              f"ключи введены: {keys}"]
     if st.get("error"):
         lines += ["", "ОШИБКА: " + str(st["error"])]
@@ -521,6 +521,8 @@ def save_cfg(cfg):
     cfg.setdefault("openai_model", "gpt-4.1-mini")
     cfg.setdefault("video_engine", "providers")
     cfg.setdefault("elysium_video_resolution", "720p")
+    cfg.setdefault("elysium_video_model", "google/gemini-omni-flash-1.2")
+    cfg.setdefault("elysium_kling_mode", "std")
     cfg.setdefault("elysium_api_key", "")
     cfg.setdefault("elysium_model", "gpt-4.1-mini")
     cfg.setdefault("text_engine", "fastgen")
@@ -803,8 +805,8 @@ def production_check(opts):
     access='not_needed' if not clips else 'unverified'
     if clips and cfg.get('video_engine') == 'elysium':
         if not cfg.get('elysium_api_key'):
-            blockers.append('Для видео Gemini введите ключ Elysium на экране «Доступ».')
-        warnings.append('Видео: Gemini Omni Flash 1.2 через Elysium. Оплата по тарифу Elysium; доступ FastGen к видео не нужен.')
+            blockers.append('Для видео введите ключ Elysium на экране «Доступ».')
+        warnings.append(f"Видео: {cfg.get('elysium_video_model', 'google/gemini-omni-flash-1.2')} через Elysium. Оплата по тарифу Elysium; доступ FastGen к видео не нужен.")
     if clips and cfg.get('video_engine') != 'elysium' and providers==['fastgen'] and cfg.get('fastgen_api_key'):
         try:
             usage=FastGen(cfg['fastgen_api_key'],timeout=15).usage()
@@ -1141,6 +1143,7 @@ class Api:
             "source_analysis_model": cfg.get("source_analysis_model", ""), "source_montage": cfg.get("source_montage", True), "source_analysis_engine": cfg.get("source_analysis_engine", "fastgen"),
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
+            "elysium_video_model": cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), "elysium_kling_mode": cfg.get("elysium_kling_mode", "std"),
             "video_engine": cfg.get("video_engine", "providers"), "elysium_video_resolution": cfg.get("elysium_video_resolution", "720p"),
             "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
             "openai": mask(cfg.get("openai_api_key", "")),
@@ -1211,6 +1214,10 @@ class Api:
                 cfg[k + "_base_url"] = v if v.startswith(("http://", "https://")) else ""
         if data.get("video_engine") in ("providers", "elysium"):
             cfg["video_engine"] = data["video_engine"]
+        if data.get("elysium_video_model") in ("google/gemini-omni-flash-1.2", "kling-3.0/video"):
+            cfg["elysium_video_model"] = data["elysium_video_model"]
+        if data.get("elysium_kling_mode") in ("std", "pro"):
+            cfg["elysium_kling_mode"] = data["elysium_kling_mode"]
         if data.get("elysium_video_resolution") in ("720p", "1080p"):
             cfg["elysium_video_resolution"] = data["elysium_video_resolution"]
         if data.get("mode") in pipeline.MODES:
@@ -1315,7 +1322,7 @@ class Api:
         cfg = load_cfg()
         try:
             from elysium_video import ElysiumVideo
-            return {"ok": True, "message": ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p")).check()}
+            return {"ok": True, "message": ElysiumVideo(cfg.get("elysium_api_key"), cfg.get("elysium_base_url"), cfg.get("elysium_video_resolution", "720p"), model=cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), kling_mode=cfg.get("elysium_kling_mode", "std")).check()}
         except Exception as error:
             return {"ok": False, "error": str(error)}
 
@@ -1564,7 +1571,7 @@ class Api:
             if not cfg.get(f"{eng}_api_key"):
                 return f"Включён автоотбор картинок, введите ключ {pipeline.QA_ENGINES.get(eng, ('', '', None))[0]} в строке «Автоотбор» или выключите опцию."
         if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key"):
-            return "Для видео Gemini через Elysium введите ключ Elysium."
+            return "Для видео через Elysium введите ключ Elysium."
         has_fg = bool(cfg.get("fastgen_api_key"))
         stt = cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper"); llm = cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")
         if stt == "assemblyai" and not cfg.get("assemblyai_api_key"):
