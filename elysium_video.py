@@ -68,6 +68,27 @@ class ElysiumVideo:
     def _get(self, path):
         return self._json(netutil.patient(lambda: self.session.get(self.base + path, timeout=60)), 'GET ' + path)
 
+    def _failure_detail(self, result):
+        containers = [result]
+        for name in ('metadata', 'data', 'result', 'details'):
+            if isinstance(result.get(name), dict):
+                containers.append(result[name])
+        for field in ('error', 'failure_reason', 'error_message', 'fail_reason', 'failMsg', 'failure', 'reason', 'message', 'error_code'):
+            for container in containers:
+                value = container.get(field)
+                if value:
+                    return self._safe_error(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else value)
+        def summary(value, depth=0):
+            if depth > 4:
+                return '[сокращено]'
+            if isinstance(value, dict):
+                private = {'input', 'prompt', 'request', 'authorization', 'api_key', 'key', 'token', 'base64', 'image', 'images', 'video'}
+                return {k: summary(v, depth + 1) for k, v in list(value.items())[:30] if str(k).lower() not in private}
+            if isinstance(value, list):
+                return [summary(v, depth + 1) for v in value[:5]]
+            return self._safe_error(value) if isinstance(value, str) else value
+        return self._safe_error('Сервер вернул failed. Ответ: ' + json.dumps(summary(result), ensure_ascii=False))
+
     def check(self):
         # Authenticated GET; no generation or billing. Catalog presence is not a paid access test.
         self._get('/models')
@@ -83,7 +104,7 @@ class ElysiumVideo:
         identity = [self.base, self.account, MODEL, self.resolution, seconds, prompt, image_hash]
         operation = 'elysium-video:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         state = self.store.operation(operation) or {}
-        if state.get('status') == 'failed':
+        if state.get('status') == 'failed' and not state.get('id'):
             raise ElysiumVideoError('Elysium отклонил этот клип. Исправьте движение или создайте новый вариант плана; автоматического платного повтора нет.')
         task = state.get('id')
         if not task:
@@ -100,6 +121,8 @@ class ElysiumVideo:
                     'input': {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
                               'aspect_ratio': '16:9', 'first_frame_url': url}}
             netutil.check_cancel()
+            if progress:
+                progress('Gemini через Elysium: отправляю новое видеозадание для этой картинки. Генерация оплачивается сервисом.')
             self.store.operation(operation, {'status': 'submitting'})
             try:
                 response = self.session.post(self.base + '/videos', json=body, timeout=120)
@@ -131,8 +154,10 @@ class ElysiumVideo:
             status = result.get('status')
             state = {'id': task, 'status': status or 'unknown'}
             if status == 'failed':
+                detail = self._failure_detail(result)
+                state['error'] = detail
                 self.store.operation(operation, state)
-                raise ElysiumVideoError('Elysium не создал клип. Подробности — в истории сервиса. Новое платное задание автоматически не отправляется.')
+                raise ElysiumVideoError(f'Elysium не создал клип: {detail} · ID задания {self._safe_error(task)} сохранён. Новая генерация автоматически не отправляется; повторный запуск только проверит это же задание.')
             if status in ('cancelled', 'canceled'):
                 state['status'] = 'failed'
                 self.store.operation(operation, state)

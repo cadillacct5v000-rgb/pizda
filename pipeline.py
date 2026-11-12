@@ -2210,7 +2210,7 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
             threads = 1
         def elysium_clip(scene, image, output, report):
             return api.generate(video_prompt(scene), image, output, scene['duration'],
-                                lambda message: report('videos', 0, len(scenes), message))
+                                lambda message: report('videos', done_count, len(scenes), message))
         video_gen = {"elysium": (Gate(), elysium_clip)}
         provs = ["elysium"]
     else:

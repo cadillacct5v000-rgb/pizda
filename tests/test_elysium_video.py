@@ -204,3 +204,46 @@ def test_html_error_is_redacted(setup):
         client._json(reply, 'GET /videos/task')
     assert 'Access denied' in str(error.value)
     assert 'test-secret' not in str(error.value) and '<html>' not in str(error.value)
+
+
+@pytest.mark.parametrize('failure', [
+    {'error': {'code': 'provider_failed', 'message': 'Reference could not be loaded'}},
+    {'metadata': {'error': {'message': 'Reference could not be loaded'}}},
+    {'failure_reason': 'Reference could not be loaded'},
+])
+def test_failed_task_reason_is_saved_and_refresh_does_not_resubmit(setup, failure):
+    client, session, store, image, root = setup
+    session.post.return_value = response({'id': 'failed_video'})
+    session.get.return_value = response({'status': 'failed', **failure})
+    for _ in range(2):
+        with pytest.raises(ev.ElysiumVideoError, match='Reference could not be loaded') as error:
+            client.generate('wave', image, root / 'out.mp4', 5)
+        assert 'failed_video' in str(error.value)
+    assert session.post.call_count == 1
+    assert session.get.call_count == 2
+    with store.connection() as db:
+        saved = json.loads(db.execute('SELECT payload FROM operations').fetchone()[0])
+    assert 'Reference could not be loaded' in saved['error']
+
+
+def test_missing_failed_reason_is_explicit(setup):
+    client, *_ = setup
+    assert 'failed. Ответ:' in client._failure_detail({'id': 'task', 'status': 'failed'})
+
+
+def test_video_poll_progress_keeps_completed_count(setup, monkeypatch):
+    _, _, _, image, root = setup
+    images = root / 'images'; images.mkdir()
+    for i in range(2):
+        (images / f'{i:04d}.png').write_bytes(image.read_bytes())
+    def generate(self, prompt, source, output, duration, progress):
+        progress('waiting')
+        Path(output).write_bytes(b'fixture')
+        return 'fixture'
+    monkeypatch.setattr(ev.ElysiumVideo, 'generate', generate)
+    ctx = {'bases': ['fastgen'], 'video_engine': 'elysium', 'video_identity': 'test',
+           'video_config': {'elysium_api_key': 'test-secret'}}
+    events = []
+    scenes = [{'index': i, 'duration': 5, 'prompt': 'drawing', 'motion': 'wave'} for i in range(2)]
+    pipeline.generate_all_videos(ctx, scenes, str(images), str(root), lambda *args: events.append(args))
+    assert [event[1] for event in events if event[3] == 'waiting'] == [0, 1]
