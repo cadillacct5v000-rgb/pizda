@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.3-dev"
+VERSION = "2.0.4-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -238,6 +238,7 @@ def build_report():
     lines = [f"Kadro.Gen {VERSION} · {platform.system()} {platform.release()} · папка данных: {'рядом с программой' if data_dir() == app_dir() else data_dir()}",
              f"сервисы: {', '.join(cfg.get('image_providers') or []) or '—'} · режим: {cfg.get('mode')} · {cfg.get('quality')} · моушн: {cfg.get('motion')} · HD: {cfg.get('hd_images')} · субтитры: {cfg.get('subtitles')}",
              f"речь: {cfg.get('stt_engine')} · тексты: {cfg.get('llm_engine')} ({cfg.get('llm_model')}) · источник: {cfg.get('source')} · озвучка: {cfg.get('tts_service')}",
+             f"видео: {cfg.get('video_engine', 'providers')} · разрешение Elysium: {cfg.get('elysium_video_resolution', '720p')} · оживить первые: {cfg.get('video_first', 0)}",
              f"ключи введены: {keys}"]
     if st.get("error"):
         lines += ["", "ОШИБКА: " + str(st["error"])]

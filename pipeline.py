@@ -973,7 +973,7 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
 
     def do_chunk(chunk):
         check_cancel()
-        listing = "\n".join(f"{s['index']}. [{s['duration']:.1f} c] {s['text']}" + ("\nNew visual redesign: " + s["source_redesign"] if s.get("source_redesign") else "") for s in chunk)
+        listing = "\n".join(f"{s['index'] + 1}. [{s['duration']:.1f} c] {s['text']}" + ("\nNew visual redesign: " + s["source_redesign"] if s.get("source_redesign") else "") for s in chunk)
         profile = style.get("source_profile") or {}
         segments = profile.get("segments") or []
         if segments:
@@ -1255,11 +1255,11 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                             err = f"не скачалась картинка: {e}"
                     else:
                         err = f"{st.get('error_code')} {str(st.get('error'))}"
-            log(f"сцена {scene['index']}: fast-gen {op} попытка {t + 1}/{tries} не удалась: {err[:200]}")
+            log(f"сцена {scene['index'] + 1}: fast-gen {op} попытка {t + 1}/{tries} не удалась: {err[:200]}")
             low = (err or "").lower()
             if "content_policy" in low or "safety filter" in low or "content_filter" in low:
                 gate.request_done(False, credits)
-                raise SceneRejected(f"Сцена {scene['index']}: сервис отклонил содержание. Измените описание сцены и повторите.")
+                raise SceneRejected(f"Сцена {scene['index'] + 1}: сервис отклонил содержание. Измените описание сцены и повторите.")
             if any(code in low for code in ("401", "auth.invalid", "invalid_api_key", "invalid_credentials")):
                 gate.request_done(False, credits)
                 with gate.lock:
@@ -1280,7 +1280,7 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
             low = err.lower()
             if inputs and ("reference" in low or "invalid_argument" in low or "invalid_request" in low):
                 inputs = []  # сервер не принял портреты героев — та же модель, но без них
-                log(f"сцена {scene['index']}: повторяю без референсов")
+                log(f"сцена {scene['index'] + 1}: повторяю без референсов")
                 continue
             t += 1
             netutil.pause(5)
@@ -1289,7 +1289,7 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
 
 def gen_nonstop_image(api, gate, scene, out_path, progress, refs):
     if not gate.available():
-        log(f"сцена {scene['index']}: veononstop — суточный лимит картинок исчерпан, пропускаю")
+        log(f"сцена {scene['index'] + 1}: veononstop — суточный лимит картинок исчерпан, пропускаю")
         return None
     prompt = scene["prompt"]
     ref_objs = [{"name": os.path.splitext(os.path.basename(p))[0], "image_base64": file_to_data_uri(p).split(",", 1)[1],
@@ -1307,7 +1307,7 @@ def gen_nonstop_image(api, gate, scene, out_path, progress, refs):
                     raise
                 except Exception as e:
                     msg = str(e)
-                    log(f"сцена {scene['index']}: veononstop {NONSTOP_MODELS.get(model_key, model_key)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
+                    log(f"сцена {scene['index'] + 1}: veononstop {NONSTOP_MODELS.get(model_key, model_key)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
                     if "401" in msg:
                         return None
                     if is_rate_limited(msg):
@@ -1356,7 +1356,7 @@ class YouGenGate:
 
 def gen_yougen_image(api, gate, scene, out_path, progress, refs):
     if not gate.available():
-        log(f"сцена {scene['index']}: yougen — дневная квота картинок исчерпана, пропускаю")
+        log(f"сцена {scene['index'] + 1}: yougen — дневная квота картинок исчерпана, пропускаю")
         return None
     prompt = scene["prompt"]
     inputs = [file_to_data_uri(p) for p in refs] or None
@@ -1372,7 +1372,7 @@ def gen_yougen_image(api, gate, scene, out_path, progress, refs):
                     raise
                 except Exception as e:
                     msg = str(e)
-                    log(f"сцена {scene['index']}: yougen {YOUGEN_MODELS.get(model, model)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
+                    log(f"сцена {scene['index'] + 1}: yougen {YOUGEN_MODELS.get(model, model)} попытка {t + 1}/{tries} не удалась: {msg[:200]}")
                     if msg.startswith("401") or msg.startswith("403"):
                         return None
                     if msg.startswith("429"):
@@ -1397,7 +1397,7 @@ def gen_yougen_video(api, gate, scene, img_path, out_path, progress):
                 raise
             except Exception as e:
                 msg = str(e)
-                log(f"сцена {scene['index']}: yougen видео попытка {t + 1}/2: {msg[:200]}")
+                log(f"сцена {scene['index'] + 1}: yougen видео попытка {t + 1}/2: {msg[:200]}")
                 if msg[:3] in ("401", "403", "429"):
                     return None
                 netutil.pause(5)
@@ -1424,7 +1424,7 @@ class RoyalGate:
 
 def gen_royal_image(api, gate, scene, out_path, progress, refs):
     if not gate.available():
-        log(f"сцена {scene['index']}: royaltechno — баланс или квота исчерпаны, пропускаю")
+        log(f"сцена {scene['index'] + 1}: royaltechno — баланс или квота исчерпаны, пропускаю")
         return None
     prompt = scene["prompt"]
     for model, tries in ROYAL_CHAINS[FASTGEN_QUALITY]:
@@ -1437,7 +1437,7 @@ def gen_royal_image(api, gate, scene, out_path, progress, refs):
                     os.replace(out_path + ".part", out_path)
                     return "royal:" + ROYAL_MODELS.get(model, model)
                 except RoyalError as e:
-                    log(f"сцена {scene['index']}: royaltechno {ROYAL_MODELS.get(model, model)} попытка {t + 1}/{tries}: {e}")
+                    log(f"сцена {scene['index'] + 1}: royaltechno {ROYAL_MODELS.get(model, model)} попытка {t + 1}/{tries}: {e}")
                     if e.status in (401, 403):
                         return None
                     if e.status == 402 or e.code in ("insufficient_credits", "daily_limit_reached"):
@@ -1450,7 +1450,7 @@ def gen_royal_image(api, gate, scene, out_path, progress, refs):
                 except Cancelled:
                     raise
                 except Exception as e:
-                    log(f"сцена {scene['index']}: royaltechno ошибка: {str(e)[:200]}")
+                    log(f"сцена {scene['index'] + 1}: royaltechno ошибка: {str(e)[:200]}")
                     netutil.pause(5)
     return None
 
@@ -1465,14 +1465,14 @@ def gen_royal_video(api, gate, scene, img_path, out_path, progress):
                 os.replace(out_path + ".part.mp4", out_path)
                 return "royal:veo-3.1"
             except RoyalError as e:
-                log(f"сцена {scene['index']}: royaltechno видео попытка {t + 1}/2: {e}")
+                log(f"сцена {scene['index'] + 1}: royaltechno видео попытка {t + 1}/2: {e}")
                 if e.status in (400, 401, 402, 403):
                     return None
                 netutil.pause(10)
             except Cancelled:
                 raise
             except Exception as e:
-                log(f"сцена {scene['index']}: royaltechno видео ошибка: {str(e)[:200]}")
+                log(f"сцена {scene['index'] + 1}: royaltechno видео ошибка: {str(e)[:200]}")
                 netutil.pause(10)
     return None
 
@@ -1496,7 +1496,7 @@ class GoogleGate:
 
 def gen_google_image(api, gate, scene, out_path, progress, refs):
     if not gate.available():
-        log(f"сцена {scene['index']}: Google — ключ отклонён или квота исчерпана, пропускаю")
+        log(f"сцена {scene['index'] + 1}: Google — ключ отклонён или квота исчерпана, пропускаю")
         return None
     chain = (GOOGLE_CHAINS_REFS if refs else GOOGLE_CHAINS)[FASTGEN_QUALITY]
     for kind, tries in chain:
@@ -1508,7 +1508,7 @@ def gen_google_image(api, gate, scene, out_path, progress, refs):
                     os.replace(out_path + ".part", out_path)
                     return "google:" + model
                 except GoogleError as e:
-                    log(f"сцена {scene['index']}: Google {kind} попытка {t + 1}/{tries}: {e}")
+                    log(f"сцена {scene['index'] + 1}: Google {kind} попытка {t + 1}/{tries}: {e}")
                     if e.status in (401, 403):
                         with gate.lock:
                             gate.exhausted = True
@@ -1519,7 +1519,7 @@ def gen_google_image(api, gate, scene, out_path, progress, refs):
                 except Cancelled:
                     raise
                 except Exception as e:
-                    log(f"сцена {scene['index']}: Google ошибка: {str(e)[:200]}")
+                    log(f"сцена {scene['index'] + 1}: Google ошибка: {str(e)[:200]}")
                     netutil.pause(5)
     return None
 
@@ -1534,14 +1534,14 @@ def gen_google_video(api, gate, scene, img_path, out_path, progress):
                 os.replace(out_path + ".part.mp4", out_path)
                 return "google:" + model
             except GoogleError as e:
-                log(f"сцена {scene['index']}: Google видео попытка {t + 1}/2: {e}")
+                log(f"сцена {scene['index'] + 1}: Google видео попытка {t + 1}/2: {e}")
                 if e.status in (400, 401, 403, 404, 422):
                     return None
                 netutil.pause(15)
             except Cancelled:
                 raise
             except Exception as e:
-                log(f"сцена {scene['index']}: Google видео ошибка: {str(e)[:200]}")
+                log(f"сцена {scene['index'] + 1}: Google видео ошибка: {str(e)[:200]}")
                 netutil.pause(15)
     return None
 
@@ -1711,6 +1711,10 @@ def take_redo():
 
 def redo_files(job_dir, index):
     """Удаляет картинку сцены и всё, что из неё сделано (клип с движением, оживление), чтобы нарисовать заново."""
+    for directory in Path(job_dir).glob("videos_*"):
+        if directory.is_dir():
+            (directory / f"{index:04d}.mp4").unlink(missing_ok=True)
+    Path(job_dir, "images", f"{index:04d}.png.source.json").unlink(missing_ok=True)
     for rel in (f"images/{index:04d}.png", f"videos/{index:04d}.mp4", f"clips/{index:04d}.mp4", f"clips_m/{index:04d}.mp4"):
         try:
             os.remove(os.path.join(job_dir, rel))
@@ -1774,7 +1778,7 @@ def drop_failed_images(scenes, job_dir):
                 pass
     if redo:
         write_json(state_path, state)
-        log(f"{redo} сцен были копиями соседних кадров — рисую их заново")
+        log(f"{redo} незавершённых сцен — повторяю получение картинок")
 
 
 class VideoOverlap:
@@ -1785,16 +1789,18 @@ class VideoOverlap:
         self.quiet = threading.Event()
         self.quiet.set()
         self.stop = threading.Event()
+        self.images_finished = threading.Event()
         img_dir = os.path.join(job_dir, "images")
         state_path = os.path.join(job_dir, "images.json")
 
         def ready(s):
             if self.stop.is_set():
                 return None
-            if os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")):
-                return True
             st = read_json(state_path, {}).get(str(s["index"])) or {}
-            return None if st and not st.get("ok") else False
+            exists = os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))
+            if exists and (st.get("ok") or self.images_finished.is_set()):
+                return True
+            return None if self.images_finished.is_set() else False
 
         self.pool = cf.ThreadPoolExecutor(max_workers=1)
         self.fut = self.pool.submit(generate_all_videos, ctx, scenes, img_dir, job_dir, progress, mode, video_first,
@@ -1805,6 +1811,7 @@ class VideoOverlap:
         self.quiet.clear()
 
     def result(self):
+        self.images_finished.set()
         self.quiet.clear()
         try:
             return self.fut.result()
@@ -1857,7 +1864,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             except OSError:
                 pass
     if redo:
-        log(f"{redo} сцен были копиями соседних кадров — рисую их заново")
+        log(f"{redo} незавершённых сцен — повторяю получение картинок")
     todo = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
     done_count = len(scenes) - len(todo)
     names = " + ".join(f"{unit_name(p)} ({ctx['gates'][p].threads})" for p in ctx["providers"])
@@ -1866,6 +1873,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         warn_hours(ctx, todo, progress)
     lock = threading.Lock()
     rejected = set()
+    failures = {}
     # Secret Slider: свои сцены (по кругу) — одним пакетом, до начала остальных
     if "slider" in ctx["bases"] and only is None:
         mine = [s for s in todo if base_of(provider_chain(ctx, s["index"])[0]) == "slider"] if len(ctx["bases"]) > 1 else list(todo)
@@ -1884,13 +1892,13 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         try:
             for prov in provider_chain(ctx, s["index"]):
                 if prov not in ctx["providers"]:
-                    log(f"сцена {s['index']}: выбранные сервисы не справились, пробую {unit_name(prov)}")
+                    log(f"сцена {s['index'] + 1}: выбранные сервисы не справились, пробую {unit_name(prov)}")
                 try:
                     model = ctx["image_gen"][prov](s, path, progress, scene_refs)
                 except (Cancelled, SceneRejected):
                     raise
                 except Exception as e:
-                    log(f"сцена {s['index']}: {prov} упал: {str(e)[:200]}")
+                    log(f"сцена {s['index'] + 1}: {prov} упал: {str(e)[:200]}")
                     model = None
                 if model:
                     break
@@ -1899,16 +1907,17 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                 tried = set(m for m, _ in (IMAGE_CHAINS_REFS if scene_refs else IMAGE_CHAINS)[FASTGEN_QUALITY])
                 rest = [(m, t) for m, t in LAST_RESORT_CHAIN if m not in tried]
                 if rest:
-                    log(f"сцена {s['index']}: последний рубеж fast-gen: {', '.join(m for m, _ in rest)}")
+                    log(f"сцена {s['index'] + 1}: последний рубеж fast-gen: {', '.join(m for m, _ in rest)}")
                     try:
                         model = gen_fastgen_image(ctx["api"], ctx["gates"]["fastgen"], s, path, progress, scene_refs, chain=rest)
                     except (Cancelled, SceneRejected):
                         raise
                     except Exception as e:
-                        log(f"сцена {s['index']}: последний рубеж упал: {str(e)[:200]}")
-        except SceneRejected:
+                        log(f"сцена {s['index'] + 1}: последний рубеж упал: {str(e)[:200]}")
+        except SceneRejected as error:
             with lock:
                 rejected.add(s["index"])
+                failures[s["index"]] = str(error)
             return None
         except Cancelled:
             raise
@@ -1942,6 +1951,9 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     os.replace(path, cand)
                 except OSError:
                     break
+                source_note = path + ".source.json"
+                if os.path.exists(source_note):
+                    os.replace(source_note, cand + ".source.json")
                 cands.append((score, cand))
                 log(f"сцена {s['index'] + 1}: автоотбор забраковал ({issues}), рисую заново ({attempt}/{QA_MAX_REDO})")
                 progress("images", done_count, len(scenes), f"сцена {s['index'] + 1}: брак, перерисовываю ({attempt}/{QA_MAX_REDO})")
@@ -1965,19 +1977,27 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                 if best[1] != path:
                     try:
                         os.replace(best[1], path)
+                        note = best[1] + ".source.json"
+                        if os.path.exists(note):
+                            os.replace(note, path + ".source.json")
+                        elif os.path.exists(path + ".source.json"):
+                            os.remove(path + ".source.json")
                     except OSError:
                         pass
                 for _, c in cands:
                     if c != path and os.path.exists(c):
                         try:
                             os.remove(c)
+                            if os.path.exists(c + ".source.json"):
+                                os.remove(c + ".source.json")
                         except OSError:
                             pass
         with lock:
-            state[str(s["index"])] = {"ok": bool(model), "model": model}
+            reason = failures.get(s["index"]) if not model else None
+            state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model}
             write_json(state_path, state)
             done_count += 1
-            progress("images", done_count, len(scenes), f"сцена {s['index'] + 1}: {'OK ' + model if model else 'НЕ УДАЛОСЬ'}")
+            progress("images", done_count, len(scenes), f"сцена {s['index'] + 1}: {'OK ' + model if model else (reason or 'НЕ УДАЛОСЬ — сервис не вернул картинку; подробности в отчёте')}")
         if model and on_image:
             try:
                 on_image(s)
@@ -2021,6 +2041,11 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         progress("images", done_count, len(scenes), msg)
 
     missing = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
+    blocked = [row['index'] + 1 for row in missing if row['index'] in rejected and
+               any(token in failures.get(row['index'], '').lower() for token in ('content_policy', 'safety', 'фильтр', 'содерж'))]
+    if blocked:
+        numbers = ', '.join(map(str, blocked))
+        raise RuntimeError(f"Сцены {numbers}: сервис отклонил изображение фильтром содержимого (generation.content_policy). Откройте раскадровку, проверьте содержание этих планов и исправьте описание. Повтор того же запроса не решает отказ. Готовые кадры сохранены.")
     if len(missing) < len(scenes) and len(missing) > max(MAX_COPIES_MIN, int(len(scenes) * MAX_COPIES_SHARE)):
         # пара копий соседних кадров незаметна, а сотня одинаковых картинок — брак: честнее остановиться
         write_json(state_path, state)
@@ -2034,7 +2059,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     if len(missing) == len(scenes):
         raise RuntimeError("Не удалось получить ни одной картинки — проверьте ключи и лимиты")
     if missing:
-        raise RuntimeError(f"Не получены картинки для {len(missing)} сцен. Готовые кадры сохранены; повторите позже. Копии соседних кадров не подставляются.")
+        numbers = ', '.join(str(row['index'] + 1) for row in missing)
+        raise RuntimeError(f"Не получены картинки для сцен: {numbers}. Готовые кадры сохранены. Сервис не вернул результат; подробности попыток — в отчёте. Копии соседних кадров не подставляются.")
     return img_dir
 
 
@@ -2080,7 +2106,7 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
                     err = str(e)
                     if "403" in err or "video.generate" in err:
                         gate.request_done(False, credits)
-                        log(f"сцена {scene['index']}: fast-gen видео недоступно на этом ключе: {err[:160]}")
+                        log(f"сцена {scene['index'] + 1}: fast-gen видео недоступно на этом ключе: {err[:160]}")
                         return None
                 if st is not None:
                     if st.get("status") == "succeeded" and st.get("results"):
@@ -2095,11 +2121,11 @@ def gen_fastgen_video(api, gate, scene, img_path, out_path, progress):
                             err = f"не скачалось видео: {e}"
                     else:
                         err = f"{st.get('error_code')} {str(st.get('error'))}"
-            log(f"сцена {scene['index']}: fast-gen видео {op} попытка {t + 1}/{tries}: {err[:200]}")
+            log(f"сцена {scene['index'] + 1}: fast-gen видео {op} попытка {t + 1}/{tries}: {err[:200]}")
             low = (err or "").lower()
             if "content_policy" in low or "safety filter" in low or "content_filter" in low:
                 gate.request_done(False, credits)
-                raise SceneRejected(f"Сцена {scene['index']}: сервис отклонил содержание. Измените описание сцены и повторите.")
+                raise SceneRejected(f"Сцена {scene['index'] + 1}: сервис отклонил содержание. Измените описание сцены и повторите.")
             if any(code in low for code in ("401", "auth.invalid", "invalid_api_key", "invalid_credentials")):
                 gate.request_done(False, credits)
                 with gate.lock:
@@ -2135,7 +2161,7 @@ def gen_nonstop_video(api, gate, scene, img_path, out_path, progress):
                 raise
             except Exception as e:
                 msg = str(e)
-                log(f"сцена {scene['index']}: veononstop видео попытка {t + 1}/2: {msg[:200]}")
+                log(f"сцена {scene['index'] + 1}: veononstop видео попытка {t + 1}/2: {msg[:200]}")
                 if "401" in msg:
                     return None
                 if is_rate_limited(msg):
