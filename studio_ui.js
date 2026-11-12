@@ -1,5 +1,13 @@
 // Native studio controls. No audio playback or remote interface assets.
-let studioBusy=false, studioTaskId=null;
+let studioBusy=false, studioTaskId=null, studioTaskAction=null, studioBoardNeedsRetry=false;
+function studioBoardGuard() {
+  if(!studioBoardNeedsRetry)return true;
+  $('s_prep2').textContent='Улучшенная постановка не создана. Сейчас открыта прежняя версия; повторите создание в «Студии» или явно откройте нужную сохранённую версию.';
+  return false;
+}
+function studioBoardRequested() { studioBoardNeedsRetry=true; }
+function studioSyncGuard() { if(studioBoardNeedsRetry){$('btn_go').disabled=true;if($('board_preview'))$('board_preview').disabled=true;} }
+function studioBoardReady() { studioBoardNeedsRetry=false;$('btn_go').disabled=false;if($('board_preview'))$('board_preview').disabled=false; }
 function studioFields() {
   return {enhancement_level:$('studio_level').value,editing_pace:$('studio_pace').value,
     visual_detail:$('studio_detail').value,render_quality:$('studio_quality').value,
@@ -35,6 +43,7 @@ function studioLock(busy) {
   for(const e of document.querySelectorAll('#studio_dialog button:not([onclick="closeStudio()"]),#studio_dialog select,#studio_dialog input')) e.disabled=busy;
   $('studio_cancel').hidden=!busy;$('studio_cancel').disabled=false;
   if($('board_controls'))storyboardControls();
+  studioSyncGuard();
 }
 async function applyStudio(quiet=false) {
   try {
@@ -63,7 +72,9 @@ async function studioAction(action) {
     studioLock(true);studioStatus('Запускаю задачу студии…');
     const result=await pywebview.api.studio_action(action,options);
     if(!result.ok)throw new Error(result.error);
-    studioTaskId=result.task_id;pollStudio();
+    studioTaskId=result.task_id;studioTaskAction=action;
+    if(action==='board')studioBoardNeedsRetry=true;
+    pollStudio();
   }catch(error){studioStatus(String(error),true);studioLock(false);}
 }
 async function pollStudio() {
@@ -83,14 +94,14 @@ async function pollStudio() {
       renderStudioReport(result.report);studioStatus('Новая версия сценария готова. Проверьте её, затем создайте улучшенную постановку.');
     } else if(result.action==='board') {
       const value=await pywebview.api.get_storyboard(result.board_id);if(!value.ok)throw new Error(value.error);
-      boardState=value.board;boardDirty=false;boardPage=0;source='script';F.script=boardState.script;
+      studioBoardReady();boardState=value.board;boardDirty=false;boardPage=0;source='script';F.script=boardState.script;
       renderReview(boardState.script);if(cur!==5)go(5);showStoryboard();renderStudioReport(result.report);
       studioStatus('Улучшенная раскадровка сохранена отдельной версией. Следующий шаг — короткий предпросмотр.');
       await refreshStudioVersions();
     } else if(result.action==='packaging') {
       renderStudioPackage(result.packaging);studioStatus('Упаковка готова. Проверьте обещания заголовков и факты перед публикацией.');
     }
-  }catch(error){studioStatus(String(error),true);}
+  }catch(error){studioStatus(String(error),true);if(studioTaskAction==='board')studioBoardGuard();}
   finally{if(!pending)studioLock(false);}
 }
 async function cancelStudio() {try{await pywebview.api.cancel();studioStatus('Останавливаю задачу…');}catch(error){studioStatus(String(error),true);}}
@@ -121,7 +132,7 @@ async function refreshStudioVersions() {
     $('studio_versions').innerHTML=response.versions.map(value=>`<div class="studio-version"><span>${esc(({faithful:'По исходнику',enhanced:'Улучшенная',director:'Расширенная'})[value.level]||value.level)} · ${value.plans} планов · ${esc(value.id.slice(0,8))}</span><button class="ghost" data-studio-version="${esc(value.id)}">Открыть</button></div>`).join('')||'<p class="studio-note">Сохранённых версий пока нет.</p>';
     document.querySelectorAll('[data-studio-version]').forEach(button=>button.addEventListener('click',async()=>{
       if(studioBusy)return;const response=await pywebview.api.get_storyboard(button.dataset.studioVersion);if(!response.ok){studioStatus(response.error,true);return;}
-      boardState=response.board;boardDirty=false;boardPage=0;source='script';F.script=boardState.script;renderReview(F.script);go(5);showStoryboard();closeStudio();
+      studioBoardReady();boardState=response.board;boardDirty=false;boardPage=0;source='script';F.script=boardState.script;renderReview(F.script);go(5);showStoryboard();closeStudio();
     }));
   }catch(error){studioStatus(String(error),true);}
 }

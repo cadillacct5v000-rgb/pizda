@@ -199,7 +199,7 @@ def write_ass(words,path,*,preset='source',profile=None,width=1920,height=1080,p
     width,height=int(width),int(height)
     if width<160 or height<90:raise ValueError('Неверный размер кадра.')
     accent=_ass_color(source_accent(profile));foreground='&H00F4F1E9'
-    size=max(18,round(height*.044));margin=max(20,round(height*.075));align=8 if position=='top' else 2
+    size=max(18,round(height*(.044 if preset=='minimal' else .054)));margin=max(20,round(height*.075));align=8 if position=='top' else 2
     border=3 if preset=='panel' else 1
     label_align=1 if position=='top' else 7
     header=(f'[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n'

@@ -670,11 +670,27 @@ const dz = $('dropzone');
 document.addEventListener('dragover', e => e.preventDefault()); document.addEventListener('drop', e => e.preventDefault());
 
 async function pick() { const p = await pywebview.api.pick_file(); if (p) setAudio(p); }
+let youtubeAutoBoard = false;
+async function prepareYouTube() {
+  if (boardBusy || (typeof studioBusy !== 'undefined' && studioBusy)) return;
+  syncAll();
+  const url = $('youtube_source_url').value.trim();
+  if (!url) { $('s_prep').textContent = 'Вставьте ссылку исходного ролика YouTube.'; return; }
+  F.rwUrl = url; rwSrc = 'youtube'; source = 'script';
+  $('use_rw').checked = true; $('use_tts').checked = true;
+  analyzeVideo = true; sourceMontage = true; youtubeAutoBoard = true;
+  mark();
+  try {
+    await pywebview.api.save_config({rewrite:true,rewrite_source:'youtube',rewrite_url:url,source:'script',youtube_analyze_video:true,source_montage:true,studio:window.studioFields?studioFields():{}});
+    renderAccess();
+    await startAll(true);
+  } catch(error) { youtubeAutoBoard = false; $('s_prep').textContent = String(error); }
+}
 let queueMode = false;
-async function startAll() {
+async function startAll(singleYouTube = false) {
   await saveKeys(); $('s_prep').textContent = ''; $('s_prep2').textContent = '';
   await queueRefresh();
-  if (queueItems.some(q => q.status === 'queued') || (queueItems.length && formHasContent())) {
+  if (!singleYouTube && (queueItems.some(q => q.status === 'queued') || (queueItems.length && formHasContent()))) {
     if (formHasContent() && !(await queueAdd())) return;
     queueMode = true; renderReview(null); go(5); return;
   }
@@ -687,7 +703,7 @@ async function startAll() {
   renderReview(rwOn() ? '' : (source === 'script' ? o.script : null));
   if (rwOn()) {
     const r = await pywebview.api.rewrite(o);
-    if (!r.ok) { $('s_prep').textContent = r.error; return; }
+    if (!r.ok) { youtubeAutoBoard = false; $('s_prep').textContent = r.error; return; }
     $('review').classList.add('busy'); $('scan').style.display = ''; $('btn_go').disabled = true;
     $('scan_phase').textContent = t('ph_rw'); $('scan_sub').textContent = t('ph_rw_sub');
     go(5); pollRewrite();
@@ -699,9 +715,13 @@ async function pollRewrite() {
   catch (e) { $('scan_sub').textContent = t('error') + String(e); setTimeout(pollRewrite, 1200); return; }
   if (st.preparing) { if (st.message) $('scan_sub').textContent = st.message; return setTimeout(pollRewrite, 1200); }
   $('scan').style.display = 'none'; $('review').classList.remove('busy');
-  if (st.error || !st.script) { $('s_prep2').textContent = t('error') + (st.error || t('err_rw_empty')); return; }
+  if (st.error || !st.script) { if(typeof youtubeAutoBoard !== 'undefined')youtubeAutoBoard = false; $('s_prep2').textContent = t('error') + (st.error || t('err_rw_empty')); return; }
   reviewProfileId = st.source_profile_id || null; reviewSourceProfile = st.source_profile || null;
   renderReview(st.script); $('btn_go').disabled = false;
+  if (typeof youtubeAutoBoard !== 'undefined' && youtubeAutoBoard) {
+    youtubeAutoBoard = false; F.script = st.script;
+    await createStoryboard(true);
+  }
 }
 function renderReview(script) {
   const montageMode = !!(reviewSourceProfile && reviewSourceProfile.montage);
@@ -713,6 +733,7 @@ function renderReview(script) {
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
   row(t('rv_services'), p.map(k => SVC_TITLES[k]).join(', ') || t('rv_none'));
+  if(boardState)row(L==='ru'?'Постановка':'Storyboard', ({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   if (reviewSourceProfile) {
     row(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style', reviewSourceProfile.visual_style.description);
     const sample = reviewSourceProfile.sampling;
@@ -847,6 +868,7 @@ async function pollUpdate() {
 }
 async function startFromReview() {
   if (boardBusy) return;
+  if (window.studioBoardGuard && !studioBoardGuard()) return;
   if (boardState && !await saveStoryboard()) return;
   const o = opts();
   if (boardState) { o.source = 'script'; o.script = boardState.script; o.rewrite.on = false; o.storyboard_id = boardState.id; o.source_profile_id = null; o.motion = false; }
@@ -996,6 +1018,9 @@ const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n
 
 function renderAccess() {
   const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value), H = [];
+  H.push(row(L === 'ru' ? 'Исходный ролик YouTube' : 'Source YouTube video', '',
+    `<input type="text" inputmode="url" id="youtube_source_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"><button class="primary" id="youtube_prepare" onclick="prepareYouTube()">${L === 'ru' ? 'Подготовить свою версию' : 'Prepare my version'}</button>`));
+  H.push(`<div class="note youtube-entry-note">${L === 'ru' ? 'Вставьте ссылку: программа подготовит сценарий, проанализирует стиль и создаст постановку. Писать сценарий вручную не нужно. Анализ и текстовые запросы оплачиваются выбранными сервисами; перед генерацией видео можно проверить планы.' : 'Paste a link to prepare narration, source style and a storyboard. Analysis and text requests use your selected services. Review plans before rendering.'}</div>`);
   for (const k of p) {
     if (!keyRows[k].length) keyRows[k].push({idx:-1, value:''});
     const many = keyRows[k].length > 1;
@@ -1029,7 +1054,7 @@ function renderAccess() {
   }
   if (rwOn()) {
     H.push(row(t('src_lbl'), '', sel('rw_src', [['youtube','YouTube'],['text', t('rw_text_src')]], rwSrc)
-      + (rwSrc === 'youtube' ? `<input type="text" id="rw_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false" autocomplete="off">`
+      + (rwSrc === 'youtube' ? `<span class="note">${L === 'ru' ? 'Ссылка на исходный ролик — вверху этого экрана' : 'Source link is at the top of this screen'}</span>`
                              : `<textarea id="rw_text" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.rwText)}</textarea>`)));
     if (rwSrc === 'youtube') {
       H.push(row(L === 'ru' ? 'Обработка ролика' : 'Video processing', '',
@@ -1137,7 +1162,8 @@ function bindAccess() {
   on('youtube_browser', 'change', async () => { syncAll(); youtubeBrowser = $('youtube_browser').value; youtubeCookieFile = ''; await pywebview.api.save_config({youtube_browser: youtubeBrowser, youtube_cookie_file: ''}); renderAccess(); });
   on('youtube_cookies', 'click', async () => { syncAll(); const p = await pywebview.api.pick_youtube_cookies(); if (p) { youtubeCookieFile = p; youtubeBrowser = ''; renderAccess(); } });
   on('youtube_clear', 'click', async () => { syncAll(); await pywebview.api.save_config({youtube_browser: '', youtube_cookie_file: ''}); youtubeBrowser = ''; youtubeCookieFile = ''; renderAccess(); });
-  on('rw_url', 'change', () => { syncF(); pywebview.api.save_config({rewrite_url: F.rwUrl}); });
+  on('youtube_source_url', 'input', () => { F.rwUrl = $('youtube_source_url').value; });
+  on('youtube_source_url', 'change', () => { F.rwUrl = $('youtube_source_url').value.trim(); pywebview.api.save_config({rewrite_url:F.rwUrl}); });
   on('rw_words', 'change', () => { syncF(); pywebview.api.save_config({rewrite_words: F.rwWords}); });
   on('rw_lang', 'change', () => { syncF(); pywebview.api.save_config({rewrite_lang: F.rwLang}); });
   on('tts_voice', 'change', () => { syncF(); pywebview.api.save_config({tts_voice: F.voice}); });
@@ -1309,6 +1335,7 @@ async function loadDesktopProject(id) {
   const r = await pywebview.api.load_project(id);
   if (!r.ok) { $('project_status').textContent = r.error; return; }
   desktopProject = r.project;
+  if(window.studioBoardReady)studioBoardReady();
   const o = r.project.options;
   F.script = o.script || ''; F.voice = o.voice || ''; audioPath = o.audio || ''; source = o.source || 'script';
   tts = o.tts || tts; styleKey = o.style || styleKey;
@@ -1377,14 +1404,16 @@ function markBoardDirty() {
   syncBoardPage(); boardDirty = true;
   $('board_status').textContent = boardText('Есть несохранённые изменения.', 'Unsaved changes.');
 }
-async function createStoryboard() {
+async function createStoryboard(enhance = false) {
   if (boardBusy) return;
   boardBusy = true; storyboardControls();
   $('s_prep2').textContent = '';
   try {
     const o = opts(); o.script = $('rv_script').value;
+    if (enhance) { o.enhance = true; if (window.studioFields) o.studio = studioFields(); }
     const r = await pywebview.api.prepare_storyboard(o);
     if (!r.ok) throw new Error(r.error);
+    if(enhance && window.studioBoardRequested)studioBoardRequested();
     $('board_status').textContent = ''; $('scan').style.display = '';
     $('scan_phase').textContent = boardText('Раскадровка', 'Storyboard');
     $('btn_go').disabled = true; $('rv_script').disabled = true;
@@ -1400,10 +1429,11 @@ async function pollStoryboard() {
     if (st.error || !st.storyboard_id) throw new Error(st.error || 'No storyboard returned');
     const r = await pywebview.api.get_storyboard(st.storyboard_id);
     if (!r.ok) throw new Error(r.error);
+    if(window.studioBoardReady)studioBoardReady();
     boardState = r.board; boardPage = 0; boardDirty = false;
     showStoryboard(); $('s_prep2').textContent = '';
   } catch (e) { $('s_prep2').textContent = String(e); }
-  finally { if (!pending) { $('rv_script').disabled = false; $('scan').style.display = 'none'; $('btn_go').disabled = false; boardBusy = false; storyboardControls(); } }
+  finally { if (!pending) { $('rv_script').disabled = false; $('scan').style.display = 'none'; $('btn_go').disabled = false; boardBusy = false; storyboardControls(); if(window.studioSyncGuard)studioSyncGuard(); } }
 }
 async function restoreStoryboardFromAccess() {
   source = 'script'; $('use_tts').checked = true;
@@ -1415,6 +1445,7 @@ async function restoreStoryboard() {
   try {
     const r = await pywebview.api.get_storyboard();
     if (!r.ok) throw new Error(r.error);
+    if(window.studioBoardReady)studioBoardReady();
     boardState = r.board; boardPage = 0; boardDirty = false;
     renderReview(boardState.script); showStoryboard();
     $('s_prep2').textContent = '';
@@ -1462,6 +1493,7 @@ function renderStoryboard() {
   if (!boardState) return;
   const rows = boardState.rows.slice(boardPage * 20, boardPage * 20 + 20);
   $('board_count').textContent = boardText(`Планов: ${boardState.rows.length}. Страница ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`, `Plans: ${boardState.rows.length}. Page ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`);
+  $('board_count').textContent += ' · ' + (({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   $('board_rows').innerHTML = rows.map((r, i) => `<article class="board-row" data-row="${esc(r.id)}">
     <div class="board-ref"><img alt="${boardText('Референс исходного плана', 'Source shot reference')}" data-reference="${esc(r.id)}"><strong>${boardText('План', 'Plan')} ${boardPage * 20 + i + 1}</strong>
     <span class="board-confidence ${r.confidence === 'low' ? 'low' : ''}">${esc(({high:boardText('Уверенная привязка','Strong match'),medium:boardText('Проверьте привязку','Review match'),low:boardText('Нужно проверить','Needs review'),manual:boardText('Выбрано вручную','Manually selected')})[r.confidence] || r.confidence)}</span>
@@ -1495,6 +1527,7 @@ async function refreshBoardReferences() {
   }
 }
 async function storyboardPreview() {
+  if (window.studioBoardGuard && !studioBoardGuard()) return;
   if (!boardState || boardBusy) return;
   boardBusy = true; $('board_preview').disabled = true;
   try {

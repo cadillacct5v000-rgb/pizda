@@ -216,6 +216,42 @@ with sync_playwright() as p:
  page.locator('[data-open-project]').click()
  page.wait_for_function("document.getElementById('studio_pace').value==='dynamic'")
  assert app.load_cfg()['caption_style']=='focus'
+ # The persistent YouTube entry works even when the rewrite option is currently off.
+ rewritten=[]
+ def fixture_rewrite(rw):
+  rewritten.append(rw)
+  with app.LOCK:
+   app.STATE.update(preparing=False,error=None,cancelled=False,script=script,source_profile=profile,source_profile_id='fresh-youtube-fixture')
+ app.run_rewrite=fixture_rewrite
+ page.evaluate("() => {rwEngine='fastgen';source='script';F.script='';$('use_rw').checked=false;go(4);}")
+ page.wait_for_selector('#screen4.active #youtube_source_url')
+ assert page.locator('#youtube_source_url').is_visible()
+ assert page.locator('#script').input_value()==''
+ page.locator('#youtube_source_url').fill('https://www.youtube.com/watch?v=fixture_new')
+ page.locator('#youtube_prepare').click()
+ page.wait_for_function('boardState && boardState.creative_direction.enhancement_level === "enhanced"',timeout=15000)
+ assert len(rewritten)==1 and rewritten[0]['url'].endswith('fixture_new')
+ assert rewritten[0]['source']=='youtube' and rewritten[0]['montage']
+ assert 'Улучшенная' in page.locator('#board_count').text_content()
+ # A failed Studio upgrade must not silently render the previously open storyboard.
+ previous=page.evaluate('boardState.id');before=len(launched)
+ def broken_chat(self,system,user,**kwargs):
+  units=json.JSONDecoder().raw_decode(user.split('Reference JSON:\n')[1])[0]['passages']
+  return {'plans':[{'index':u['index'],'source_shot':0,'prompt':'Original ink illustration'} for u in units]}
+ pipeline.LLM.chat_json=broken_chat
+ page.evaluate('openStudio()')
+ page.locator('#studio_level').select_option('director')
+ page.locator('#studio_board_btn').click()
+ page.wait_for_function('document.getElementById("studio_status").textContent.includes("Не приняты планы")',timeout=15000)
+ page.evaluate('closeStudio()')
+ assert page.evaluate('boardState.id')==previous
+ assert page.locator('#btn_go').is_disabled()
+ page.evaluate('startFromReview()')
+ assert len(launched)==before
+ assert 'прежняя версия' in page.locator('#s_prep2').text_content()
+ # Choosing a saved version explicitly restores that version's controls.
+ page.evaluate('restoreStoryboard()')
+ page.wait_for_function('document.getElementById("btn_go").disabled === false')
  assert not errors,errors
  b.close()
-print('Browser E2E passed: semantic selection, real API save, per-plan take, invalid preview guard, preview launch, full launch, return, stale-script invalidation.')
+print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery.')

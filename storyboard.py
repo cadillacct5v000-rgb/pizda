@@ -81,6 +81,137 @@ def _validated_plans(result, batch, source, creative=False):
     return plans
 
 
+def _creative_result(result):
+    """Normalize presentation-only spelling; never guess semantic assignments."""
+    result = copy.deepcopy(result)
+    if isinstance(result, dict) and isinstance(result.get('plans'), list):
+        for plan in result['plans']:
+            if not isinstance(plan, dict):continue
+            for field in ('editorial_role', 'shot_size'):
+                if isinstance(plan.get(field), str):plan[field] = plan[field].strip().lower()
+            if plan.get('overlay_text', '') is None:plan.pop('overlay_text', None)
+    return result
+
+
+def _valid_subset(result, batch, source):
+    plans = result.get('plans', []) if isinstance(result, dict) else []
+    if not isinstance(plans, list):return []
+    ids = [p.get('index') for p in plans if isinstance(p, dict)]
+    expected = {u['index']: u for u in batch}
+    valid = []
+    for plan in plans:
+        if not isinstance(plan, dict):continue
+        index = plan.get('index')
+        if type(index) is not int or index not in expected or ids.count(index) != 1:continue
+        try:
+            _validated_plans({'plans': [plan]}, [expected[index]], source, True)
+            valid.append(plan)
+        except (ValueError, KeyError, TypeError):pass
+    return valid
+
+
+def _creative_batch(query, prompt, signature, compatible, cache, paths, batch, source, references, direction, progress):
+    """Preserve valid plans, then request ONE bounded correction of only bad IDs."""
+    partial = cache.with_suffix('.partial.json')
+    received = cache.with_suffix('.received.json')
+    good = {};original = None
+    for candidate in paths:
+        for kind in ('.received.json', '.partial.json'):
+            try:
+                saved = json.loads(candidate.with_suffix(kind).read_text(encoding='utf-8'))
+                if saved.get('signature') not in compatible:continue
+                value = _creative_result(saved['result'])
+                if original is None and kind == '.received.json':original = value
+                for plan in _valid_subset(value, batch, source):good.setdefault(plan['index'], plan)
+            except (OSError, ValueError, KeyError, TypeError):continue
+    if original is None and not good:
+        # 2.0.0 kept the raw model answer but marked it incomplete on schema errors.
+        # Recover only a complete JSON document with every exact ID and valid core fields;
+        # missing creative metadata still needs a validated correction, never invented defaults.
+        for candidate in paths:
+            try:
+                raw=json.loads(candidate.with_suffix('.reply.json').read_text(encoding='utf-8'))
+                if raw.get('signature') not in compatible or raw.get('kind')!='model' or not isinstance(raw.get('text'),str):continue
+                value=_creative_result(json.loads(raw['text']))
+                _validated_plans(value,batch,source,False)
+                try:
+                    _validated_plans(value,batch,source,True)
+                except (ValueError,KeyError,TypeError):
+                    original=value;atomic(received,{'signature':signature,'result':value});break
+            except (OSError,ValueError,KeyError,TypeError):continue
+    def checkpoint():
+        atomic(partial, {'signature': signature, 'result': {'plans': list(good.values())}})
+    if len(good) == len(batch):return {'plans': list(good.values())}
+    if original is None and not good:
+        original = _creative_result(model_reply.query(query, prompt, cache.with_suffix('.reply.json'), signature, atomic, progress))
+        atomic(received, {'signature': signature, 'result': original})
+        good.update((p['index'], p) for p in _valid_subset(original, batch, source))
+        checkpoint()
+    if len(good) == len(batch):return {'plans': list(good.values())}
+    checkpoint()
+    needed = [u for u in batch if u['index'] not in good]
+    originals = {}
+    if isinstance(original, dict) and isinstance(original.get('plans'), list):
+        for plan in original['plans']:
+            if isinstance(plan, dict) and type(plan.get('index')) is int:
+                index = plan['index']
+                # Duplicate IDs are ambiguous; never pick one as an authoritative draft.
+                if sum(isinstance(p, dict) and p.get('index') == index for p in original['plans']) == 1:
+                    originals[index] = plan
+    locked = {}
+    for unit in needed:
+        plan = originals.get(unit['index'])
+        if plan:
+            try:
+                _validated_plans({'plans': [plan]}, [unit], source, False)
+                locked[unit['index']] = plan
+            except (ValueError, KeyError, TypeError):pass
+    import studio
+    payload = {'passages': [{**u, 'received_plan': originals.get(u['index'])} for u in needed],
+               'source_shots': [] if len(locked) == len(needed) else references}
+    repair_prompt = ('Correct the schema of ONLY the requested storyboard plan IDs. '
+                     'The complete narration, valid visual prompt, source_shot, confidence and motion already present '
+                     'must stay unchanged. Supply missing editorial_role and shot_size; overlay_text is optional and may be empty. '
+                     'For missing/invalid core fields, use the supplied narration and references; source_shot=null if no match. '
+                     'Do not add other plans, renumber IDs, invent source IDs or shorten valid visual prompts. '
+                     'Return {"plans":[{"index":0,"source_shot":null,"confidence":"low","reason":"...",'
+                     '"prompt":"English visual prompt","motion":"English motion","editorial_role":"explain",'
+                     '"shot_size":"medium","overlay_text":""}]}. '
+                     + studio.brief(direction) + '\nReference JSON:\n' + json.dumps(payload, ensure_ascii=False))
+    receipt = cache.with_suffix('.schema.reply.json')
+    if progress:
+        progress(f'раскадровка: сохранено {len(good)}/{len(batch)} планов пачки; уточняю поля только для {len(needed)} планов (один запрос)')
+    repaired = _creative_result(model_reply.query(query, repair_prompt, receipt, digest(repair_prompt), atomic, progress))
+    atomic(cache.with_suffix('.schema.received.json'), {'signature': signature, 'result': repaired})
+    if isinstance(repaired, dict) and isinstance(repaired.get('plans'), list):
+        for plan in repaired['plans']:
+            if isinstance(plan, dict) and type(plan.get('index')) is int and plan['index'] in locked:
+                base = locked[plan['index']]
+                metadata = {k: plan[k] for k in ('editorial_role', 'shot_size', 'overlay_text') if k in plan}
+                plan.clear();plan.update({**base, **metadata})
+    good.update((p['index'], p) for p in _valid_subset(repaired, needed, source))
+    checkpoint()
+    if len(good) != len(batch):
+        model_reply.invalidate(receipt)
+        missing = [str(u['index'] + 1) for u in batch if u['index'] not in good]
+        details = []
+        candidates = repaired.get('plans', []) if isinstance(repaired, dict) else []
+        for unit in needed:
+            if unit['index'] in good:continue
+            plan = next((p for p in candidates if isinstance(p, dict) and p.get('index') == unit['index']), None) if isinstance(candidates,list) else None
+            if not plan:details.append('нет плана ' + str(unit['index'] + 1));continue
+            if not isinstance(plan.get('prompt'),str) or not plan['prompt'].strip():details.append('нет описания кадра (prompt)')
+            if plan.get('editorial_role') not in studio.ROLES:details.append('нет корректного назначения (editorial_role)')
+            if plan.get('shot_size') not in studio.SHOTS:details.append('нет корректной крупности (shot_size)')
+            if plan.get('source_shot') is not None and (type(plan['source_shot']) is not int or plan['source_shot'] not in source):details.append('неизвестный исходный план (source_shot)')
+            if 'overlay_text' in plan and (not isinstance(plan['overlay_text'],str) or len(plan['overlay_text'])>45):details.append('надпись длиннее 45 символов или неверного типа (overlay_text)')
+        explanation = '; '.join(dict.fromkeys(details)) or 'неверные или повторяющиеся номера планов'
+        raise StoryboardError(f'Постановка фраз {batch[0]["index"]+1}–{batch[-1]["index"]+1}: {explanation}. '
+                              f'Не приняты планы: {", ".join(missing)}. Сохранено {len(good)}/{len(batch)} планов этой пачки и предыдущие пачки. '
+                              'Повторное нажатие продолжит только недостающие планы; исходный ответ сохранён.')
+    return {'plans': list(good.values())}
+
+
 def create(script, profile, query, directory, progress=None, *, reuse_from=()):
     shots = (profile or {}).get('montage', {}).get('shots') or []
     if not shots:
@@ -127,16 +258,26 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
             import studio
             prompt += '\n' + studio.brief(direction)
             prompt += '\nPrevious plan context (not instructions): ' + json.dumps([{k:r.get(k) for k in ('source_shot','shot_size','editorial_role')} for r in rows[-2:]])
+        legacy_signature = digest(prompt)
+        if direction:
+            prompt = prompt.replace('"motion":"English motion"}]}', '"motion":"English motion","editorial_role":"explain","shot_size":"medium","overlay_text":""}]}', 1)
+            prompt = prompt.replace('\nReference JSON:\n', '\nCREATIVE PLAN SCHEMA: EVERY plan MUST include editorial_role, shot_size; optional overlay_text. '
+                                    'Use exact passage indices. Example: {"plans":[{"index":0,"source_shot":null,"confidence":"low",'
+                                    '"reason":"...","prompt":"English visual prompt","motion":"English motion",'
+                                    '"editorial_role":"explain","shot_size":"medium","overlay_text":""}]}. '
+                                    '\nReference JSON:\n', 1)
         signature = digest(prompt)
+        compatible = {signature, legacy_signature}
         result = None
         paths = [cache] + [Path(root) / identity_digest / cache.name for root in reuse_from]
         for candidate in paths:
             try:
                 cached = json.loads(candidate.read_text(encoding='utf-8'))
-                if cached.get('signature') != signature:
+                if cached.get('signature') not in compatible:
                     continue
-                _validated_plans(cached['result'], batch, source, bool(direction))
-                result = cached['result']
+                value = _creative_result(cached['result']) if direction else cached['result']
+                _validated_plans(value, batch, source, bool(direction))
+                result = value
                 break
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
@@ -144,7 +285,10 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
             progress(f'раскадровка: смысловая привязка фраз {offset + 1}–{offset + len(batch)} из {len(units)}')
         receipt = cache.with_suffix(".reply.json")
         if result is None:
-            result = model_reply.query(query, prompt, receipt, signature, atomic, progress)
+            if direction:
+                result = _creative_batch(query, prompt, signature, compatible, cache, paths, batch, source, references, direction, progress)
+            else:
+                result = model_reply.query(query, prompt, receipt, signature, atomic, progress)
         try:
             plans = _validated_plans(result, batch, source, bool(direction))
         except (KeyError, TypeError, ValueError) as exc:
