@@ -12,6 +12,7 @@ import shutil
 
 import requests
 import netutil
+import source_narration
 from media_tools import ffmpeg_bin, run_media
 
 TTS_SERVICES = {
@@ -391,6 +392,7 @@ class FastGenTTS:
     OP = "aistudio_gemini_3.8_flash_tts_speech_generate"  # новее 3.1 preview, цена та же
     CHUNK = 3000
     WORKERS = 3
+    source_delivery = None
 
     def __init__(self, key):
         from fastgen_api import FastGen
@@ -411,7 +413,7 @@ class FastGenTTS:
         return out
 
     def _one(self, text, voice):
-        payload = {"operation": self.OP, "prompt": text}
+        payload = {"operation": self.OP, "prompt": source_narration.gemini_prompt(text, self.source_delivery)}
         if voice:
             payload["voice"] = voice
         for attempt in range(12):
@@ -437,7 +439,7 @@ class FastGenTTS:
         import tempfile
         import concurrent.futures as cf
         voice = (voice_id or "").strip()
-        parts = EdgeTTS._split(self, text)
+        parts = (source_narration.split_paragraphs(text, self.CHUNK) if self.source_delivery else EdgeTTS._split(self, text))
         if not parts:
             raise TTSError("Нет текста для озвучки")
         with tempfile.TemporaryDirectory(prefix="fgtts_") as tmpdir:

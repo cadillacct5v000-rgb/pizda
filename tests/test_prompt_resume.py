@@ -86,3 +86,73 @@ def test_elysium_fallback_preferred_over_invalid_direct_provider(monkeypatch):
     assert result.engine == 'elysium' and result.model == 'chosen-text-model'
     create.assert_called_once_with('synthetic', provider='elysium')
     direct.assert_not_called()
+
+
+@pytest.mark.parametrize('first', [0, 1])
+def test_batch_local_numbering_matches_supplied_noncontiguous_order(first):
+    chunk = [{'index': i} for i in [125, 127, 149]]
+    mapped = p.scene_prompt_results(reply(range(first, first + 3)), chunk)
+    assert list(mapped) == [125, 127, 149]
+    assert mapped[149]['prompt'].endswith(str(first + 2))
+
+
+def test_stable_ids_override_renumbering_and_preserve_valid_partial_siblings():
+    chunk = scenes(3)[1:]
+    response = {'scenes': [
+        {'index': 0, 'scene_id': p.prompt_scene_id(chunk[1]), 'prompt': 'correct last scene'},
+        {'index': 1, 'scene_id': 'not-requested', 'prompt': 'wrong scene'},
+    ]}
+    assert p.scene_prompt_results(response, chunk) == {2: response['scenes'][0]}
+
+
+def test_duplicate_stable_id_cannot_overwrite_scene():
+    chunk = scenes(2)
+    item = {'scene_id': p.prompt_scene_id(chunk[0]), 'prompt': 'room'}
+    with pytest.raises(ValueError, match='повторила ID'):
+        p.scene_prompt_results({'scenes': [item, item]}, chunk)
+
+
+def test_user_report_150_cached_plus_last_scene_renumbered_one(tmp_path):
+    style = {'style_key': 'test', 'style': 'ink drawing'}
+    original = scenes(151)
+    for scene in original[:150]:
+        scene.update(raw_prompt='saved frame', prompt='saved frame', schema=p.PROMPT_SCHEMA, style_key='test')
+    calls = []
+    def renumber(system, user, **kwargs):
+        calls.append(indices(user))
+        return reply([1])  # exact failure from the last single-scene batch
+    result = p.build_prompts(Mock(chat_json=renumber), style, original, str(tmp_path), lambda *a: None, False)
+    assert calls == [[150]]
+    assert len(result) == 151 and all(s.get('prompt') for s in result)
+    assert all(s['raw_prompt'] == 'saved frame' for s in result[:150])
+
+
+def test_partial_unmappable_batch_repaired_individually_without_cross_scene_assignment(tmp_path):
+    original = scenes(4)
+    calls = []
+    def bad_batch(system, user, **kwargs):
+        ids = indices(user)
+        calls.append(ids)
+        if len(ids) > 1:
+            return reply([999, 1000])
+        return {'scenes': [{'index': 999, 'prompt': f'Unique frame for {ids[0]}'}]}
+    result = p.build_prompts(Mock(chat_json=bad_batch), {'style_key': 'test'}, original, str(tmp_path), lambda *a: None, False)
+    assert all(s['raw_prompt'] == f'Unique frame for {s["index"]}' for s in result)
+    assert [ids[0] for ids in calls if len(ids) == 1] == [0, 1, 2, 3]
+
+
+def test_user_report_125_cached_then_batch_and_single_local_numbering(tmp_path):
+    style = {'style_key': 'test'}
+    original = scenes(151)
+    for scene in original[:125]:
+        scene.update(raw_prompt='saved frame', prompt='saved frame', schema=p.PROMPT_SCHEMA, style_key='test')
+    calls = []
+    def local_reply(system, user, **kwargs):
+        ids = indices(user)
+        calls.append(ids)
+        return {'scenes': [{'index': pos + 1, 'prompt': f'New frame {index}'} for pos, index in enumerate(ids)]}
+    result = p.build_prompts(Mock(chat_json=local_reply), style, original, str(tmp_path), lambda *a:None, False)
+    assert len(calls) == 2
+    assert sorted(i for call in calls for i in call) == list(range(125,151))
+    assert all(s['raw_prompt'] == f'New frame {s["index"]}' for s in result[125:])
+    assert all(s['raw_prompt'] == 'saved frame' for s in result[:125])

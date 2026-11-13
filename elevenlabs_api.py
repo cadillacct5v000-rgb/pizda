@@ -11,6 +11,7 @@ import subprocess
 import requests
 
 import netutil
+import source_narration
 from media_tools import ffmpeg_bin, run_media
 from tts_api import TTSError
 
@@ -19,6 +20,7 @@ class ElevenLabs:
     BASE = "https://api.elevenlabs.io"
     MODEL = "eleven_multilingual_v2"
     CHUNK = 4500
+    source_delivery = None
 
     def __init__(self, key):
         self.s = requests.Session()
@@ -98,10 +100,13 @@ class ElevenLabs:
         if not voice or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", voice):
             raise TTSError("ElevenLabs: выберите голос кнопкой «Список» или вставьте его Voice ID.")
         from pipeline import split_text
-        parts = split_text(text, self.CHUNK)
+        parts = (source_narration.split_paragraphs(text, self.CHUNK) if self.source_delivery else split_text(text, self.CHUNK))
         if not parts:
             raise TTSError("Нет текста для озвучки")
         identity = json.dumps([self.MODEL, voice, parts], ensure_ascii=False).encode("utf-8")
+        settings = source_narration.eleven_settings(self.source_delivery)
+        if settings:
+            identity += json.dumps([self.source_delivery, settings, "context-v1"], sort_keys=True).encode()
         directory = Path(out_path).parent / (".elevenlabs-" + hashlib.sha256(identity).hexdigest()[:24])
         directory.mkdir(exist_ok=True)
         files = []
@@ -113,9 +118,16 @@ class ElevenLabs:
                     progress(f"озвучка ElevenLabs: часть {index + 1} из {len(parts)}")
                 # A POST can charge the account even if its response is lost.
                 # Do not retry it automatically after connection/read failures.
+                payload = {"text": part, "model_id": self.MODEL}
+                if settings:
+                    payload["voice_settings"] = settings
+                    if index:
+                        payload["previous_text"] = parts[index - 1][-1000:]
+                    if index + 1 < len(parts):
+                        payload["next_text"] = parts[index + 1][:1000]
                 response = self.s.post(self.BASE + f"/v1/text-to-speech/{voice}",
                                        params={"output_format": "mp3_44100_128"},
-                                       json={"text": part, "model_id": self.MODEL},
+                                       json=payload,
                                        headers={"Accept": "audio/mpeg"}, stream=True, timeout=(15, 300))
                 try:
                     self._check(response)

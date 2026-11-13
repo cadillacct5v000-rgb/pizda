@@ -34,6 +34,8 @@ def prepare(cfg, rewrite, directory, *, start=0, seconds=30, progress=None):
     netutil.check_cancel()
     say('анализирую стиль и склейки только выбранного отрезка')
     profile=source_analysis.analyse(clip,text,{**cfg,'source_montage':True},folder,say)
+    import source_narration
+    profile=source_narration.attach(profile,clip,actual,cfg,folder,say)
     profile=studio.with_direction(profile,cfg)
     profile['sample']={'source_id':youtube_source.video_id(rewrite['url']),'start':float(start),
                        'requested_seconds':float(seconds),'source_seconds':actual}
