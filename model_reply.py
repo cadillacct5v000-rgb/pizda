@@ -55,7 +55,7 @@ def choice(response, key='', progress=None):
         text = response.text
         emit('api', text[:2 * 1024 * 1024], False, key, status=response.status_code, content_type=content_type[:100])
         try:
-            if text.lstrip().startswith(('data:', ':')):
+            if text.lstrip('\ufeff \r\n\t').startswith(('data:', ':', 'event:', 'id:')):
                 import chat_stream
                 class BufferedStream:
                     def iter_lines(self, **kwargs):
@@ -69,7 +69,7 @@ def choice(response, key='', progress=None):
             except (ValueError, TypeError) as parse_error:
                 kind = 'пустой ответ' if not text.strip() else 'HTML' if text.lstrip().startswith('<') else 'не JSON'
                 raise APIReplyError(f'API: HTTP {response.status_code}, {kind}; {len(text)} символов, тип {content_type or "не указан"}. '
-                                    'Ответ сервера сохранён локально; это не ошибка JSON раскадровки. Готовые пачки сохранены.') from parse_error
+                                    'Сервер не вернул ответ API в ожидаемом формате. Готовые пачки сохранены.') from parse_error
     try:
         selected = value['choices'][0]
         if not isinstance(selected, dict) or not isinstance(selected.get('message'), dict):
@@ -90,6 +90,8 @@ def object_from_choice(choice, key=''):
     emit('model', text, bool(complete), key, finish_reason=reason)
     if not complete:
         raise IncompleteReply('Модель обрезала ответ или отказала в обработке. Неполная пачка не принята; готовые пачки сохранены.')
+    if not text.strip():
+        raise IncompleteReply('Модель вернула пустой текст. Проверьте лимит выходных токенов и выбранную модель. Готовые пачки сохранены.')
     return object_from_text(text)
 
 
@@ -97,7 +99,7 @@ def object_from_text(text):
     try:
         return extract_object(text)
     except (ValueError, TypeError) as error:
-        raise ModelJSONError('Модель вернула некорректный JSON раскадровки; исходный ответ сохранён.') from error
+        raise ModelJSONError('Модель вернула некорректный JSON раскадровки.' + (' Исходный ответ сохранён.' if active() else '')) from error
 
 
 def query(query_fn, prompt, receipt, signature, atomic, progress=None):

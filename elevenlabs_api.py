@@ -12,6 +12,7 @@ import requests
 
 import netutil
 import source_narration
+import api_response
 from media_tools import ffmpeg_bin, run_media
 from tts_api import TTSError
 
@@ -27,6 +28,8 @@ class ElevenLabs:
         self.s.headers["xi-api-key"] = key
 
     def _check(self, response):
+        if 300 <= response.status_code < 400:
+            raise TTSError(api_response.invalid_response(response, "ElevenLabs", "/v1/text-to-speech или /v2/voices", self.s.headers["xi-api-key"]))
         if response.status_code < 400:
             return
         try:
@@ -34,7 +37,7 @@ class ElevenLabs:
             code = detail.get("status", "") if isinstance(detail, dict) else ""
             message = detail.get("message", "") if isinstance(detail, dict) else str(detail)
         except (ValueError, AttributeError):
-            code, message = "", "Сервис вернул ошибку."
+            raise TTSError(api_response.invalid_response(response, "ElevenLabs", "/v2/voices или /v1/text-to-speech", self.s.headers["xi-api-key"]))
         hints = {
             "invalid_api_key": "Ключ ElevenLabs не принят. Вставьте API-ключ из кабинета ElevenLabs.",
             "missing_permissions": "У ключа ElevenLabs не хватает прав: нужны Text to Speech и Voices (Read).",
@@ -47,10 +50,13 @@ class ElevenLabs:
 
     def _voice_page(self, **params):
         netutil.check_cancel()
-        response = netutil.patient(lambda: self.s.get(self.BASE + "/v2/voices", params=params, timeout=(15, 60)))
+        response = netutil.patient(lambda: self.s.get(self.BASE + "/v2/voices", params=params, timeout=(15, 60), allow_redirects=False))
         try:
             self._check(response)
-            return response.json()
+            page = api_response.json_object(response, "ElevenLabs", "/v2/voices", self.s.headers["xi-api-key"])
+            if not isinstance(page.get("voices"), list) or any(not isinstance(item, dict) for item in page["voices"]):
+                raise TTSError("ElevenLabs: HTTP 200 · /v2/voices · JSON не содержит корректный список voices. Ключ не проверен.")
+            return page
         finally:
             response.close()
 
@@ -67,10 +73,10 @@ class ElevenLabs:
             page = self._voice_page(**params)
             for voice in page.get("voices") or []:
                 vid = voice.get("voice_id")
-                if not vid or vid in seen:
+                if not isinstance(vid, str) or not vid or vid in seen:
                     continue
                 seen.add(vid)
-                labels = voice.get("labels") or {}
+                labels = voice.get("labels") if isinstance(voice.get("labels"), dict) else {}
                 out.append({"id": vid, "name": voice.get("name") or vid,
                             "lang": labels.get("language", ""), "gender": labels.get("gender", "")})
             next_token = page.get("next_page_token")
@@ -128,7 +134,7 @@ class ElevenLabs:
                 response = self.s.post(self.BASE + f"/v1/text-to-speech/{voice}",
                                        params={"output_format": "mp3_44100_128"},
                                        json=payload,
-                                       headers={"Accept": "audio/mpeg"}, stream=True, timeout=(15, 300))
+                                       headers={"Accept": "audio/mpeg"}, stream=True, timeout=(15, 300), allow_redirects=False)
                 try:
                     self._check(response)
                     content_type = response.headers.get("Content-Type", "").lower()

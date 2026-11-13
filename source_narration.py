@@ -9,6 +9,7 @@ import tempfile
 
 import requests
 import endpoints
+import api_response
 import netutil
 from media_tools import ffmpeg_bin, run_media
 
@@ -96,7 +97,8 @@ def analyse(path, duration, cfg, cache_dir, progress=None):
             result = run_media([ffmpeg_bin(), '-y', '-v', 'error', '-ss', str(start), '-i', str(path),
                                 '-t', str(length), '-vn', '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', str(sample)])
             if result.returncode or not sample.exists() or sample.stat().st_size <= 44:
-                raise ValueError('Не удалось прочитать звук исходника для анализа подачи.')
+                detail = (result.stderr or b'').decode(errors='replace').replace(str(path), '[исходник]').replace(str(sample), '[фрагмент]')
+                raise ValueError('Не удалось извлечь звук исходника. FFmpeg: ' + ' '.join(detail.strip().splitlines()[-3:])[-400:])
             parts.extend([{'text': f'Excerpt at {start:.2f}s, length {length:.2f}s.'},
                           {'inlineData': {'mimeType': 'audio/wav', 'data': base64.b64encode(sample.read_bytes()).decode()}}])
     payload = {'systemInstruction': {'parts': [{'text': SYSTEM}]}, 'contents': [{'role': 'user', 'parts': parts}],
@@ -107,7 +109,8 @@ def analyse(path, duration, cfg, cache_dir, progress=None):
     try:
         if response.status_code >= 400:
             raise ValueError(f'Анализ исходной озвучки: {route[2]} HTTP {response.status_code}. Проверьте доступ ключа к {route[3]} и поддержку аудиовхода.')
-        data = response.json()
+        secret = cfg.get('elysium_api_key') or cfg.get('gemini_api_key') or ''
+        data = api_response.json_object(response, route[2], '/compatible/generateContent (анализ звука)', secret)
     finally:
         response.close()
     try:
@@ -150,6 +153,30 @@ def eleven_settings(delivery):
     return {'stability': round(.7 - .45 * delivery['intonation_variation'], 3), 'similarity_boost': .75,
             'style': round(.3 * delivery['energy'], 3), 'use_speaker_boost': True,
             'speed': round(max(.8, min(1.2, delivery['tempo_wpm'] / 150)), 3)}
+
+
+def has_audio(path):
+    result = run_media([ffmpeg_bin("ffprobe"), '-v', 'error', '-select_streams', 'a:0',
+                        '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', str(path)])
+    if result.returncode:
+        raise ValueError('Не удалось проверить аудиодорожку исходного файла.')
+    return result.stdout.strip() == b'audio'
+
+
+def attach_youtube(profile, video_path, url, cfg, cache_dir, progress=None):
+    if cfg.get('tts_service') not in ('fastgen', 'elevenlabs') or not _route(cfg):
+        return attach(profile, video_path, profile['sampling']['duration'], cfg, cache_dir, progress)
+    path = video_path
+    if not has_audio(path):
+        import youtube_source
+        if progress: progress('видеоряд сохранён без звука; загружаю исходную аудиодорожку отдельно')
+        path = youtube_source.audio(url, cache_dir, str(Path(ffmpeg_bin()).parent),
+                                    cookie_file=cfg.get('youtube_cookie_file'), browser=cfg.get('youtube_browser'))
+        if not has_audio(path):
+            raise ValueError('В исходном видео и отдельно загруженном файле нет аудиодорожки.')
+    from pipeline import audio_duration
+    duration = min(float(profile['sampling']['duration']), audio_duration(path))
+    return attach(profile, path, duration, cfg, cache_dir, progress)
 
 
 def attach(profile, path, duration, cfg, cache_dir, progress=None):

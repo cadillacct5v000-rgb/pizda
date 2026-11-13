@@ -16,6 +16,8 @@ import netutil
 import endpoints
 import provider_access
 import model_reply
+import chat_stream
+import api_response
 
 
 def BASE():
@@ -24,7 +26,7 @@ def BASE():
 
 def _chat_params(model, max_tokens, temperature):
     """gpt-5.x и o-серия не принимают max_tokens/temperature — у них max_completion_tokens и температура только 1."""
-    m = (model or "").lower()
+    m = (model or "").lower().rsplit("/", 1)[-1]
     if m.startswith(("gpt-5", "o1", "o3", "o4")):
         return {"max_completion_tokens": max_tokens}
     return {"max_tokens": max_tokens, "temperature": temperature}
@@ -49,7 +51,7 @@ class OpenAIClient:
     def _check(self, r: requests.Response):
         if r.status_code >= 400:
             raise OpenAIError(provider_access.failure(self.provider, r, self.key))
-        return r.json()
+        return api_response.json_object(r, self.provider, "/models или API JSON", self.key)
 
     def check(self) -> str:
         """Проверка ключа: список моделей."""
@@ -67,6 +69,25 @@ class OpenAIClient:
         has_whisper = any("whisper" in i for i in ids)
         return "OK" + ("" if has_whisper else " · внимание: модель whisper-1 не видна на этом ключе")
 
+    def check_model(self, model):
+        """Read-only credential/catalog check, never a paid JSON generation probe."""
+        netutil.check_cancel()
+        response = self.s.get(endpoints.base(self.provider) + "/models", timeout=(15, 60), allow_redirects=False)
+        try:
+            data = self._check(response)
+            models = data.get("data")
+            if not isinstance(models, list) or any(not isinstance(item, dict) for item in models):
+                raise OpenAIError(f"{self.provider}: /models не вернул список моделей; ключ не проверен.")
+            ids = {item.get("id") for item in models if isinstance(item.get("id"), str)}
+            if model not in ids:
+                alias = model.rsplit("/", 1)[-1]
+                matches = [name for name in ids if name.rsplit("/", 1)[-1] == alias]
+                if len(matches) != 1:
+                    raise OpenAIError(f"{self.provider}: ключ принят, но {model} отсутствует в доступном каталоге. Выберите модель через «Модели с сервера».")
+            return f"OK · {self.provider} · ключ принят, {model} есть в каталоге. Генерация проверяется при запуске."
+        finally:
+            response.close()
+
     # --- чат ---
     def chat_json(self, system: str, user: str, model: str = None, max_tokens: int = 4000, temperature: float = 0.7) -> dict:
         if self.stream:
@@ -75,10 +96,11 @@ class OpenAIClient:
         limit = max_tokens
         for attempt in range(4):
             netutil.check_cancel()
+            r = None
             try:
                 r = self.s.post(endpoints.base(self.provider) + "/chat/completions", json={
                     "model": model or DEFAULT_CHAT_MODEL,
-                    **({"response_format": {"type": "json_object"}} if self.provider == "openai" else {}),
+                    **({"response_format": {"type": "json_object"}} if self.provider == "openai" or (model or "").lower().startswith(("gpt-", "openai/gpt-", "o1", "o3", "o4", "openai/o")) else {}),
                     **({"max_tokens": limit} if self.provider == "elysium" else _chat_params(model or DEFAULT_CHAT_MODEL, limit, temperature)),
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 }, timeout=300)
@@ -88,17 +110,22 @@ class OpenAIClient:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
                     netutil.pause(10 * (attempt + 1))
                     continue
-                j = self._check(r)
-                choice = j["choices"][0]
+                if r.status_code >= 400:
+                    raise OpenAIError(provider_access.failure(self.provider, r, self.key, model))
+                choice = model_reply.choice(r, self.key, self.progress)
                 if choice.get("finish_reason") == "length" and limit < 32000:
                     limit = min(32000, limit * 2)  # ответ обрезан — повторяем с большим лимитом
                     last = f"ответ не влез в лимит, повторяю с {limit} токенами"
                     continue
-                from llm_api import extract_json
-                return extract_json(choice["message"]["content"])
+                return model_reply.object_from_choice(choice, self.key)
+            except chat_stream.StreamError as error:
+                raise OpenAIError("Поток ответа API прерван; платный запрос автоматически не повторяется. Готовые пачки сохранены.") from error
             except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
                 last = str(e)
                 netutil.pause(5 * (attempt + 1))
+            finally:
+                if r is not None:
+                    r.close()
         raise OpenAIError(f"чат-модель не ответила корректно: {last}")
 
     def _stream_chat_json(self, system, user, model, max_tokens):
@@ -110,7 +137,7 @@ class OpenAIClient:
         payload = {"model": model, "stream": True,
                    **({"max_tokens": max_tokens} if self.provider == "elysium" else _chat_params(model, max_tokens, .7)),
                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
-        if self.provider == "openai" or model.startswith('gpt-'):
+        if self.provider == "openai" or model.lower().startswith(('gpt-', 'openai/gpt-', 'o1', 'o3', 'o4', 'openai/o')):
             payload['response_format'] = {'type': 'json_object'}
         netutil.check_cancel()
         try:
@@ -120,14 +147,8 @@ class OpenAIClient:
             if response.status_code >= 400:
                 raise OpenAIError(provider_access.failure(self.provider, response, self.key, model))
             content_type = str((getattr(response, 'headers', None) or {}).get('Content-Type', '')).lower()
-            if model_reply.active():
-                selected = model_reply.choice(response, self.key, self.progress)
-                return model_reply.object_from_choice(selected, self.key)
-            value = chat_stream.read(response, self.progress) if 'text/event-stream' in content_type else response.json()
-            choice = value['choices'][0]
-            if choice.get('finish_reason') in ('length','content_filter','tool_calls') or choice['message'].get('refusal'):
-                raise OpenAIError('Модель не завершила пачку раскадровки; неполный ответ не принят. Готовые пачки сохранены.')
-            return extract_object(choice['message']['content'])
+            selected = model_reply.choice(response, self.key, self.progress)
+            return model_reply.object_from_choice(selected, self.key)
         except json.JSONDecodeError as error:
             raise OpenAIError('Модель вернула некорректный JSON раскадровки. Готовые пачки сохранены; автоматического повтора нет.') from error
         except requests.RequestException as error:
@@ -148,9 +169,10 @@ class OpenAIClient:
         m = model or DEFAULT_CHAT_MODEL
         for attempt in range(3):
             netutil.check_cancel()
+            r = None
             try:
                 r = self.s.post((base or endpoints.base(self.provider)) + "/chat/completions", json={
-                    "model": m, **({"max_tokens": max_tokens} if self.provider == "elysium" else _chat_params(m, max_tokens, 0.7)),
+                    "model": m, **({"response_format": {"type": "json_object"}} if m.lower().startswith(("gpt-", "openai/gpt-")) else {}), **({"max_tokens": max_tokens} if self.provider == "elysium" else _chat_params(m, max_tokens, 0.7)),
                     "messages": [{"role": "system", "content": system + "\nОтвечай только JSON, без пояснений и без markdown."},
                                  {"role": "user", "content": [{"type": "text", "text": user},
                                                               {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + data}}]}],
@@ -161,11 +183,17 @@ class OpenAIClient:
                     last = f"HTTP {r.status_code}: {r.text[:200]}"
                     netutil.pause(5 * (attempt + 1))
                     continue
-                j = self._check(r)
-                return extract_json(j["choices"][0]["message"]["content"])
+                if r.status_code >= 400:
+                    raise OpenAIError(provider_access.failure(self.provider, r, self.key, m))
+                return model_reply.object_from_choice(model_reply.choice(r, self.key, self.progress), self.key)
+            except chat_stream.StreamError as error:
+                raise OpenAIError("Поток ответа API прерван; запрос с картинкой автоматически не повторяется.") from error
             except (requests.RequestException, json.JSONDecodeError, KeyError, IndexError) as e:
                 last = str(e)
                 netutil.pause(3)
+            finally:
+                if r is not None:
+                    r.close()
         raise OpenAIError(f"модель не ответила по картинке: {last}")
 
     # --- распознавание речи ---

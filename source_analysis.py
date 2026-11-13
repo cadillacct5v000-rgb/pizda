@@ -308,7 +308,7 @@ def _query(engine, key, model, prompt, image_path=None):
         if engine == "openai":
             from openai_api import _chat_params
             payload.update(_chat_params(model, 6000, 0.3))
-        if engine == "openai" or (engine == "elysium" and model.startswith("gpt-")):
+        if engine == "openai" or (engine == "elysium" and model.lower().startswith(("gpt-", "openai/gpt-"))):
             payload["response_format"] = {"type": "json_object"}
         response = _http("POST", base + "/chat/completions", headers=headers, json=payload)
         try:

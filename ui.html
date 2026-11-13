@@ -1136,7 +1136,7 @@ function renderAccess() {
   }
   const direct = new Set([llm, stt === 'whisper' ? 'openai' : '', $('use_qa').checked ? qaEngine : '', rwOn() ? rwEngine : '', rwOn() && analyzeVideo ? analysisEngine : '']);
   for (const service of direct) if (['openai','anthropic','gemini'].includes(service)) H.push(baseRow(service));
-  if (direct.has('elysium')) H.push(row('Elysium API', LINKS.elysium, '<span class="note">https://elysiumai.garden/v1 · OpenAI-совместимый API. Выберите модель с поддержкой изображений для анализа и автоотбора. Проверка модели выполняет небольшой платный запрос.</span>'));
+  if (direct.has('elysium')) H.push(row('Elysium API', LINKS.elysium, '<span class="note">https://elysiumai.garden/v1 · OpenAI-совместимый API. Выберите модель с поддержкой изображений для анализа и автоотбора. Проверка ключа использует каталог моделей; анализ и генерация оплачиваются сервисом.</span>'));
   H.push(queueHtml());
   $('dropzone').innerHTML = `<div class="alist-in">${H.join('')}</div>`;
   bindAccess(); renderVoiceList(); bindQueue();

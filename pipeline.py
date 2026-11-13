@@ -3175,7 +3175,7 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         source_video = youtube_source.video(url, source_dir, os.path.dirname(ffmpeg_bin()), say, **auth)
         analysis_cfg = {**cfg, "source_analysis_engine": cfg.get("source_analysis_engine") or rw.get("engine") or cfg.get("rewrite_engine") or "fastgen", "source_montage": bool(rw.get("montage", cfg.get("source_montage", True)))}
         profile = source_analysis.analyse(source_video, text, analysis_cfg, source_dir, say)
-        profile = source_narration.attach(profile, source_video, profile["sampling"]["duration"], cfg, source_dir, say)
+        profile = source_narration.attach_youtube(profile, source_video, url, cfg, source_dir, say)
         if profile_callback:
             profile_callback(profile)
     engine = rw.get("engine") or cfg.get("rewrite_engine") or "fastgen"

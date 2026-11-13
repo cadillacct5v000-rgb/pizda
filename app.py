@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.13-dev"
+VERSION = "2.0.14-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -1492,8 +1492,7 @@ class Api:
                     from openai_api import OpenAIClient
                     model = cfg.get("elysium_model") or "gpt-4.1-mini"
                     c = OpenAIClient(cfg["elysium_api_key"], provider="elysium")
-                    c.chat_json("Return JSON only.", '{"ok":true}', model=model, max_tokens=200)
-                    out["elysium"] = f"OK · Elysium · {model} отвечает"
+                    out["elysium"] = c.check_model(model)
                 except Exception as e:
                     out["elysium"] = key_error(e)
             else:
@@ -2211,6 +2210,7 @@ def main():
         import public_images
         import scene_continuity
         import source_narration
+        import api_response
         report = sys.argv[sys.argv.index('--self-test-unified') + 1]
         with tempfile.TemporaryDirectory(prefix='kadrogen-selftest-') as temporary:
             root = Path(temporary)

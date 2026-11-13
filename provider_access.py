@@ -1,5 +1,6 @@
 """Read-only model discovery and safe, actionable provider errors."""
 from urllib.parse import urlsplit
+import api_response
 
 import requests
 
@@ -70,7 +71,7 @@ def models(engine, key):
         with requests.get(endpoints.base(engine) + '/models', headers=headers, params=params, timeout=30) as response:
             if response.status_code >= 400:
                 raise ValueError(failure(engine, response, key))
-            data = response.json()
+            data = api_response.json_object(response, LABELS.get(engine, engine), '/models', key)
         for item in data.get('models' if engine == 'gemini' else 'data', []):
             if not isinstance(item, dict):
                 continue
