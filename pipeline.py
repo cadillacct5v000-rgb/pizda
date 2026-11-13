@@ -1290,6 +1290,7 @@ LAST_RESORT_CHAIN = [("gemini_nano_banana_2_image_generate", 1), ("nano_banana_2
 
 
 def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
+    scene.setdefault("_image_generation_error", "fast-gen: не осталось доступных моделей для этого кадра")
     """refs: список путей к референсам героев (может быть пустым). chain — принудительная цепочка моделей."""
     prompt = scene["prompt"]
     chain = chain or (IMAGE_CHAINS_REFS if refs else IMAGE_CHAINS)[FASTGEN_QUALITY]
@@ -1347,6 +1348,9 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                             err = f"не скачалась картинка: {e}"
                     else:
                         err = f"{st.get('error_code')} {str(st.get('error'))}"
+            from quota_info import clean
+            headers = getattr(getattr(api, "s", None), "headers", {}) or {}
+            scene["_image_generation_error"] = clean(f"fast-gen {op}: {err}", (headers.get("X-API-Key"),), 400)
             log(f"сцена {scene['index'] + 1}: fast-gen {op} попытка {t + 1}/{tries} не удалась: {err[:200]}")
             low = (err or "").lower()
             if "content_policy" in low or "safety filter" in low or "content_filter" in low:
@@ -1997,11 +2001,20 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         progress("images", done_count, len(scenes), f"secretslider: готово {len(ok)} из {len(mine)}")
         todo = [s for s in todo if s["index"] not in ok]
 
+    def safe_error(error):
+        from quota_info import clean
+        secrets = [value for name, value in ctx.get("cfg", {}).items() if "key" in name and isinstance(value, str)]
+        headers = getattr(getattr(ctx.get("api"), "s", None), "headers", {}) or {}
+        secrets.append(headers.get("X-API-Key"))
+        return clean(error, secrets, 500)
+
     def draw(s, path, scene_refs):
         """Одна попытка нарисовать сцену по цепочке сервисов. → название модели или None."""
         model = None
+        errors = []
         try:
             for prov in provider_chain(ctx, s["index"]):
+                s.pop("_image_generation_error", None)
                 if prov not in ctx["providers"]:
                     log(f"сцена {s['index'] + 1}: выбранные сервисы не справились, пробую {unit_name(prov)}")
                 try:
@@ -2010,9 +2023,12 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     raise
                 except Exception as e:
                     log(f"сцена {s['index'] + 1}: {prov} упал: {str(e)[:200]}")
+                    errors.append(safe_error(f"{unit_name(prov)}: {e}"))
                     model = None
                 if model:
                     break
+                if s.get("_image_generation_error"):
+                    errors.append(safe_error(s["_image_generation_error"]))
             if not model and ctx.get("api") and ctx["gates"].get("fastgen"):
                 # последний рубеж: любая другая модель fast-gen, лишь бы сцена сделалась
                 tried = set(m for m, _ in (IMAGE_CHAINS_REFS if scene_refs else IMAGE_CHAINS)[FASTGEN_QUALITY])
@@ -2025,13 +2041,20 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                         raise
                     except Exception as e:
                         log(f"сцена {s['index'] + 1}: последний рубеж упал: {str(e)[:200]}")
+                        errors.append(safe_error(e))
         except SceneRejected as error:
             with lock:
                 rejected.add(s["index"])
-                failures[s["index"]] = str(error)
+                failures[s["index"]] = safe_error(error)
             return None
         except Cancelled:
             raise
+        with lock:
+            if model:
+                failures.pop(s["index"], None)
+            else:
+                detail = s.get("_image_generation_error") or (errors[-1] if errors else "Сервис не вернул картинку")
+                failures[s["index"]] = safe_error(detail)
         return model
 
     def work(s):
@@ -2047,11 +2070,22 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         if anchor is not None and anchor != s["index"]:
             anchor_path = os.path.join(img_dir, f"{anchor:04d}.png")
             if not os.path.isfile(anchor_path) or (state.get(str(anchor)) or {}).get("ok") is False:
-                raise RuntimeError(f"Не готов опорный кадр локации: план {anchor + 1}. Зависимые кадры не отправлены; готовое сохранено.")
+                with lock:
+                    detail = failures.get(anchor) or (state.get(str(anchor)) or {}).get("error") or "кадр ещё не создан"
+                    reason = f"Ожидает опорный план {anchor + 1}: {detail}"
+                    state[str(s["index"])] = {"ok": False, "model": None, "error": reason,
+                                               "blocked": False, "blocked_by_anchor": anchor}
+                    write_json(state_path, state)
+                return
+
             scene_refs.insert(0, anchor_path)
             s = {**s, "location_reference_path": anchor_path, "prompt": s["prompt"] +
                  " The FIRST attached image is the APPROVED LOCATION ANCHOR. Preserve its room layout, permanent furniture, doors, windows, finishes and colors across this shot. Use it for the environment ONLY; do not copy its people, poses or action. Any source-style reference after it is secondary. Follow the current shot's action and camera angle."}
         model = draw(s, path, scene_refs)
+        if model and not os.path.isfile(path):
+            model = None
+            with lock:
+                failures[s["index"]] = "Сервис сообщил успех, но файл картинки не получен"
         if model and ctx.get("qa") and not CANCEL.is_set():
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
             ok, score, issues = qa_check(ctx["qa"], s, path)
@@ -2115,7 +2149,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             reason = failures.get(s["index"]) if not model else None
             state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model}
             write_json(state_path, state)
-            done_count += 1
+            if model:
+                done_count += 1
             progress("images", done_count, len(scenes), f"сцена {s['index'] + 1}: {'OK ' + model if model else (reason or 'НЕ УДАЛОСЬ — сервис не вернул картинку; подробности в отчёте')}")
         if model and on_image:
             try:
@@ -2130,19 +2165,17 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         for item in group:
             check_cancel()
             work(item)
-            if item.get("location_id") and not (state.get(str(item["index"])) or {}).get("ok"):
-                raise RuntimeError(f"Не получен кадр локации в плане {item['index'] + 1}. Следующие кадры этой локации не отправлены; готовое сохранено.")
     with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         list(ex.map(work_group, scene_continuity.grouped(todo)))
     check_cancel()
-    failed = [s for s in todo if s["index"] not in rejected and not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
+    failed = [s for s in todo if s["index"] not in rejected and s.get("location_anchor_index") not in rejected
+              and (not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) or (state.get(str(s["index"])) or {}).get("ok") is False)]
     if failed:
         # второй заход: к этому времени лимиты обычно отпустили, а копия соседнего кадра — худший вариант
         log(f"повторяю {len(failed)} сцен, которые не удались с первого раза")
-        done_count -= len(failed)
         progress("images", done_count, len(scenes), f"повторяю {len(failed)} неудавшихся сцен")
         with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-            list(ex.map(work, failed))
+            list(ex.map(work_group, scene_continuity.grouped(failed)))
         check_cancel()
 
     # кадры, которые пользователь отметил «Перерисовать», пока шли остальные
@@ -2153,12 +2186,12 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         if not again:
             break
         log(f"перерисовываю {len(again)} кадров по кнопке в окне: {', '.join(str(s['index'] + 1) for s in again)}")
+        done_count -= sum(os.path.isfile(os.path.join(img_dir, f"{s['index']:04d}.png")) and (state.get(str(s["index"])) or {}).get("ok") is not False for s in again)
         for s in again:
             redo_files(job_dir, s["index"])
-        done_count -= len(again)
         progress("images", done_count, len(scenes), f"перерисовываю {len(again)} кадров")
         with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-            list(ex.map(work, again))
+            list(ex.map(work_group, scene_continuity.grouped(again)))
         check_cancel()
 
     if ctx.get("qa") and QA_STATS["checked"]:
@@ -2167,12 +2200,17 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         log(msg)
         progress("images", done_count, len(scenes), msg)
 
-    missing = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
+    missing = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) or (state.get(str(s["index"])) or {}).get("ok") is False]
     blocked = [row['index'] + 1 for row in missing if row['index'] in rejected and
                any(token in failures.get(row['index'], '').lower() for token in ('content_policy', 'safety', 'фильтр', 'содерж'))]
     if blocked:
         numbers = ', '.join(map(str, blocked))
         raise RuntimeError(f"Сцены {numbers}: сервис отклонил изображение фильтром содержимого (generation.content_policy). Откройте раскадровку, проверьте содержание этих планов и исправьте описание. Повтор того же запроса не решает отказ. Готовые кадры сохранены.")
+    missing_anchors = [row for row in missing if row.get("location_id") and row.get("location_anchor_index") == row["index"]]
+    if missing_anchors:
+        details = "; ".join(f"план {row['index'] + 1}: {failures.get(row['index']) or (state.get(str(row['index'])) or {}).get('error') or 'сервис не вернул картинку'}" for row in missing_anchors[:3])
+        raise RuntimeError(f"Не получен кадр локации в {details}. Выполнен повтор только недостающих кадров. "
+                           "Зависимые кадры ожидают опорный; готовое сохранено. Повторный запуск продолжит с этого места.")
     if len(missing) < len(scenes) and len(missing) > max(MAX_COPIES_MIN, int(len(scenes) * MAX_COPIES_SHARE)):
         # пара копий соседних кадров незаметна, а сотня одинаковых картинок — брак: честнее остановиться
         write_json(state_path, state)
@@ -2187,7 +2225,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         raise RuntimeError("Не удалось получить ни одной картинки — проверьте ключи и лимиты")
     if missing:
         numbers = ', '.join(str(row['index'] + 1) for row in missing)
-        raise RuntimeError(f"Не получены картинки для сцен: {numbers}. Готовые кадры сохранены. Сервис не вернул результат; подробности попыток — в отчёте. Копии соседних кадров не подставляются.")
+        details = "; ".join(f"{row['index'] + 1}: {failures.get(row['index']) or (state.get(str(row['index'])) or {}).get('error') or 'сервис не вернул картинку'}" for row in missing[:3])
+        raise RuntimeError(f"Не получены картинки для сцен: {numbers}. Причина: {details}. Готовые кадры сохранены; повтор продолжит недостающее. Копии соседних кадров не подставляются.")
     return img_dir
 
 
