@@ -1,4 +1,5 @@
 """Elysium's asynchronous media API. Never retry a billable submission."""
+import base64
 import hashlib
 import json
 import math
@@ -16,7 +17,8 @@ from storyboard_cache import source_reference, restore_source
 
 MODEL = 'google/gemini-omni-flash-1.2'
 KLING_MODEL = 'kling-3.0/video'
-MODELS = (MODEL, KLING_MODEL)
+HAILUO_MODEL = 'hailuo/2-3-image-to-video-standard-provider-4'
+MODELS = (MODEL, KLING_MODEL, HAILUO_MODEL)
 DEFAULT_BASE = 'https://elysiumai.garden/v1'
 
 
@@ -38,7 +40,7 @@ class ElysiumVideo:
         if kling_mode not in ('std', 'pro'):
             raise ElysiumVideoError('Выберите Kling Standard или Pro.')
         self.model, self.kling_mode = model, kling_mode
-        self.label = 'Kling 3.0' if model == KLING_MODEL else 'Gemini'
+        self.label = {KLING_MODEL: 'Kling 3.0', HAILUO_MODEL: 'Hailuo 2.3 Standard'}.get(model, 'Gemini')
         self.resolution = resolution
         self._secret = key
         self.session = session or requests.Session()
@@ -52,6 +54,7 @@ class ElysiumVideo:
         text = str(value).replace(self._secret, '[ключ скрыт]')
         text = re.sub(r'(?i)Bearer\s+[^\s"<>]+', 'Bearer [скрыто]', text)
         text = re.sub(r'\bsk-[A-Za-z0-9_-]+', '[ключ скрыт]', text)
+        text = re.sub(r'data:[^\s"<>]+', '[данные изображения скрыты]', text)
         text = re.sub(r'https?://[^\s"<>]+', '[ссылка скрыта]', text)
         text = re.sub(r'<[^>]*>', ' ', text)
         return ' '.join(text.split())[:700]
@@ -63,6 +66,8 @@ class ElysiumVideo:
                 error = body.get('error') or body
                 if isinstance(error, dict):
                     detail = ' · '.join(str(error[k]) for k in ('code', 'type', 'message') if isinstance(error.get(k), (str, int)))
+                    if not detail and error.get('detail'):
+                        detail = json.dumps(error['detail'], ensure_ascii=False)
                 else:
                     detail = str(error)
             except Exception:
@@ -108,10 +113,26 @@ class ElysiumVideo:
             raise ElysiumVideoError(f'В медиакаталоге Elysium нет {self.model}.')
         return f'Ключ принят; {self.model} есть в каталоге. Генерация не запускалась; права и списание проверяются при запуске клипа.'
 
+    def _local_image(self, image):
+        path = Path(image)
+        if path.stat().st_size > 20 * 1024 * 1024:
+            raise ElysiumVideoError('Кадр больше 20 МБ. Запрос Hailuo не отправлен.')
+        try:
+            from PIL import Image
+            with Image.open(path) as source:
+                mime = {'PNG': 'image/png', 'JPEG': 'image/jpeg', 'WEBP': 'image/webp'}.get(source.format)
+                source.verify()
+            if not mime:
+                raise ValueError('unsupported format')
+        except Exception:
+            raise ElysiumVideoError('Кадр должен быть исправным PNG, JPEG или WebP. Запрос Hailuo не отправлен.') from None
+        return 'data:' + mime + ';base64,' + base64.b64encode(path.read_bytes()).decode('ascii')
+
     def generate(self, prompt, image, out_path, duration, progress=None):
-        seconds = max(3, min(15, math.ceil(float(duration))))
+        seconds = 6 if self.model == HAILUO_MODEL else max(3, min(15, math.ceil(float(duration))))
+        quality = '768p-inline-v1' if self.model == HAILUO_MODEL else (self.resolution if self.model == MODEL else self.kling_mode)
         image_hash = hashlib.sha256(Path(image).read_bytes()).hexdigest()
-        identity = [self.base, self.account, self.model, self.resolution if self.model == MODEL else self.kling_mode, seconds, prompt, image_hash]
+        identity = [self.base, self.account, self.model, quality, seconds, prompt, image_hash]
         operation = 'elysium-video:' + hashlib.sha256(json.dumps(identity).encode()).hexdigest()
         state = self.store.operation(operation) or {}
         if state.get('status') == 'failed' and not state.get('id'):
@@ -120,24 +141,30 @@ class ElysiumVideo:
         if not task:
             if state.get('status') in ('submitting', 'uncertain'):
                 raise ElysiumVideoError('Отправка видео в Elysium не подтверждена. Проверьте историю в кабинете; повтор остановлен, чтобы не создать второе платное задание.')
-            reference = source_reference(image)
-            if not reference:
-                if progress:
-                    progress(f'{self.label} через Elysium: ищу сохранённую ссылку для точной копии кадра. Генерация пока не отправляется.')
-                if self._source_candidates is None:
-                    root = Path(data_dir()) / 'jobs'
-                    self._source_candidates = list(root.rglob('*.source.json')) if root.is_dir() else []
-                if restore_source(image, self._source_candidates):
-                    reference = source_reference(image)
-            if not reference:
-                raise ElysiumVideoError('Для этого кадра не найдена сохранённая HTTPS-ссылка. Запрос в Elysium не отправлен. Нужна исходная ссылка на эту картинку или новый вариант только этого плана через FastGen; готовые картинки и озвучку удалять не нужно.')
-            url = reference['url']
-            inputs = {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
-                      'aspect_ratio': '16:9', 'first_frame_url': url}
-            if self.model == KLING_MODEL:
-                inputs = {'prompt': prompt, 'duration': str(seconds), 'image_urls': [url],
-                          'aspect_ratio': '16:9', 'mode': self.kling_mode, 'sound': False,
-                          'multi_shots': False, 'multi_prompt': []}
+            if self.model == HAILUO_MODEL:
+                # The Hailuo schema declares input.image as a URI, including data URIs.
+                # Send actual bytes to Elysium; never re-render to obtain a CDN URL.
+                inputs = {'prompt': prompt, 'image': self._local_image(image), 'duration': 6,
+                          'resolution': '768p', 'aspect_ratio': '16:9', 'generate_audio': False}
+            else:
+                reference = source_reference(image)
+                if not reference:
+                    if progress:
+                        progress(f'{self.label} через Elysium: ищу сохранённую ссылку для точной копии кадра. Генерация пока не отправляется.')
+                    if self._source_candidates is None:
+                        root = Path(data_dir()) / 'jobs'
+                        self._source_candidates = list(root.rglob('*.source.json')) if root.is_dir() else []
+                    if restore_source(image, self._source_candidates):
+                        reference = source_reference(image)
+                if not reference:
+                    raise ElysiumVideoError('Для этого кадра не найдена сохранённая HTTPS-ссылка. Запрос в Elysium не отправлен. Нужна исходная ссылка на эту картинку или новый вариант только этого плана через FastGen; готовые картинки и озвучку удалять не нужно.')
+                url = reference['url']
+                inputs = {'prompt': prompt, 'duration': seconds, 'resolution': self.resolution,
+                          'aspect_ratio': '16:9', 'first_frame_url': url}
+                if self.model == KLING_MODEL:
+                    inputs = {'prompt': prompt, 'duration': str(seconds), 'image_urls': [url],
+                              'aspect_ratio': '16:9', 'mode': self.kling_mode, 'sound': False,
+                              'multi_shots': False, 'multi_prompt': []}
             body = {'model': self.model, 'operation': 'generate', 'prompt': prompt, 'input': inputs}
             netutil.check_cancel()
             if progress:

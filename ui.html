@@ -1076,16 +1076,17 @@ function renderAccess() {
     // Provider URLs are rendered once below, including vision-only providers.
   }
   H.push(row(L==='ru'?'Оживление картинок':'Image animation', LINKS.elysium,
-    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers'],['elysium','Gemini / Kling · Elysium']], videoEngine)));
+    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers'],['elysium','Hailuo / Gemini / Kling · Elysium']], videoEngine)));
   if (videoEngine === 'elysium') {
     H.push(row('Video · Elysium', LINKS.elysium,
-      sel('elysium_video_model',[['google/gemini-omni-flash-1.2','Gemini Omni Flash 1.2'],['kling-3.0/video','Kling 3.0 · kling-3.0/video']],elysiumVideoModel)
-      + (elysiumVideoModel==='kling-3.0/video' ? sel('elysium_kling_mode',[['std','Standard'],['pro','Pro']],elysiumKlingMode) : sel('elysium_video_resolution',[['720p','720p'],['1080p','1080p']],elysiumVideoResolution))
+      sel('elysium_video_model',[['hailuo/2-3-image-to-video-standard-provider-4','Hailuo 2.3 Standard · 768p · 6 s'],['google/gemini-omni-flash-1.2','Gemini Omni Flash 1.2'],['kling-3.0/video','Kling 3.0 · kling-3.0/video']],elysiumVideoModel)
+      + (elysiumVideoModel==='hailuo/2-3-image-to-video-standard-provider-4' ? '<span class="note">768p · 6 s</span>' : elysiumVideoModel==='kling-3.0/video' ? sel('elysium_kling_mode',[['std','Standard'],['pro','Pro']],elysiumKlingMode) : sel('elysium_video_resolution',[['720p','720p'],['1080p','1080p']],elysiumVideoResolution))
       + keyIn('k_video_elysium','elysium',0,single.elysium||'',t('ph_key')) + eye('k_video_elysium')
       + '<button class="ghost" id="check_video_elysium">'+(L==='ru'?'Проверить без генерации':'Check without generation')+'</button>', 's_video_elysium'));
     H.push(baseRow('elysium'));
+    if (elysiumVideoModel==='hailuo/2-3-image-to-video-standard-provider-4') H.push('<div class="note">'+(L==='ru'?'Hailuo: локальный кадр передаётся в Elysium внутри запроса (data URI). Старые HTTPS-ссылки не нужны. Клип 6 секунд, 768p, без звука; используется ваша озвучка. По каталогу — $0.15 USD за клип до скидок. Смена модели создаёт новые платные клипы.':'Hailuo sends local image bytes to Elysium as a data URI. Old HTTPS references are not required. Silent 6-second 768p clips use your narration. Catalog rate: $0.15 USD/clip before discounts. Switching models creates new billable clips.')+'</div>');
     if (elysiumVideoModel==='kling-3.0/video') H.push('<div class="note">'+(L==='ru'?'Kling создаёт видео без звука; используется выбранная озвучка. Standard дешевле Pro. Смена модели запускает новые платные клипы для выбранных планов; старые клипы сохраняются отдельно.':'Kling generates silent video using the selected narration. Standard costs less than Pro. Switching models creates new billable clips for selected plans; previous clips remain saved separately.')+'</div>');
-    H.push('<div class="note">'+(L==='ru'?'Картинки создаёт выбранный сервис, видео — Elysium, голос — выбранная озвучка. Для оживления включите «Только видео», «50 на 50» или «Оживить первые». Программа восстанавливает сохранённые ссылки из кэша по точному совпадению картинки. Если ссылка нигде не сохранилась, будет указан номер плана, которому нужен новый вариант.':'Images, video and voice use their own selected providers. Enable video/mixed mode or animate the first scenes. Saved references are recovered from the cache by exact image hash. If none exists, the error identifies the plan that needs a new take.')+'</div>');
+    H.push('<div class="note">'+(L==='ru'?'Картинки создаёт выбранный сервис, видео — Elysium, голос — выбранная озвучка. Для оживления включите «Только видео», «50 на 50» или «Оживить первые». Для Gemini и Kling нужны сохранённые HTTPS-ссылки на кадры. Для Hailuo используется сам локальный файл.':'Images, video and voice use their own selected providers. Enable video/mixed mode or animate the first scenes. Gemini and Kling use saved HTTPS references. Hailuo uses the local image file.')+'</div>');
   }
   if ($('use_qa').checked) {
     const qdef = QA_DEFAULT[qaEngine]; let qctl;

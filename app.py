@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.8-dev"
+VERSION = "2.0.9-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -1214,7 +1214,7 @@ class Api:
                 cfg[k + "_base_url"] = v if v.startswith(("http://", "https://")) else ""
         if data.get("video_engine") in ("providers", "elysium"):
             cfg["video_engine"] = data["video_engine"]
-        if data.get("elysium_video_model") in ("google/gemini-omni-flash-1.2", "kling-3.0/video"):
+        if data.get("elysium_video_model") in ("google/gemini-omni-flash-1.2", "kling-3.0/video", "hailuo/2-3-image-to-video-standard-provider-4"):
             cfg["elysium_video_model"] = data["elysium_video_model"]
         if data.get("elysium_kling_mode") in ("std", "pro"):
             cfg["elysium_kling_mode"] = data["elysium_kling_mode"]

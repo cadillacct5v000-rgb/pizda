@@ -309,6 +309,17 @@ with sync_playwright() as p:
  assert page.locator('#elysium_video_model').input_value()=='kling-3.0/video'
  assert page.locator('#elysium_kling_mode').input_value()=='pro'
  assert app.load_cfg()['elysium_video_model']=='kling-3.0/video'
+ page.locator('#elysium_video_model').select_option('hailuo/2-3-image-to-video-standard-provider-4')
+ page.wait_for_function("elysiumVideoModel === 'hailuo/2-3-image-to-video-standard-provider-4'")
+ page.wait_for_timeout(300)
+ page.evaluate('loadConfig(true)')
+ page.wait_for_selector('#elysium_video_model')
+ assert page.locator('#elysium_video_model').input_value()=='hailuo/2-3-image-to-video-standard-provider-4'
+ assert page.locator('#elysium_video_resolution').count()==0
+ assert page.locator('#elysium_kling_mode').count()==0
+ assert 'data URI' in page.locator('#dropzone').text_content()
+ assert app.load_cfg()['elysium_video_model']=='hailuo/2-3-image-to-video-standard-provider-4'
+
  assert app.load_cfg()['image_providers']==['fastgen']
  assert not errors,errors
  b.close()

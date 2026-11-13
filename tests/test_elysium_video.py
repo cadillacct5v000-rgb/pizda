@@ -160,10 +160,14 @@ def test_fastgen_image_retains_reference_url_and_hash(setup, monkeypatch):
     assert reference['sha256'] == hashlib.sha256(output.read_bytes()).hexdigest()
 
 
-def test_real_mp4_download_and_probe(setup, monkeypatch):
+@pytest.mark.parametrize('model', [ev.MODEL, ev.HAILUO_MODEL])
+def test_real_mp4_download_and_probe(setup, monkeypatch, model):
     import subprocess
     from media_tools import ffmpeg_bin
     client, session, _, image, root = setup
+    client.model = model
+    if model == ev.HAILUO_MODEL:
+        Path(str(image) + '.source.json').unlink()
     fixture = root / 'fixture.mp4'
     subprocess.run([ffmpeg_bin(), '-v', 'error', '-f', 'lavfi', '-i', 'color=c=red:s=160x90:d=0.2',
                     '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(fixture)], check=True, timeout=30)
@@ -308,3 +312,70 @@ def test_video_model_settings_save_without_changing_images_or_voice(monkeypatch)
     assert cfg['image_providers'] == ['fastgen'] and cfg['tts_service'] == 'elevenlabs'
     api.save_config({'elysium_video_model': 'unsupported', 'elysium_kling_mode': '4K'})
     assert cfg['elysium_video_model'] == ev.KLING_MODEL and cfg['elysium_kling_mode'] == 'pro'
+
+
+@pytest.mark.parametrize('duration', [2.5, 6, 10])
+def test_hailuo_sends_exact_local_png_without_saved_url(setup, monkeypatch, duration):
+    import base64
+    _, session, store, image, root = setup
+    Path(str(image) + '.source.json').unlink()
+    monkeypatch.setattr(ev, 'source_reference', Mock(side_effect=AssertionError('Hailuo must not require URLs')))
+    client = ev.ElysiumVideo('test-secret', model=ev.HAILUO_MODEL, store=store, session=session)
+    session.post.return_value = response({'id': 'hailuo_task'})
+    session.get.return_value = response({'status': 'failed', 'error': 'fixture failure'})
+    for _ in range(2):
+        with pytest.raises(ev.ElysiumVideoError, match='fixture failure'):
+            client.generate('wave', image, root / 'out.mp4', duration)
+    assert session.post.call_count == 1
+    body = session.post.call_args.kwargs['json']
+    assert body['model'] == ev.HAILUO_MODEL and body['operation'] == 'generate'
+    inputs = body['input']
+    encoded = inputs.pop('image')
+    assert encoded.startswith('data:image/png;base64,')
+    assert base64.b64decode(encoded.split(',', 1)[1]) == image.read_bytes()
+    assert inputs == {'prompt': 'wave', 'duration': 6, 'resolution': '768p', 'aspect_ratio': '16:9', 'generate_audio': False}
+
+
+def test_hailuo_ambiguous_submission_is_not_repeated_after_restart(setup):
+    _, session, store, image, root = setup
+    session.post.side_effect = requests.Timeout('private')
+    for _ in range(2):
+        client = ev.ElysiumVideo('test-secret', model=ev.HAILUO_MODEL, store=store, session=session)
+        with pytest.raises(ev.ElysiumVideoError):
+            client.generate('wave', image, root / 'out.mp4', 3)
+    assert session.post.call_count == 1
+
+
+def test_hailuo_invalid_png_never_submits(setup):
+    _, session, store, image, root = setup
+    image.write_bytes(b'not a picture')
+    client = ev.ElysiumVideo('test-secret', model=ev.HAILUO_MODEL, store=store, session=session)
+    with pytest.raises(ev.ElysiumVideoError, match='исправным PNG'):
+        client.generate('wave', image, root / 'out.mp4', 3)
+    session.post.assert_not_called()
+
+
+def test_hailuo_validation_error_redacts_inline_image_and_key(setup):
+    client, *_ = setup
+    error = response({'detail': [{'loc': ['input', 'image'], 'msg': 'unsupported data:image/png;base64,cHJpdmF0ZQ== test-secret'}]}, 422)
+    with pytest.raises(ev.ElysiumVideoError, match='422') as caught:
+        client._json(error, 'POST /videos')
+    assert 'unsupported' in str(caught.value)
+    assert 'cHJpdmF0ZQ' not in str(caught.value) and 'test-secret' not in str(caught.value)
+
+
+def test_hailuo_check_and_config_use_existing_elysium_key(setup, monkeypatch):
+    _, session, store, *_ = setup
+    client = ev.ElysiumVideo('test-secret', model=ev.HAILUO_MODEL, store=store, session=session)
+    session.get.side_effect = [response({}), response({'data': [{'id': ev.HAILUO_MODEL, 'operations': [{'name': 'generate'}]}]})]
+    assert ev.HAILUO_MODEL in client.check()
+    session.post.assert_not_called()
+    cfg = {'video_engine': 'elysium', 'elysium_api_key': 'test-secret', 'image_providers': ['fastgen'], 'tts_service': 'elevenlabs'}
+    monkeypatch.setattr(app, 'load_cfg', lambda: dict(cfg))
+    monkeypatch.setattr(app, 'save_cfg', lambda value: cfg.update(value))
+    app.Api().save_config({'elysium_video_model': ev.HAILUO_MODEL})
+    assert cfg['elysium_video_model'] == ev.HAILUO_MODEL
+    assert cfg['elysium_api_key'] == 'test-secret' and cfg['tts_service'] == 'elevenlabs'
+    assert cfg['image_providers'] == ['fastgen']
+    assert len({pipeline.make_context({'video_engine': 'elysium', 'elysium_video_model': model}, [])['video_identity']
+                for model in ev.MODELS}) == 3

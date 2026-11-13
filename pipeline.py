@@ -2983,7 +2983,7 @@ def make_context(cfg, providers):
     ctx["video_config"] = dict(cfg)
     if ctx["video_engine"] == "elysium":
         model = cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2")
-        quality = cfg.get("elysium_kling_mode", "std") if model == "kling-3.0/video" else cfg.get("elysium_video_resolution", "720p")
+        quality = "768p-inline-v1" if model == "hailuo/2-3-image-to-video-standard-provider-4" else (cfg.get("elysium_kling_mode", "std") if model == "kling-3.0/video" else cfg.get("elysium_video_resolution", "720p"))
         ctx["video_identity"] = hashlib.sha256(json.dumps(["elysium", model, cfg.get("elysium_base_url"), quality, "qa-final-frame-v1"]).encode()).hexdigest()[:12]
     return ctx
 
