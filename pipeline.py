@@ -920,6 +920,39 @@ def direct_scenes(scenes, latin, owners=None):
     return scenes
 
 
+def scene_prompt_results(response, chunk):
+    if not isinstance(response, dict) or not isinstance(response.get("scenes"), list):
+        raise ValueError("Модель не вернула список scenes")
+    rows = {}
+    for item in response["scenes"]:
+        if not isinstance(item, dict) or not isinstance(item.get("prompt"), str) or not item["prompt"].strip():
+            continue
+        index = item.get("index")
+        if isinstance(index, str) and index.isdigit():
+            index = int(index)
+        if type(index) is not int or index in rows:
+            raise ValueError("Некорректные или повторные индексы промптов")
+        rows[index] = item
+    expected = {s["index"] for s in chunk}
+    # Compatibility for complete one-based replies from the previous prompt format.
+    if rows and set(rows) == {i + 1 for i in expected}:
+        rows = {i - 1: row for i, row in rows.items()}
+    if not set(rows) <= expected:
+        raise ValueError("Модель вернула промпты других сцен")
+    return rows
+
+
+def text_fallback(cfg):
+    # Existing Elysium access is preferred over unrelated stored direct-provider keys.
+    if cfg.get("elysium_api_key"):
+        return LLM("elysium", OpenAIClient(cfg["elysium_api_key"], provider="elysium"), cfg.get("elysium_model") or "gpt-4.1-mini")
+    if cfg.get("anthropic_api_key"):
+        return LLM("anthropic", AnthropicClient(cfg["anthropic_api_key"], cfg.get("anthropic_model")))
+    if cfg.get("openai_api_key"):
+        return LLM("openai", OpenAIClient(cfg["openai_api_key"]), cfg.get("openai_model"))
+    return None
+
+
 def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25):
     """Промпты пишутся пачками и сохраняются после каждой: при сбое на середине готовое не пропадает,
     а при повторном запуске дописываются только недостающие. Переключение «скорость/качество» промпты не сбрасывает —
@@ -968,12 +1001,13 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
         return scenes
 
     chunks = [todo[b:b + batch] for b in range(0, len(todo), batch)]
-    done_lock, done_n, ok_chunks = threading.Lock(), [len(scenes) - len(todo)], [0]
+    done_lock, done_n = threading.Lock(), [len(scenes) - len(todo)]
+    errors, auth_failed = [], threading.Event()
     progress("prompts", done_n[0], len(scenes), "LLM пишет промпты сцен" + (" (дописываю недостающие)" if done_n[0] else ""))
 
     def do_chunk(chunk):
         check_cancel()
-        listing = "\n".join(f"{s['index'] + 1}. [{s['duration']:.1f} c] {s['text']}" + ("\nNew visual redesign: " + s["source_redesign"] if s.get("source_redesign") else "") for s in chunk)
+        listing = "\n".join(f"{s['index']}. [{s['duration']:.1f} c] {s['text']}" + ("\nNew visual redesign: " + s["source_redesign"] if s.get("source_redesign") else "") for s in chunk)
         profile = style.get("source_profile") or {}
         segments = profile.get("segments") or []
         if segments:
@@ -989,14 +1023,20 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
             s.pop("prompt", None)
             s.pop("raw_prompt", None)
         for attempt in range(3):
+            if auth_failed.is_set():
+                break
             try:
-                resp = llm.chat_json(SCENES_SYSTEM, f"Библия стиля:\n{style_text}\n\nСцены:\n{listing}", max_tokens=520 * len(chunk) + 500)
+                resp = llm.chat_json(SCENES_SYSTEM + "\nReturn EXACT zero-based scene indices from the supplied list; do not renumber them.", f"Библия стиля:\n{style_text}\n\nСцены:\n{listing}", max_tokens=520 * len(chunk) + 500)
+                got = scene_prompt_results(resp, chunk)
             except Cancelled:
                 raise
-            except Exception as e:  # пачка не удалась — не роняем весь ролик, ниже подставим простые промпты
+            except Exception as e:  # сохраняем готовые сцены; незавершённые не допускаются к генерации картинок
+                errors.append(str(e)[:400])
                 log(f"промпты сцен {chunk[0]['index'] + 1}-{chunk[-1]['index'] + 1}: попытка {attempt + 1}/3 не удалась: {str(e)[:150]}")
+                if any(marker in str(e).lower() for marker in ("http 401", "http 403", "invalid x-api-key", "invalid api key")):
+                    auth_failed.set()
+                    break
                 continue
-            got = {int(x["index"]): x for x in resp.get("scenes", []) if x.get("prompt")}
             for s in chunk:
                 if s["index"] in got:
                     g = got[s["index"]]
@@ -1010,7 +1050,6 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
                     s["motion"] = (_one(g.get("motion")) or CAMERA_WORDS.get(s.get("camera"), "slow gentle camera movement")).strip()
                     finish(s)
             if all(s.get("prompt") for s in chunk):
-                ok_chunks[0] += 1
                 break
         for s in chunk:
             if not s.get("prompt"):
@@ -1020,9 +1059,9 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
                 s["placeholder"] = True  # модель не ответила: при следующем запуске эта сцена переспрашивается, а не остаётся навсегда
                 finish(s)
         with done_lock:
-            done_n[0] += len(chunk)
+            done_n[0] += sum(bool(s.get("prompt")) and not s.get("placeholder") for s in chunk)
             write_json(out, scenes)  # сохраняем после каждой пачки
-            progress("prompts", done_n[0], len(scenes), "LLM пишет промпты сцен")
+            progress("prompts", done_n[0], len(scenes), f"готовы промпты: {done_n[0]} из {len(scenes)}")
 
     with cf.ThreadPoolExecutor(max_workers=3) as ex:  # три батча одновременно — в 3 раза быстрее на длинных роликах
         list(ex.map(do_chunk, chunks))
@@ -1030,12 +1069,16 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
     for s in scenes:
         if s.get("raw_prompt"):
             finish(s)
-    if chunks and not ok_chunks[0]:
-        for s in todo:  # ни одна пачка не получилась — это не «плохие промпты», а неработающая модель: не сохраняем заглушки
-            for k in ("prompt", "raw_prompt", "style_key"):
-                s.pop(k, None)
+    missing = [s for s in scenes if s.get("placeholder") or not s.get("prompt")]
+    if missing:
+        # Keep every real result. Placeholder descriptions must never launch paid images.
+        for scene in missing:
+            for key in ("prompt", "raw_prompt", "style_key"):
+                scene.pop(key, None)
         write_json(out, scenes)
-        raise RuntimeError("Языковая модель не ответила ни на одну пачку сцен — проверьте ключ и лимит текстов fast-gen")
+        detail = (" Причина: " + errors[-1]) if errors else " Модель вернула неполные ответы."
+        raise RuntimeError(f"Не подготовлены промпты для {len(missing)} из {len(scenes)} сцен. "
+                           f"Готовые промпты ({len(scenes) - len(missing)}) сохранены; повтор продолжит недостающее." + detail)
     write_json(out, scenes)
     progress("prompts", len(scenes), len(scenes), "готово")
     return scenes
@@ -3243,11 +3286,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     engine, text_api, llm_name, llm_api = make_text_engine(cfg)
     llm = LLM(llm_name, llm_api, cfg.get(llm_name + "_model") if llm_name in ("openai", "elysium") else cfg.get("llm_model"))
     if llm_name == "fastgen":
-        # запасной движок на случай часового лимита fast-gen: свой ключ Claude, иначе OpenAI
-        if cfg.get("anthropic_api_key"):
-            llm.fallback = LLM("anthropic", AnthropicClient(cfg["anthropic_api_key"], cfg.get("anthropic_model")))
-        elif cfg.get("openai_api_key"):
-            llm.fallback = LLM("openai", OpenAIClient(cfg["openai_api_key"]), cfg.get("openai_model"))
+        llm.fallback = text_fallback(cfg)
     llm.progress = progress
     progress("start", 0, 0, f"речь: {engine} · тексты: {llm_name} ({llm.model}) · fast-gen: {FASTGEN_QUALITY}")
 
