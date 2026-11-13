@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.9-dev"
+VERSION = "2.0.10-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -2201,6 +2201,7 @@ def main():
         from docx_import import import_board
         import syntx_api
         import storyboard
+        import public_images
         report = sys.argv[sys.argv.index('--self-test-unified') + 1]
         with tempfile.TemporaryDirectory(prefix='kadrogen-selftest-') as temporary:
             root = Path(temporary)

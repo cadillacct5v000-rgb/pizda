@@ -317,7 +317,8 @@ with sync_playwright() as p:
  assert page.locator('#elysium_video_model').input_value()=='hailuo/2-3-image-to-video-standard-provider-4'
  assert page.locator('#elysium_video_resolution').count()==0
  assert page.locator('#elysium_kling_mode').count()==0
- assert 'data URI' in page.locator('#dropzone').text_content()
+ assert 'Uguu' in page.locator('#dropzone').text_content()
+ assert 'data URI' not in page.locator('#dropzone').text_content()
  assert app.load_cfg()['elysium_video_model']=='hailuo/2-3-image-to-video-standard-provider-4'
 
  assert app.load_cfg()['image_providers']==['fastgen']

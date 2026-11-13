@@ -1,5 +1,4 @@
 """Elysium's asynchronous media API. Never retry a billable submission."""
-import base64
 import hashlib
 import json
 import math
@@ -14,6 +13,7 @@ import netutil
 from fastgen_api import data_dir
 from native_projects import ProjectStore
 from storyboard_cache import source_reference, restore_source
+from public_images import PublicImages, PublicImageError
 
 MODEL = 'google/gemini-omni-flash-1.2'
 KLING_MODEL = 'kling-3.0/video'
@@ -113,23 +113,9 @@ class ElysiumVideo:
             raise ElysiumVideoError(f'В медиакаталоге Elysium нет {self.model}.')
         return f'Ключ принят; {self.model} есть в каталоге. Генерация не запускалась; права и списание проверяются при запуске клипа.'
 
-    def _local_image(self, image):
-        path = Path(image)
-        if path.stat().st_size > 20 * 1024 * 1024:
-            raise ElysiumVideoError('Кадр больше 20 МБ. Запрос Hailuo не отправлен.')
-        try:
-            from PIL import Image
-            with Image.open(path) as source:
-                mime = {'PNG': 'image/png', 'JPEG': 'image/jpeg', 'WEBP': 'image/webp'}.get(source.format)
-                source.verify()
-            if not mime:
-                raise ValueError('unsupported format')
-        except Exception:
-            raise ElysiumVideoError('Кадр должен быть исправным PNG, JPEG или WebP. Запрос Hailuo не отправлен.') from None
-        return 'data:' + mime + ';base64,' + base64.b64encode(path.read_bytes()).decode('ascii')
-
     def generate(self, prompt, image, out_path, duration, progress=None):
         seconds = 6 if self.model == HAILUO_MODEL else max(3, min(15, math.ceil(float(duration))))
+        # Preserve the 2.0.9 receipt identity: known/uncertain jobs must not be submitted again.
         quality = '768p-inline-v1' if self.model == HAILUO_MODEL else (self.resolution if self.model == MODEL else self.kling_mode)
         image_hash = hashlib.sha256(Path(image).read_bytes()).hexdigest()
         identity = [self.base, self.account, self.model, quality, seconds, prompt, image_hash]
@@ -142,9 +128,11 @@ class ElysiumVideo:
             if state.get('status') in ('submitting', 'uncertain'):
                 raise ElysiumVideoError('Отправка видео в Elysium не подтверждена. Проверьте историю в кабинете; повтор остановлен, чтобы не создать второе платное задание.')
             if self.model == HAILUO_MODEL:
-                # The Hailuo schema declares input.image as a URI, including data URIs.
-                # Send actual bytes to Elysium; never re-render to obtain a CDN URL.
-                inputs = {'prompt': prompt, 'image': self._local_image(image), 'duration': 6,
+                try:
+                    url = PublicImages(self.store).ensure(image, progress)
+                except PublicImageError as error:
+                    raise ElysiumVideoError(str(error)) from None
+                inputs = {'prompt': prompt, 'image': url, 'duration': 6,
                           'resolution': '768p', 'aspect_ratio': '16:9', 'generate_audio': False}
             else:
                 reference = source_reference(image)

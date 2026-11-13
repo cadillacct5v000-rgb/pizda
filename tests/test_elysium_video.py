@@ -32,6 +32,11 @@ def setup(tmp_path, monkeypatch):
     store = ProjectStore(tmp_path / 'state')
     client = ev.ElysiumVideo('test-secret', store=store, session=session, poll=0)
     monkeypatch.setattr(requests, 'get', Mock(side_effect=AssertionError('Unexpected download')))
+    def hosted_frame(self, path, progress=None):
+        from public_images import checked_image
+        checked_image(path)
+        return 'https://h.uguu.se/fixture.png'
+    monkeypatch.setattr(ev.PublicImages, 'ensure', hosted_frame)
     yield client, session, store, image, tmp_path
     pipeline.CANCEL.clear()
 
@@ -315,8 +320,7 @@ def test_video_model_settings_save_without_changing_images_or_voice(monkeypatch)
 
 
 @pytest.mark.parametrize('duration', [2.5, 6, 10])
-def test_hailuo_sends_exact_local_png_without_saved_url(setup, monkeypatch, duration):
-    import base64
+def test_hailuo_sends_public_https_reference_without_old_saved_url(setup, monkeypatch, duration):
     _, session, store, image, root = setup
     Path(str(image) + '.source.json').unlink()
     monkeypatch.setattr(ev, 'source_reference', Mock(side_effect=AssertionError('Hailuo must not require URLs')))
@@ -330,9 +334,7 @@ def test_hailuo_sends_exact_local_png_without_saved_url(setup, monkeypatch, dura
     body = session.post.call_args.kwargs['json']
     assert body['model'] == ev.HAILUO_MODEL and body['operation'] == 'generate'
     inputs = body['input']
-    encoded = inputs.pop('image')
-    assert encoded.startswith('data:image/png;base64,')
-    assert base64.b64decode(encoded.split(',', 1)[1]) == image.read_bytes()
+    assert inputs.pop('image') == 'https://h.uguu.se/fixture.png'
     assert inputs == {'prompt': 'wave', 'duration': 6, 'resolution': '768p', 'aspect_ratio': '16:9', 'generate_audio': False}
 
 
