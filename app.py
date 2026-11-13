@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.14-dev"
+VERSION = "2.0.15-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -565,6 +565,30 @@ def mask(key):
     return "•" * max(4, min(len(key) - 4, 60)) + key[-4:]
 
 
+def _record_error_traceback():
+    """Persist the full worker traceback with configured credentials removed."""
+    secrets = []
+    def leaves(value):
+        if isinstance(value, str) and value:
+            secrets.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                leaves(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                leaves(item)
+    try:
+        for name, value in load_cfg().items():
+            if 'key' in name.lower():
+                leaves(value)
+    except Exception:
+        pass
+    from quota_info import clean
+    text = clean(traceback.format_exc(), secrets, 16000)
+    pipeline.log(text)
+    return text
+
+
 def progress_cb(stage, done, total, message):
     with LOCK:
         STATE.update({"stage": stage, "done": done, "total": total, "message": message})
@@ -612,9 +636,10 @@ def run_rewrite(rw):
             STATE["error"] = str(e)
     except Exception as e:
         pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
+        error_traceback = _record_error_traceback()
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
-            STATE["log"].append(traceback.format_exc()[-1500:])
+            STATE["log"].append(error_traceback[-1500:])
     finally:
         with LOCK:
             STATE["preparing"] = False
@@ -641,9 +666,10 @@ def run_prepare(audio, provider, mode, use_refs, script=None, rewrite=None):
             STATE["error"] = str(e)
     except Exception as e:
         pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
+        error_traceback = _record_error_traceback()
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
-            STATE["log"].append(traceback.format_exc()[-1500:])
+            STATE["log"].append(error_traceback[-1500:])
     finally:
         with LOCK:
             STATE["preparing"] = False
@@ -678,9 +704,10 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
             STATE["error"] = str(e)
     except Exception as e:
         pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
+        error_traceback = _record_error_traceback()
         with LOCK:
             STATE["error"] = f"{type(e).__name__}: {e}"
-            STATE["log"].append(traceback.format_exc()[-1500:])
+            STATE["log"].append(error_traceback[-1500:])
     finally:
         with LOCK:
             STATE["running"] = False
@@ -710,7 +737,10 @@ def run_youtube_sample(opts,cfg,start,seconds):
         with LOCK:STATE.update(cancelled=True,message='Проба остановлена; готовые части сохранены')
     except (Exception,SystemExit) as error:
         pipeline.log('Проба YouTube: '+str(error))
-        with LOCK:STATE.update(error=str(error))
+        error_traceback = _record_error_traceback()
+        with LOCK:
+            STATE.update(error=str(error))
+            STATE['log'].append(error_traceback[-1500:])
     finally:
         with LOCK:STATE.update(running=False,ended_at=time.time())
         keep_awake(False)
