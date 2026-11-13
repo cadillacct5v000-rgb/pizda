@@ -59,21 +59,10 @@ def test_recovery_does_not_attach_unrelated_or_invalid_reference(tmp_path, kind)
     assert not Path(str(image) + '.source.json').exists()
 
 
-def test_kling_recovers_exact_image_url_from_other_job_without_redrawing(tmp_path, monkeypatch):
+def test_source_note_can_be_recovered_without_changing_the_png(tmp_path):
     image = frame(tmp_path / 'current/frame.png')
     original = image.read_bytes()
     duplicate = frame(tmp_path / 'jobs/old/images/0000.png')
     note = receipt(duplicate)
-    frame(tmp_path / 'jobs/unrelated.png', 'blue')
-    monkeypatch.setattr(ev, 'data_dir', lambda: str(tmp_path))
-    monkeypatch.setattr(netutil, 'CANCEL_CHECK', None)
-    session = Mock(headers={})
-    session.post.return_value = SimpleNamespace(status_code=200, json=lambda: {'id': 'task_recovered'})
-    session.get.return_value = SimpleNamespace(status_code=200, json=lambda: {'status': 'failed', 'error': 'fixture'})
-    client = ev.ElysiumVideo('fixture', model=ev.KLING_MODEL, session=session, store=ProjectStore(tmp_path / 'db'))
-    with pytest.raises(ev.ElysiumVideoError, match='не создал'):
-        client.generate('wave', image, tmp_path / 'out.mp4', 5)
-    assert session.post.call_count == 1
-    assert session.post.call_args.kwargs['json']['input']['image_urls'] == [note['url']]
-    assert image.read_bytes() == original
-    assert cache.source_reference(image) == note
+    assert cache.restore_source(image, [Path(str(duplicate) + '.source.json')])
+    assert image.read_bytes() == original and cache.source_reference(image) == note

@@ -16,7 +16,10 @@ def image_key(scene):
     fingerprint = None
     if reference and Path(reference).is_file():
         fingerprint = hashlib.sha256(Path(reference).read_bytes()).hexdigest()
-    return digest([scene.get('plan_id'), scene.get('prompt'), scene.get('characters'), fingerprint, scene.get('plan_take', 0)])
+    identity = [scene.get('plan_id'), scene.get('prompt'), scene.get('characters'), fingerprint, scene.get('plan_take', 0)]
+    if scene.get('location_reference_signature'):
+        identity.append(scene['location_reference_signature'])
+    return digest(identity)
 
 
 def video_key(scene, image):

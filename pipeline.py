@@ -1674,7 +1674,23 @@ def qa_check(client, scene, path):
         desc = scene.get("raw_prompt") or scene.get("prompt") or ""
         chars = ", ".join(scene.get("characters") or [])
         user = f"Описание кадра: {desc}" + (f"\nПерсонажи по описанию: {chars}" if chars else "") + "\nОцени картинку."
-        j = client.see_json(QA_SYSTEM, user, path)
+        anchor = scene.get("location_reference_path")
+        if anchor and os.path.isfile(anchor):
+            from PIL import Image, ImageOps
+            import tempfile
+            system = QA_SYSTEM + " LEFT panel is the approved room reference, RIGHT panel is the new target. Judge ONLY the RIGHT panel. Compare permanent architecture, doors/windows, furniture and materials against LEFT. A different camera angle, occlusion, people or action is allowed. An unrelated room/layout is a defect. Do not count people/text in LEFT as defects in RIGHT."
+            user += "\nStable location: " + scene.get("location_description", "")
+            with tempfile.TemporaryDirectory(prefix="qa-location-", dir=os.path.dirname(path)) as temp:
+                comparison = os.path.join(temp, "comparison.png")
+                canvas = Image.new("RGB", (1920, 540), "#303030")
+                for n, image in enumerate((anchor, path)):
+                    with Image.open(image) as src:
+                        view = ImageOps.contain(src.convert("RGB"), (960, 540))
+                        canvas.paste(view, (n * 960 + (960 - view.width) // 2, (540 - view.height) // 2))
+                canvas.save(comparison)
+                j = client.see_json(system, user, comparison)
+        else:
+            j = client.see_json(QA_SYSTEM, user, path)
         ok = bool(j.get("ok", True))
         try:
             score = float(j.get("score") or (8 if ok else 3))
@@ -1848,6 +1864,9 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     os.makedirs(img_dir, exist_ok=True)
     state_path = os.path.join(job_dir, "images.json")
     if only is not None:
+        from scene_continuity import affected
+        indices = affected(scenes, [s["index"] for s in only])
+        only = [s for s in scenes if s["index"] in indices]
         for s in only:
             redo_files(job_dir, s["index"])
     state = read_json(state_path, {})
@@ -1875,7 +1894,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     rejected = set()
     failures = {}
     # Secret Slider: свои сцены (по кругу) — одним пакетом, до начала остальных
-    if "slider" in ctx["bases"] and only is None:
+    if "slider" in ctx["bases"] and only is None and not any(s.get("location_id") for s in scenes):
         mine = [s for s in todo if base_of(provider_chain(ctx, s["index"])[0]) == "slider"] if len(ctx["bases"]) > 1 else list(todo)
         ok = slider_batch(ctx, mine, img_dir, progress)
         for s in mine:
@@ -1931,7 +1950,15 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         scene_refs = [refs[n] for n in s.get("characters", []) if n in refs]
         if s.get("source_reference"):
             scene_refs.insert(0, s["source_reference"])
-            s = {**s, "prompt": s["prompt"] + " The first attached image is SOURCE STYLE/COMPOSITION ONLY. Create a NEW redesigned image, change details and props; do not reproduce its exact pixels, text or logos."}
+            s = {**s, "prompt": s["prompt"] + " The attached source-video frame is a SOURCE STYLE/COMPOSITION reference. Create new original artwork with the requested action and framing; preserve architectural layout, permanent furniture and materials. Do not reproduce exact pixels, text or logos."}
+        anchor = s.get("location_anchor_index")
+        if anchor is not None and anchor != s["index"]:
+            anchor_path = os.path.join(img_dir, f"{anchor:04d}.png")
+            if not os.path.isfile(anchor_path) or (state.get(str(anchor)) or {}).get("ok") is False:
+                raise RuntimeError(f"Не готов опорный кадр локации: план {anchor + 1}. Зависимые кадры не отправлены; готовое сохранено.")
+            scene_refs.insert(0, anchor_path)
+            s = {**s, "location_reference_path": anchor_path, "prompt": s["prompt"] +
+                 " The FIRST attached image is the APPROVED LOCATION ANCHOR. Preserve its room layout, permanent furniture, doors, windows, finishes and colors across this shot. Use it for the environment ONLY; do not copy its people, poses or action. Any source-style reference after it is secondary. Follow the current shot's action and camera angle."}
         model = draw(s, path, scene_refs)
         if model and ctx.get("qa") and not CANCEL.is_set():
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
@@ -1969,7 +1996,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             if cands:
                 if os.path.exists(path):
                     cands.append((score, path))
-                best = max(cands, key=lambda c: c[0])
+                best = (score, path) if ok and os.path.exists(path) else max(cands, key=lambda c: c[0])
                 if not ok:
                     with lock:
                         QA_STATS["kept_bad"] += 1
@@ -2006,8 +2033,15 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             except Exception:
                 pass
 
+    import scene_continuity
+    def work_group(group):
+        for item in group:
+            check_cancel()
+            work(item)
+            if item.get("location_id") and not (state.get(str(item["index"])) or {}).get("ok"):
+                raise RuntimeError(f"Не получен кадр локации в плане {item['index'] + 1}. Следующие кадры этой локации не отправлены; готовое сохранено.")
     with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
-        list(ex.map(work, todo))
+        list(ex.map(work_group, scene_continuity.grouped(todo)))
     check_cancel()
     failed = [s for s in todo if s["index"] not in rejected and not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
     if failed:
@@ -2021,7 +2055,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
 
     # кадры, которые пользователь отметил «Перерисовать», пока шли остальные
     while True:
-        batch = take_redo()
+        from scene_continuity import affected
+        batch = affected(scenes, take_redo())
         again = [s for s in scenes if s["index"] in batch]
         if not again:
             break
@@ -3144,10 +3179,12 @@ def managed_pools():
             pool.shutdown(wait=True, cancel_futures=True)
 
 
-def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None):
+def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None, location_continuity=False):
     profile = read_json(os.path.join(job_dir, "source_profile.json"))
     identity = {"style": style_key, "quality": quality, "refs": bool(use_refs), "hd": bool(hd),
                 "profile": profile, "schema": PROMPT_SCHEMA, "storyboard": board_id}
+    if location_continuity:
+        identity["location_continuity"] = 1
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
     directory = os.path.join(job_dir, "visual_" + digest)
     os.makedirs(directory, exist_ok=True)
@@ -3246,7 +3283,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         scenes = montage.map_scenes(profile, tr["words"], duration, FPS)
         motion = False
         progress("scenes", len(scenes), len(scenes), f"монтаж исходника: режим {mode}, длительности и склейки по исходным планам")
-    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None)
+    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None, bool(cfg.get("location_continuity")))
     LAST_JOB_DIR = job_dir
     base += "_" + visual_id
     out_mp4 = os.path.join(out_dir, base + ".mp4")
@@ -3299,6 +3336,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
                 base += "_preview_" + sb.digest(preview_range)[:8]
                 out_mp4 = os.path.join(out_dir, base + ".mp4")
                 progress("start", 0, 0, f"предпросмотр: видео только для выбранного отрезка ({len(scenes)} фрагментов)")
+        if cfg.get("location_continuity"):
+            import scene_continuity
+            scenes = scene_continuity.prepare(scenes, llm, job_dir, progress)
         if storyboard:
             write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
             progress("scenes", len(scenes), len(scenes), "планы текущей сборки")

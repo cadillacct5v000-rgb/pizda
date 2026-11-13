@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.10-dev"
+VERSION = "2.0.11-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -236,9 +236,9 @@ def build_report():
     with LOCK:
         st = dict(STATE)
     lines = [f"Kadro.Gen {VERSION} · {platform.system()} {platform.release()} · папка данных: {'рядом с программой' if data_dir() == app_dir() else data_dir()}",
-             f"сервисы: {', '.join(cfg.get('image_providers') or []) or '—'} · режим: {cfg.get('mode')} · {cfg.get('quality')} · моушн: {cfg.get('motion')} · HD: {cfg.get('hd_images')} · субтитры: {cfg.get('subtitles')}",
+             f"сервисы: {', '.join(cfg.get('image_providers') or []) or '—'} · режим: {cfg.get('mode')} · {cfg.get('quality')} · моушн: {cfg.get('motion')} · HD: {cfg.get('hd_images')} · субтитры: {cfg.get('subtitles')} · единые локации: {cfg.get('location_continuity', False)}",
              f"речь: {cfg.get('stt_engine')} · тексты: {cfg.get('llm_engine')} ({cfg.get('llm_model')}) · источник: {cfg.get('source')} · озвучка: {cfg.get('tts_service')}",
-             f"видео: {cfg.get('video_engine', 'providers')} · модель Elysium: {cfg.get('elysium_video_model', 'google/gemini-omni-flash-1.2')} · Kling: {cfg.get('elysium_kling_mode', 'std')} · разрешение Gemini: {cfg.get('elysium_video_resolution', '720p')} · оживить первые: {cfg.get('video_first', 0)}",
+             f"видео: {cfg.get('video_engine', 'providers')} · модель Elysium: {cfg.get('elysium_video_model', 'google/gemini-omni-flash-1.2')} · Kling: {cfg.get('elysium_kling_mode', 'std')} · разрешение Elysium: {cfg.get('elysium_video_resolution', '720p')} · оживить первые: {cfg.get('video_first', 0)}",
              f"ключи введены: {keys}"]
     if st.get("error"):
         lines += ["", "ОШИБКА: " + str(st["error"])]
@@ -520,6 +520,7 @@ def save_cfg(cfg):
     cfg.setdefault("openai_api_key", "")
     cfg.setdefault("openai_model", "gpt-4.1-mini")
     cfg.setdefault("video_engine", "providers")
+    cfg.setdefault("location_continuity", False)
     cfg.setdefault("elysium_video_resolution", "720p")
     cfg.setdefault("elysium_video_model", "google/gemini-omni-flash-1.2")
     cfg.setdefault("elysium_kling_mode", "std")
@@ -1144,6 +1145,7 @@ class Api:
             "youtube_browser": cfg.get("youtube_browser", ""), "youtube_cookie_file": cfg.get("youtube_cookie_file", ""),
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
             "elysium_video_model": cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), "elysium_kling_mode": cfg.get("elysium_kling_mode", "std"),
+            "location_continuity": bool(cfg.get("location_continuity", False)),
             "video_engine": cfg.get("video_engine", "providers"), "elysium_video_resolution": cfg.get("elysium_video_resolution", "720p"),
             "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
             "openai": mask(cfg.get("openai_api_key", "")),
@@ -1212,14 +1214,19 @@ class Api:
             if k + "_base_url" in data:
                 v = str(data[k + "_base_url"] or "").strip().rstrip("/")
                 cfg[k + "_base_url"] = v if v.startswith(("http://", "https://")) else ""
+        if "location_continuity" in data:
+            cfg["location_continuity"] = bool(data["location_continuity"])
         if data.get("video_engine") in ("providers", "elysium"):
             cfg["video_engine"] = data["video_engine"]
-        if data.get("elysium_video_model") in ("google/gemini-omni-flash-1.2", "kling-3.0/video", "hailuo/2-3-image-to-video-standard-provider-4"):
+        if data.get("elysium_video_model") in ("google/gemini-omni-flash-1.2", "kling-3.0/video", "hailuo/2-3-image-to-video-standard-provider-4", "x-ai/grok-imagine-video"):
             cfg["elysium_video_model"] = data["elysium_video_model"]
         if data.get("elysium_kling_mode") in ("std", "pro"):
             cfg["elysium_kling_mode"] = data["elysium_kling_mode"]
-        if data.get("elysium_video_resolution") in ("720p", "1080p"):
+        resolutions = ("480p", "720p", "1080p") if cfg.get("elysium_video_model") == "x-ai/grok-imagine-video" else ("720p", "1080p")
+        if data.get("elysium_video_resolution") in resolutions:
             cfg["elysium_video_resolution"] = data["elysium_video_resolution"]
+        elif cfg.get("elysium_video_resolution") not in resolutions:
+            cfg["elysium_video_resolution"] = "720p"
         if data.get("mode") in pipeline.MODES:
             cfg["mode"] = data["mode"]
         if style_key(data.get("style")):
@@ -2202,6 +2209,7 @@ def main():
         import syntx_api
         import storyboard
         import public_images
+        import scene_continuity
         report = sys.argv[sys.argv.index('--self-test-unified') + 1]
         with tempfile.TemporaryDirectory(prefix='kadrogen-selftest-') as temporary:
             root = Path(temporary)

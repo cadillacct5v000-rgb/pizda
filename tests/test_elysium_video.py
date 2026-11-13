@@ -74,7 +74,7 @@ def test_resume_known_task_does_not_generate_twice(setup):
     assert session.post.call_count == 1
     body = session.post.call_args.kwargs['json']
     assert body['model'] == ev.MODEL and body['operation'] == 'generate'
-    assert body['input']['first_frame_url'] == 'https://cdn.example/frame.png'
+    assert body['input']['first_frame_url'] == 'https://h.uguu.se/fixture.png'
     assert body['input']['duration'] == 5
 
 
@@ -88,20 +88,18 @@ def test_rejected_post_keeps_error_code_without_auto_retry(setup, status):
     assert session.post.call_count == 1
 
 
-def test_missing_source_url_stops_before_submission(setup):
-    client, session, _, image, root = setup
+@pytest.mark.parametrize('model', [ev.MODEL, ev.KLING_MODEL, ev.GROK_MODEL])
+def test_missing_or_outdated_source_url_uses_current_hosted_image(setup, model):
+    _, session, store, image, root = setup
     Path(str(image) + '.source.json').unlink()
-    with pytest.raises(ev.ElysiumVideoError, match='сохранённая HTTPS'):
-        client.generate('wave', image, root / 'out.mp4', 5)
-    session.post.assert_not_called()
-
-
-def test_changed_image_cannot_reuse_old_url(setup):
-    client, session, _, image, root = setup
     Image.new('RGB', (32, 18), 'blue').save(image)
-    with pytest.raises(ev.ElysiumVideoError, match='сохранённая HTTPS'):
+    client = ev.ElysiumVideo('test-secret', model=model, store=store, session=session)
+    session.post.return_value = response({'id': 'hosted_task'})
+    session.get.return_value = response({'status': 'failed', 'error': 'fixture'})
+    with pytest.raises(ev.ElysiumVideoError, match='fixture'):
         client.generate('wave', image, root / 'out.mp4', 5)
-    session.post.assert_not_called()
+    inputs = session.post.call_args.kwargs['json']['input']
+    assert inputs.get('first_frame_url') == 'https://h.uguu.se/fixture.png' or inputs.get('image_urls') == ['https://h.uguu.se/fixture.png']
 
 
 def test_completed_download_has_no_provider_auth_and_keeps_task(setup, monkeypatch):
@@ -271,7 +269,7 @@ def test_kling_payload_uses_catalog_schema_and_keeps_failed_id(setup, mode, dura
     assert session.post.call_count == 1
     body = session.post.call_args.kwargs['json']
     assert body == {'model': 'kling-3.0/video', 'operation': 'generate', 'prompt': 'wave',
-                    'input': {'prompt': 'wave', 'duration': expected, 'image_urls': ['https://cdn.example/frame.png'],
+                    'input': {'prompt': 'wave', 'duration': expected, 'image_urls': ['https://h.uguu.se/fixture.png'],
                               'mode': mode, 'sound': False, 'aspect_ratio': '16:9',
                               'multi_shots': False, 'multi_prompt': []}}
     assert session.get.call_count == 2
@@ -323,7 +321,6 @@ def test_video_model_settings_save_without_changing_images_or_voice(monkeypatch)
 def test_hailuo_sends_public_https_reference_without_old_saved_url(setup, monkeypatch, duration):
     _, session, store, image, root = setup
     Path(str(image) + '.source.json').unlink()
-    monkeypatch.setattr(ev, 'source_reference', Mock(side_effect=AssertionError('Hailuo must not require URLs')))
     client = ev.ElysiumVideo('test-secret', model=ev.HAILUO_MODEL, store=store, session=session)
     session.post.return_value = response({'id': 'hailuo_task'})
     session.get.return_value = response({'status': 'failed', 'error': 'fixture failure'})
@@ -380,4 +377,36 @@ def test_hailuo_check_and_config_use_existing_elysium_key(setup, monkeypatch):
     assert cfg['elysium_api_key'] == 'test-secret' and cfg['tts_service'] == 'elevenlabs'
     assert cfg['image_providers'] == ['fastgen']
     assert len({pipeline.make_context({'video_engine': 'elysium', 'elysium_video_model': model}, [])['video_identity']
-                for model in ev.MODELS}) == 3
+                for model in ev.MODELS}) == 4
+
+
+@pytest.mark.parametrize('resolution', ['480p', '720p', '1080p'])
+def test_grok_image_to_video_schema_and_separate_cache(setup, resolution):
+    _, session, store, image, root = setup
+    Path(str(image) + '.source.json').unlink()
+    client = ev.ElysiumVideo('test-secret', model=ev.GROK_MODEL, resolution=resolution, store=store, session=session)
+    session.post.return_value = response({'id': 'grok_task_' + resolution})
+    session.get.return_value = response({'status': 'failed', 'error': 'fixture'})
+    for _ in range(2):
+        with pytest.raises(ev.ElysiumVideoError, match='fixture'):
+            client.generate('wave', image, root / 'out.mp4', 2.5)
+    assert session.post.call_count == 1
+    assert session.post.call_args.kwargs['json'] == {'model': 'x-ai/grok-imagine-video', 'operation': 'image-to-video', 'prompt': 'wave',
+        'input': {'prompt': 'wave', 'duration': '6', 'image_urls': ['https://h.uguu.se/fixture.png'],
+                  'index': 0, 'aspect_ratio': '16:9', 'resolution': resolution, 'mode': 'normal'}}
+
+
+def test_grok_catalog_check_uses_image_to_video_operation(setup):
+    _, session, store, *_ = setup
+    session.get.side_effect = [response({}), response({'data': [{'id': ev.GROK_MODEL, 'operations': [{'name': 'image-to-video'}]}]})]
+    client = ev.ElysiumVideo('test-secret', model=ev.GROK_MODEL, store=store, session=session)
+    assert ev.GROK_MODEL in client.check()
+    session.post.assert_not_called()
+
+
+def test_grok_480p_does_not_carry_over_to_gemini(monkeypatch):
+    cfg = {'elysium_video_model': ev.GROK_MODEL, 'elysium_video_resolution': '480p'}
+    monkeypatch.setattr(app, 'load_cfg', lambda: dict(cfg))
+    monkeypatch.setattr(app, 'save_cfg', lambda value: cfg.update(value))
+    app.Api().save_config({'elysium_video_model': ev.MODEL})
+    assert cfg['elysium_video_resolution'] == '720p'

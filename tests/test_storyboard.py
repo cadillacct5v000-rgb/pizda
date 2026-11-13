@@ -283,8 +283,9 @@ def test_successful_publish_replaces_corrupt_cached_image(profile,tmp_path):
     with Image.open(broken) as image:assert image.size==(32,32)
 
 
+@pytest.mark.parametrize('location_mode', [False, True])
 @pytest.mark.parametrize('mode,missing', [('images',0),('mixed',1),('video',2)])
-def test_storyboard_honours_images_and_source_style_without_video_access(profile,audio,tmp_path,monkeypatch,mode,missing):
+def test_storyboard_honours_images_and_source_style_without_video_access(profile,audio,tmp_path,monkeypatch,mode,missing,location_mode):
     original=board(profile)
     job=tmp_path/'job';job.mkdir();pipeline.write_json(str(job/'source_profile.json'),profile)
     api=Mock();api.usage.return_value={'capabilities':{'video.generate':False},'account_limits':{}}
@@ -295,12 +296,18 @@ def test_storyboard_honours_images_and_source_style_without_video_access(profile
         return 'fixture'
     ctx={'api':api,'providers':['fastgen'],'bases':['fastgen'],'fallback':[],
          'gates':{'fastgen':Mock(threads=1)},'image_gen':{'fastgen':image}}
-    monkeypatch.setattr(pipeline,'load_config',lambda:{'style':'custom','custom_style':'','quality':'speed'})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'style':'custom','custom_style':'','quality':'speed','location_continuity':location_mode})
     monkeypatch.setattr(pipeline,'resolve_source',lambda *a:(audio,str(job),'fixture'))
     monkeypatch.setattr(pipeline,'transcribe',lambda *a:{'text':original['script'],'words':words()})
     monkeypatch.setattr(pipeline,'make_context',lambda *a:ctx)
     monkeypatch.setattr(pipeline,'make_text_engine',lambda *a:('fastgen',api,'fastgen',api))
-    def forbidden(*args,**kwargs):raise AssertionError('Source storyboard style must not be replaced by manual style generation')
+    classified_batches=[]
+    def forbidden(self, system, user, **kwargs):
+        if location_mode and system.startswith('Group shots'):
+            batch=json.loads(user.split('Reference JSON:\n')[1])['shots']
+            classified_batches.append([x['index'] for x in batch])
+            return {'locations':[], 'assignments':[{'index':x['index'],'location_id':None} for x in batch]}
+        raise AssertionError('Source storyboard style must not be replaced by manual style generation')
     monkeypatch.setattr(pipeline.LLM,'chat_json',forbidden)
     kwargs={'audio_path':audio,'script_text':original['script'],'provider':'fastgen','out_dir':str(tmp_path/'output'),
             'storyboard':original,'style_key':'custom','mode':mode,'video_first':0}
@@ -323,6 +330,10 @@ def test_storyboard_honours_images_and_source_style_without_video_access(profile
         assert profile['visual_style']['description'] in scene['prompt']
         expected=profile['montage']['shots'][scene['source_shot']]['reference_frame']
         assert refs[0]==expected
+
+    if location_mode:
+        assert classified_batches
+        if mode=='images':assert classified_batches==[[0],[0,1]]
 
 
 def test_source_profile_custom_style_does_not_require_manual_description(profile,monkeypatch):

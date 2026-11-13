@@ -309,17 +309,32 @@ with sync_playwright() as p:
  assert page.locator('#elysium_video_model').input_value()=='kling-3.0/video'
  assert page.locator('#elysium_kling_mode').input_value()=='pro'
  assert app.load_cfg()['elysium_video_model']=='kling-3.0/video'
- page.locator('#elysium_video_model').select_option('hailuo/2-3-image-to-video-standard-provider-4')
- page.wait_for_function("elysiumVideoModel === 'hailuo/2-3-image-to-video-standard-provider-4'")
+ page.locator('#elysium_video_model').select_option('x-ai/grok-imagine-video')
+ page.wait_for_function("elysiumVideoModel === 'x-ai/grok-imagine-video'")
  page.wait_for_timeout(300)
  page.evaluate('loadConfig(true)')
  page.wait_for_selector('#elysium_video_model')
- assert page.locator('#elysium_video_model').input_value()=='hailuo/2-3-image-to-video-standard-provider-4'
- assert page.locator('#elysium_video_resolution').count()==0
+ assert page.locator('#elysium_video_model').input_value()=='x-ai/grok-imagine-video'
+ page.locator('#elysium_video_resolution').select_option('480p')
+ page.wait_for_function("elysiumVideoResolution === '480p'")
+ page.wait_for_timeout(300)
+ assert app.load_cfg()['elysium_video_resolution']=='480p'
  assert page.locator('#elysium_kling_mode').count()==0
  assert 'Uguu' in page.locator('#dropzone').text_content()
+ page.locator('#location_continuity').select_option('on')
+ page.wait_for_function('locationContinuity === true')
+ page.wait_for_timeout(300)
+ page.evaluate('loadConfig(true)')
+ page.wait_for_selector('#location_continuity')
+ assert page.locator('#location_continuity').input_value()=='on'
+ assert app.load_cfg()['location_continuity'] is True
  assert 'data URI' not in page.locator('#dropzone').text_content()
- assert app.load_cfg()['elysium_video_model']=='hailuo/2-3-image-to-video-standard-provider-4'
+ assert app.load_cfg()['elysium_video_model']=='x-ai/grok-imagine-video'
+ page.locator('#elysium_video_model').select_option('google/gemini-omni-flash-1.2')
+ page.wait_for_function("elysiumVideoModel === 'google/gemini-omni-flash-1.2'")
+ page.wait_for_timeout(300)
+ assert page.locator('#elysium_video_resolution').input_value()=='720p'
+ assert app.load_cfg()['elysium_video_resolution']=='720p'
 
  assert app.load_cfg()['image_providers']==['fastgen']
  assert not errors,errors
