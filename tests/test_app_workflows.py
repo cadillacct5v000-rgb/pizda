@@ -163,7 +163,7 @@ class AppWorkflows(unittest.TestCase):
     def test_queue_stops_after_cancelled_item(self):
         for text in ['First', 'Second']:
             self.api.queue_add({'source': 'script', 'script': text, 'tts': 'edge'})
-        def stop_job(*args):
+        def stop_job(*args, **kwargs):
             app.STATE['cancelled'] = True
         with patch.object(app, 'run_job', side_effect=stop_job) as worker, patch.object(app.pipeline, 'log'):
             app.run_queue({'provider': ['fastgen'], 'mode': 'images', 'style': 'ultrareal', 'use_refs': False, 'subtitles': False, 'motion': False, 'tts': 'edge', 'video_first': 0, 'hd': False})

@@ -199,13 +199,15 @@ def write_ass(words,path,*,preset='source',profile=None,width=1920,height=1080,p
     width,height=int(width),int(height)
     if width<160 or height<90:raise ValueError('Неверный размер кадра.')
     accent=_ass_color(source_accent(profile));foreground='&H00F4F1E9'
+    font=((profile or {}).get('channel_design') or {}).get('font','Arial')
+    if font not in ('Arial','Intro Demo Black CAPS'):font='Arial'
     size=max(18,round(height*(.044 if preset=='minimal' else .054)));margin=max(20,round(height*.075));align=8 if position=='top' else 2
     border=3 if preset=='panel' else 1
     label_align=1 if position=='top' else 7
     header=(f'[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 2\nScaledBorderAndShadow: yes\n'
             '[V4+ Styles]\nFormat: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding\n'
-            f'Style: Caption,Arial,{size},{foreground},{accent},&H00201B18,&H90130F0D,-1,0,0,0,100,100,0,0,{border},2.5,0,{align},{round(width*.10)},{round(width*.10)},{margin},1\n'
-            f'Style: Label,Arial,{max(16,round(height*.035))},{accent},{accent},&H001B1714,&HA0181412,-1,0,0,0,100,100,0,0,3,10,0,{label_align},{round(width*.065)},{round(width*.065)},{round(height*.08)},1\n'
+            f'Style: Caption,{font},{size},{foreground},{accent},&H00201B18,&H90130F0D,-1,0,0,0,100,100,0,0,{border},2.5,0,{align},{round(width*.10)},{round(width*.10)},{margin},1\n'
+            f'Style: Label,{font},{max(16,round(height*.035))},{accent},{accent},&H001B1714,&HA0181412,-1,0,0,0,100,100,0,0,3,10,0,{label_align},{round(width*.065)},{round(width*.065)},{round(height*.08)},1\n'
             '[Events]\nFormat: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n')
     lines=[header]
     def emit(start,end,style,text):

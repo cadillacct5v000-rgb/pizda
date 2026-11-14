@@ -214,10 +214,11 @@ def _creative_batch(query, prompt, signature, compatible, cache, paths, batch, s
 
 def create(script, profile, query, directory, progress=None, *, reuse_from=()):
     shots = (profile or {}).get('montage', {}).get('shots') or []
-    if not shots:
+    content_only=bool((profile or {}).get('content_only'))
+    if not shots and not content_only:
         raise StoryboardError('Сначала выполните анализ YouTube в режиме редизайна видео.')
     script = script.strip()
-    mean = sum(s['duration'] for s in shots) / len(shots)
+    mean = sum(s['duration'] for s in shots) / len(shots) if shots else 6.
     direction = (profile or {}).get('creative_direction')
     limit = max(8, min(24, round(mean * 2.4)))
     if direction:
@@ -254,6 +255,15 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                   '{"plans":[{"index":0,"source_shot":0,"confidence":"high|medium|low",'
                   '"reason":"short Russian explanation","prompt":"English visual prompt","motion":"English motion"}]}.'
                   '\nReference JSON:\n' + json.dumps({'passages': batch, 'source_shots': references}, ensure_ascii=False))
+        if content_only:
+            prompt=('Create NEW original visual plans for the supplied narration using the SAVED CHANNEL DESIGN. '
+                    'No source video was analysed; do not imitate source shots, source editing or source imagery. '
+                    'Set source_shot=null for every plan. Keep the channel character design and layout unchanged. '
+                    'Generate images without readable text; put factual short labels into overlay_text when needed. '
+                    'Return JSON {"plans":[{"index":0,"source_shot":null,"confidence":"high","reason":"...",'
+                    '"prompt":"English visual prompt","motion":"static camera","editorial_role":"explain","shot_size":"diagram","overlay_text":""}]}. '
+                    '\nReference JSON:\n'+json.dumps({'passages':batch,'source_shots':[],
+                    'approved_design':profile['visual_style']},ensure_ascii=False))
         if direction:
             import studio
             prompt += '\n' + studio.brief(direction)
@@ -276,7 +286,7 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                 if cached.get('signature') not in compatible:
                     continue
                 value = _creative_result(cached['result']) if direction else cached['result']
-                _validated_plans(value, batch, source, bool(direction))
+                _validated_plans(value, batch, source, bool(direction) or content_only)
                 result = value
                 break
             except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -290,7 +300,7 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
             else:
                 result = model_reply.query(query, prompt, receipt, signature, atomic, progress)
         try:
-            plans = _validated_plans(result, batch, source, bool(direction))
+            plans = _validated_plans(result, batch, source, bool(direction) or content_only)
         except (KeyError, TypeError, ValueError) as exc:
             model_reply.invalidate(receipt)
             raise StoryboardError('Модель вернула неполную раскадровку. Повторите: готовые пачки сохранены.') from exc
@@ -303,7 +313,8 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                          'confidence': plan.get('confidence') if plan.get('confidence') in ('high', 'medium') else 'low',
                          'reason': str(plan.get('reason') or '')[:500], 'prompt': plan['prompt'].strip(),
                          'motion': str(plan.get('motion') or 'static camera')[:2000], 'duration': None, 'take': 0})
-            if direction:
+            if direction or content_only:
+                import studio
                 rows[-1].update(editorial_role=plan.get('editorial_role') if plan.get('editorial_role') in studio.ROLES else 'explain',
                                 shot_size=plan.get('shot_size') if plan.get('shot_size') in studio.SHOTS else 'medium',
                                 overlay_text=str(plan.get('overlay_text') or '')[:45])
@@ -328,6 +339,9 @@ def edit(board, updates):
             if not isinstance(value, str) or len(value) > maximum or (field not in ('motion','overlay_text') and not value.strip()):
                 raise StoryboardError(f'Некорректное поле плана: {field}.')
             row[field] = value.strip()
+        if 'animate' in update:
+            if update['animate'] is not None and type(update['animate']) is not bool:raise StoryboardError('Выбор оживления должен быть отметкой.')
+            row['animate'] = update['animate']
         shot = update.get('source_shot', row['source_shot'])
         if shot is not None and (type(shot) is not int or shot not in shot_ids):
             raise StoryboardError('Выбран неизвестный исходный план.')
@@ -472,6 +486,7 @@ def scenes(board, aligned, fps=25):
                      'source_shot': row['source_shot'], 'source_visual': shot.get('description', ''),
                      'source_redesign': row['prompt'], 'source_motion': row['motion'],
                      'plan_id': row['id'], 'plan_take': row['take'], 'transition_in': {'type': 'cut', 'duration': 0.}}
+            if 'animate' in row:scene['animate']=row['animate']
             for field in ('overlay_text','editorial_role','shot_size'):
                 if row.get(field):scene[field]=row[field]
             if shot.get('reference_frame'):

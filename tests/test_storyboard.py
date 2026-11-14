@@ -349,7 +349,7 @@ def test_source_profile_custom_style_does_not_require_manual_description(profile
     assert result['ok'] and len(started)==1
     assert started[0]['args'][2]=='images'
     assert started[0]['args'][6] is False
-    assert started[0]['args'][-4]['visual_style']==profile['visual_style']
+    assert started[0]['args'][-6]['visual_style']==profile['visual_style']
 
 
 def test_storyboard_forecast_uses_selected_mode_and_zero_video_access(profile,monkeypatch):

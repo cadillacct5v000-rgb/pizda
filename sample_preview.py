@@ -32,10 +32,16 @@ def prepare(cfg, rewrite, directory, *, start=0, seconds=30, progress=None):
     text=transcript.get('text','').strip()
     if not text:raise ValueError('В выбранном отрезке не распознана речь. Выберите другой момент ролика.')
     netutil.check_cancel()
-    say('анализирую стиль и склейки только выбранного отрезка')
-    profile=source_analysis.analyse(clip,text,{**cfg,'source_montage':True},folder,say)
-    import source_narration
-    profile=source_narration.attach(profile,clip,actual,cfg,folder,say)
+    import channel_design
+    design=channel_design.selected(pipeline.data_dir(),cfg)
+    if design:
+        say('использую сохранённый дизайн канала; стиль и склейки отрезка не анализируются')
+        profile=channel_design.content_profile(design,actual)
+    else:
+        say('анализирую стиль и склейки только выбранного отрезка')
+        profile=source_analysis.analyse(clip,text,{**cfg,'source_montage':True},folder,say)
+        import source_narration
+        profile=source_narration.attach(profile,clip,actual,cfg,folder,say)
     profile=studio.with_direction(profile,cfg)
     profile['sample']={'source_id':youtube_source.video_id(rewrite['url']),'start':float(start),
                        'requested_seconds':float(seconds),'source_seconds':actual}

@@ -102,15 +102,15 @@ with sync_playwright() as p:
  page.wait_for_selector('#btn_board_return:not([hidden])')
  assert len(launched)==1
  assert launched[-1][2]=='images'
- assert launched[-1][-2]=={'start':2.,'seconds':20.}
- assert launched[-1][-3]['script'].startswith('A redesigned')
- assert launched[-1][-1] in (25,30,60)
+ assert launched[-1][15]=={'start':2.,'seconds':20.}
+ assert launched[-1][14]['script'].startswith('A redesigned')
+ assert launched[-1][16] in (25,30,60)
  page.locator('#btn_board_return').click()
  page.wait_for_selector('#screen5.active #board_panel:not([hidden])')
  page.locator('#btn_go').click()
  page.wait_for_selector('#screen6.active')
  page.wait_for_function('document.getElementById("btn_again").disabled === false')
- assert len(launched)==2 and launched[-1][-2] is None
+ assert len(launched)==2 and launched[-1][15] is None
  assert launched[-1][2]=='images'
  page.locator('#btn_board_return').click()
  page.wait_for_selector('#screen5.active')
@@ -337,6 +337,48 @@ with sync_playwright() as p:
  assert app.load_cfg()['elysium_video_resolution']=='720p'
 
  assert app.load_cfg()['image_providers']==['fastgen']
+ page.evaluate('openStudio()')
+ page.locator('#studio_dialog button').filter(has_text='Дизайн канала').click()
+ page.wait_for_selector('#channel_design_dialog[open]')
+ page.locator('#cd_name').fill('Channel browser fixture')
+ page.locator('#cd_description').fill('Flat drawing, white background, stable character design.')
+ page.locator('#cd_faces').select_option('blank')
+ page.locator('#cd_palette').fill('#FFFFFF, #BB1111')
+ page.locator('#cd_layout').select_option('minimal')
+ page.locator('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
+ page.wait_for_function('channelDesignActive && !!channelDesignActive.id')
+ saved_design=page.evaluate('channelDesignChoice()')
+ assert saved_design['channel_design_revision']==1
+ assert api.channel_design_get(saved_design['channel_design_id'],1)['profile']['faces']=='blank'
+ page.locator('#cd_font').select_option('Intro Demo Black CAPS')
+ page.locator('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
+ page.wait_for_function('channelDesignActive.revision === 2')
+ page.evaluate('loadConfig(true)')
+ page.wait_for_function('channelDesignActive.revision === 2')
+ assert page.evaluate('opts().channel_design_id')==saved_design['channel_design_id']
+ assert app.load_cfg()['channel_design_revision']==2
+ assert api.channel_design_get(saved_design['channel_design_id'],1)['profile']['font']=='Arial'
+ page.locator('#channel_design_dialog button').filter(has_text='Дизайн текущего исходника').click()
+ page.wait_for_function('channelDesignActive.id === ""')
+ assert app.load_cfg()['channel_design_id']==''
+ page.evaluate("document.getElementById('channel_design_dialog').close();closeStudio();go(5);showStoryboard()")
+ page.wait_for_selector('#screen5.active #board_panel:not([hidden])')
+ # New selector preview and manual checkboxes use local ranking only.
+ page.evaluate("async () => {document.getElementById('animation_strategy').value='key';document.getElementById('animation_limit').value='1';await animationChanged();renderStoryboard();}")
+ page.wait_for_function('animationPreview && animationPreview.ok && animationPreview.limit===1')
+ assert page.evaluate('animationPreview.count')<=1
+ assert page.evaluate('opts().animation.strategy')=='key'
+ assert page.locator('#vf_row').evaluate("e=>getComputedStyle(e).display")=='none'
+ box=page.locator('[data-animate]').first
+ box.uncheck() if box.is_checked() else box.check()
+ page.wait_for_function("document.getElementById('animation_strategy').value==='manual' && boardDirty")
+ assert page.evaluate('typeof boardState.rows[0].animate')=='boolean'
+ page.evaluate('saveStoryboard()')
+ page.wait_for_function('!boardDirty')
+ assert api.get_storyboard(page.evaluate('boardState.id'))['board']['rows'][0]['animate']==page.evaluate('boardState.rows[0].animate')
+ page.evaluate("async () => {document.getElementById('animation_strategy').value='local';await animationChanged();}")
+ page.wait_for_function('animationPreview && animationPreview.ok && animationPreview.count===0')
+ assert app.load_cfg()['animation']['strategy']=='local'
  assert not errors,errors
  b.close()
 print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery, bounded 30-second source trial and marked result-board navigation.')

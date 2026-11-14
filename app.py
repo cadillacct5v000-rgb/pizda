@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.18-dev"
+VERSION = "2.0.19-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -118,7 +118,7 @@ def run_queue(common):
             audio = item.get("audio") if item.get("source") == "mp3" else None
             # стиль у задания свой, если включён «Разный стиль» и выбран; иначе общий
             run_job(audio, common["provider"], common["mode"], style_key(item.get("style"), common["style"]), common["use_refs"], common["subtitles"], common["motion"],
-                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"])
+                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"], channel_design=common.get("channel_design"), animation=common.get("animation"))
             with LOCK:
                 if STATE.get("cancelled"):
                     item["status"] = "stopped"
@@ -197,9 +197,25 @@ def estimate_plan(opts, *, limits=True):
     limit, threads, vlimit = fg_limits(cfg.get("fastgen_api_key", "")) if limits and fg and cfg.get("fastgen_api_key") else (0, 0, 0)
     vf = _vf(opts.get("video_first", cfg.get("video_first", 0)))
     clips = scenes if mode == "video" else len({i for i in range(scenes) if i < vf or (mode == "mixed" and i % 2 == 0)})
+    design=selected_channel_design(opts,cfg)
+    import animation_selection
+    animation=animation_selection.settings(opts.get('animation',cfg.get('animation')))
+    strategy=animation['strategy']
+    local_design=bool(strategy=='local' or (strategy=='legacy' and design and design.get('motion_policy','local')=='local'))
+    if strategy in ('key','hook'):clips=min(scenes,animation['limit'])
+    elif strategy=='manual':
+        board=load_storyboard(opts['storyboard_id']) if opts.get('storyboard_id') else None
+        if not board:raise ValueError('Ручной выбор доступен в раскадровке. Сначала подготовьте её.')
+        rows=[{**r,'index':i} for i,r in enumerate(board['rows'])]
+        selected=animation_selection.select(rows,animation)
+        clips=sum(max(1,math.ceil((r.get('duration') or max(.5,len(r['narration'].split())/2.4))/10)) for r in rows if r.get('animate') is True)
+        if clips>animation['limit']:raise ValueError('Выбранные планы превышают лимит видеовставок с учётом длинных фрагментов.')
+    if local_design:clips=0
     per_min = {"images": 0.15, "mixed": 0.7, "video": 1.2}.get(mode, 0.15)
     if mode == "images" and vf:
         per_min = 0.15 + 1.05 * min(1.0, vf / max(1, scenes))  # оживлённые сцены ≈ как в режиме видео
+    if strategy!='legacy':per_min=.15+1.05*clips/max(1,scenes)
+    if local_design:per_min=.15
     # оживление через fast-gen: свой часовой лимит (Video Lite — 15 клипов в час), а на ключе без видео его нет вовсе
     fg_video = fg and cfg.get('video_engine') != 'elysium'
     video_off = bool(fg_video and clips and len(providers) == 1 and vlimit == 0)
@@ -441,21 +457,36 @@ def download_update(url, version, phase):
 THUMBS = {}  # путь -> (mtime, data-url)
 
 
-def make_thumb(path, size=480):
+def make_thumb(path, size=480, overlays=None):
     """Миниатюра картинки как data-url (для галереи в окне)."""
     import base64, io
     from PIL import Image
     try:
         mt = os.path.getmtime(path)
-        cached = THUMBS.get(path)
+        key=(path,size,tuple((a.get('sha256'),a.get('role')) for a in (overlays or [])))
+        cached = THUMBS.get(key)
         if cached and cached[0] == mt:
             return cached[1]
         im = Image.open(path).convert("RGB")
         im.thumbnail((size, size))
+        if overlays:
+            from channel_design import DesignStore
+            store=DesignStore(data_dir());im=im.convert('RGBA')
+            for asset in overlays:
+                with Image.open(store.asset_path(asset)) as original:
+                    layer=original.convert('RGBA')
+                    scale=min(im.width*(.23 if asset['role']=='host' else .09)/layer.width,im.height*.38/layer.height)
+                    layer=layer.resize((max(1,round(layer.width*scale)),max(1,round(layer.height*scale))))
+                    if asset['role']=='host':
+                        position=(round(im.width*.04),im.height-layer.height-round(im.height*.06))
+                    else:
+                        position=(im.width-layer.width-round(im.width*.025),round(im.height*.025))
+                    im.alpha_composite(layer,position)
+            im=im.convert('RGB')
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=80)
         url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
-        THUMBS[path] = (mt, url)
+        THUMBS[key] = (mt, url)
         return url
     except Exception:
         return None
@@ -690,11 +721,11 @@ def keep_awake(on):
         traceback.print_exc()
 
 
-def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None, storyboard=None, preview_range=None, render_fps=None):
+def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None, storyboard=None, preview_range=None, render_fps=None, channel_design=None, animation=None):
     global _VIDEO_RESUME
     with LOCK:
         _VIDEO_RESUME = (run_job, copy.deepcopy((audio, provider, mode, style, use_refs, subtitles, motion,
-                         script, rewrite, tts, voice, video_first, hd, source_profile, storyboard, preview_range, render_fps)))
+                         script, rewrite, tts, voice, video_first, hd, source_profile, storyboard, preview_range, render_fps, channel_design, animation)))
         STATE['video_retry'] = None
     keep_awake(True)
     try:
@@ -704,7 +735,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
             STATE["job_dir"] = d
         out = pipeline.make_video(audio, progress_cb=progress_cb, provider=provider, mode=mode, style_key=style,
                                   use_refs=use_refs, subtitles=subtitles, motion=motion, script_text=script, rewrite=rewrite,
-                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile, reset_cancel=False, storyboard=storyboard, preview_range=preview_range, render_fps=render_fps)
+                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile, reset_cancel=False, storyboard=storyboard, preview_range=preview_range, render_fps=render_fps, channel_design=channel_design, animation=animation)
         with LOCK:
             STATE["result"] = out
     except pipeline.Cancelled:
@@ -729,6 +760,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 
 def run_youtube_sample(opts,cfg,start,seconds):
+    cfg={**cfg,'_channel_design':opts.get('_channel_design')}
     global _VIDEO_RESUME
     with LOCK:
         _VIDEO_RESUME = (run_youtube_sample, copy.deepcopy((opts, cfg, start, seconds)))
@@ -748,7 +780,7 @@ def run_youtube_sample(opts,cfg,start,seconds):
                      motion=bool(opts.get('motion')),hd=bool(opts.get('hd')),video_first=_vf(opts.get('video_first')),
                      tts_service=opts.get('tts') or cfg.get('tts_service'),tts_voice=opts.get('voice'),storyboard=board,
                      source_profile=board['profile'],preview_range={'start':0.,'seconds':target},sample_seconds=target,
-                     render_fps=opts['render_fps'],progress_cb=progress_cb,reset_cancel=False)
+                     render_fps=opts['render_fps'],progress_cb=progress_cb,reset_cancel=False,channel_design=opts.get('_channel_design'), animation=opts.get('animation'))
         with LOCK:STATE['result']=result
     except pipeline.Cancelled:
         with LOCK:STATE.update(cancelled=True,message='Проба остановлена; готовые части сохранены')
@@ -848,8 +880,14 @@ def production_check(opts):
     try:
         estimate=estimate_plan(opts,limits=False)
     except Exception as error:
-        estimate={'ok':False};warnings.append('Не удалось рассчитать прогноз: '+str(error))
+        estimate={'ok':False};blockers.append(str(error))
     clips=estimate.get('clips',0)
+    try:
+        design=selected_channel_design(opts,cfg)
+        if (opts.get('animation') or cfg.get('animation') or {}).get('strategy','legacy') in ('legacy','local') and (design and design.get('motion_policy','local')=='local' or (opts.get('animation') or cfg.get('animation') or {}).get('strategy')=='local'):
+            clips=0;estimate['clips']=0
+            warnings.append('Дизайн канала: монтаж из картинок и готовых слоёв. Платная генерация видеоклипов не запускается.')
+    except (ValueError,OSError) as error:blockers.append(str(error))
     providers=pipeline.normalize_providers(opts.get('providers'))
     access='not_needed' if not clips else 'unverified'
     if clips and cfg.get('video_engine') == 'elysium':
@@ -943,7 +981,159 @@ def check_update():
         return None
 
 
+def selected_channel_design(opts, cfg=None):
+    cfg = load_cfg() if cfg is None else cfg
+    key = opts.get('channel_design_id', cfg.get('channel_design_id'))
+    if not key:return None
+    from channel_design import DesignStore
+    store = DesignStore(data_dir())
+    revision = opts.get('channel_design_revision', cfg.get('channel_design_revision'))
+    profile = store.get(key, revision)
+    for asset in profile['assets']:store.asset_path(asset)
+    return profile
+
+
 class Api:
+    def animation_preview(self, rows, opts=None):
+        try:
+            import animation_selection
+            if not isinstance(rows,list) or len(rows)>2000 or any(not isinstance(r,dict) for r in rows):raise ValueError('Некорректный список планов.')
+            opts=opts or {};cfg=load_cfg()
+            design=selected_channel_design(opts,cfg)
+            scenes=[{**r,'index':i,'channel_design':design} for i,r in enumerate(rows)]
+            return {'ok':True,**animation_selection.select(scenes,opts.get('animation',cfg.get('animation')),opts.get('mode','images'),_vf(opts.get('video_first')))}
+        except (ValueError,OSError,TypeError) as error:return {'ok':False,'error':str(error)}
+
+    def channel_designs(self):
+        from channel_design import DesignStore
+        return {'ok': True, 'profiles': DesignStore(data_dir()).list()}
+
+    def channel_design_get(self, key, revision=None):
+        try:
+            from channel_design import DesignStore
+            return {'ok': True, 'profile': DesignStore(data_dir()).get(key, revision)}
+        except (ValueError, OSError) as error:return {'ok': False, 'error': str(error)}
+
+    def channel_design_seed(self, board_id=None):
+        with LOCK:
+            profile = copy.deepcopy(STATE.get('source_profile') or {})
+            if board_id:
+                try:profile=load_storyboard(board_id)['profile']
+                except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+            else:board_id = STATE.get('active_board_id') or STATE.get('storyboard_id')
+        if not profile and board_id:
+            try:profile=load_storyboard(board_id)['profile']
+            except (ValueError,OSError):pass
+        visual = profile.get('visual_style') or {}
+        return {'ok': True, 'profile': {'name': 'Мой канал', 'description': visual.get('description',''),
+                'palette': visual.get('palette', []), 'faces': 'reference', 'layout': 'source', 'font': 'Arial', 'rules': ''},
+                'has_source': bool(visual)}
+
+    def channel_design_capture(self, name='Мой канал', board_id=None):
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                source=copy.deepcopy(STATE.get('source_profile') or {})
+                if board_id:source=load_storyboard(board_id)['profile']
+                else:board_id=STATE.get('active_board_id') or STATE.get('storyboard_id')
+                if not source and board_id:source=load_storyboard(board_id)['profile']
+                visual=source.get('visual_style') or {}
+                if not visual.get('description'):raise ValueError('Сначала откройте раскадровку с анализом исходника.')
+                shots=(source.get('montage') or {}).get('shots') or []
+                paths=[]
+                for index in dict.fromkeys([0,1,len(shots)//2,len(shots)-1]):
+                    if 0<=index<len(shots):
+                        path=shots[index].get('reference_frame')
+                        if path and Path(path).is_file() and path not in paths:paths.append(path)
+                if not paths:raise ValueError('Опорные кадры исходника недоступны. Откройте сохранённую раскадровку с её файлами.')
+                from channel_design import DesignStore
+                store=DesignStore(data_dir())
+                profile=store.save({'name':name,'description':visual['description'],'palette':visual.get('palette',[]),
+                                    'faces':'reference','layout':'source','font':'Arial','rules':''})
+                for path in paths:profile=store.import_asset(profile['id'],profile['revision'],path,'reference')
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+            return {'ok':True,'profile':profile}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+
+    def channel_design_learn(self,name,url):
+        try:
+            from channel_design import validate
+            import youtube_source
+            validate({'name':name,'description':'pending'})
+            youtube_source.video_id(url)
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                pipeline.CANCEL.clear();STATE.update(preparing=True,message='Однократно изучаю дизайн образца')
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+        keep_awake(True)
+        try:
+            import source_analysis
+            from channel_design import DesignStore
+            cfg=load_cfg();source_analysis._provider(cfg)
+            say=lambda text:progress_cb('prepare',0,1,text)
+            folder=Path(data_dir(),'jobs','channel_learning')
+            video=youtube_source.video(url,Path(data_dir(),'jobs','youtube_sources'),str(Path(pipeline.ffmpeg_bin()).parent),say,
+                                       cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
+            learned=source_analysis.analyse_design(video,cfg,folder,say)
+            pipeline.check_cancel();visual=learned['visual_style'];store=DesignStore(data_dir())
+            profile=store.save({'name':name,'description':visual['description'],'palette':visual['palette'],
+                                'rules':visual['character_design'][:4000],'faces':'reference','font':'Arial','layout':'source'})
+            for frame in learned['reference_frames']:profile=store.import_asset(profile['id'],profile['revision'],frame,'reference')
+            pipeline.check_cancel()
+            with LOCK:
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+            return {'ok':True,'profile':profile}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:
+            _record_error_traceback()
+            return {'ok':False,'error':'Не удалось изучить дизайн: '+str(error)}
+        finally:
+            with LOCK:STATE['preparing']=False
+            keep_awake(False)
+
+    def channel_design_save(self, value, key=None, revision=None):
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                from channel_design import DesignStore
+                store=DesignStore(data_dir());profile=store.save(value,key,revision)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+            return {'ok': True, 'profile': profile}
+        except (ValueError,OSError) as error:return {'ok': False, 'error': str(error)}
+
+    def channel_design_select(self, key, revision=None):
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                profile=selected_channel_design({'channel_design_id':key,'channel_design_revision':revision}) if key else None
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'] if profile else '',channel_design_revision=profile['revision'] if profile else None);save_cfg(cfg)
+            return {'ok': True, 'profile': profile}
+        except (ValueError,OSError) as error:return {'ok': False,'error':str(error)}
+
+    def channel_design_import(self, key, revision, role='reference'):
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+            selected=WINDOW.create_file_dialog(webview.OPEN_DIALOG,allow_multiple=False,file_types=('Изображения (*.png;*.jpg;*.jpeg;*.webp)',))
+            if not selected:return {'ok':False,'cancelled':True}
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Программа уже занята.')
+                from channel_design import DesignStore
+                profile=DesignStore(data_dir()).import_asset(key,revision,selected[0],role)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+            return {'ok':True,'profile':profile}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+
+    def channel_design_remove(self,key,revision,index):
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                from channel_design import DesignStore
+                profile=DesignStore(data_dir()).remove_asset(key,revision,index)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+            return {'ok':True,'profile':profile}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+
     def retry_uncertain_video(self, operation, confirmed=False):
         """Authorize one replacement submission, then resume the exact stopped run."""
         try:
@@ -985,12 +1175,16 @@ class Api:
             if not math.isfinite(start) or start<0 or not math.isfinite(seconds) or not 1<=seconds<=30:
                 raise ValueError('Начало отрезка должно быть от нуля; длительность — от 1 до 30 секунд.')
             options={**opts,'rewrite':rw,'source':'script','script':'','storyboard_id':None,'source_profile_id':None}
+            import animation_selection
+            options['animation']=animation_selection.settings(opts.get('animation',cfg.get('animation')))
+            if options['animation']['strategy']=='manual':raise ValueError('Для ручного выбора используйте предпросмотр готовой раскадровки.')
+            options['_channel_design']=selected_channel_design(opts,cfg)
             options['providers']=pipeline.normalize_providers(options.get('providers'))
             options['render_fps']=pipeline.validate_fps(options.get('render_fps',cfg.get('render_fps',25)))
             if options.get('mode','images') not in pipeline.MODES:raise ValueError('Неверный режим видео.')
             error=self._validate(options,options['providers'])
             if error:raise ValueError(error)
-            source_analysis._provider(cfg)  # Check missing vision credentials before any paid transcription.
+            if not options['_channel_design']:source_analysis._provider(cfg)  # Content-only needs no source vision.
             check=production_check({**options,'rewrite':{'on':False},'script':'Preview narration. '*36})
             if check.get('blockers'):raise ValueError(' '.join(check['blockers']))
             cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
@@ -1208,7 +1402,7 @@ class Api:
             "stt_engine": cfg.get("stt_engine", "fastgen"), "llm_engine": cfg.get("llm_engine", "fastgen"),
             "anthropic_model": cfg.get("anthropic_model", "claude-sonnet-5-5"), "gemini_model": cfg.get("gemini_model", "gemini-3.6-flash"),
             "base_urls": {k: cfg.get(k + "_base_url", "") for k in ("openai", "anthropic", "gemini", "elysium")}, "base_defaults": dict(endpoints.DEFAULTS),
-            "quality": cfg.get("quality", "speed"), "motion": bool(cfg.get("motion", False)), "hd_images": bool(cfg.get("hd_images", False)), "video_first": _vf(cfg.get("video_first", 0)), "render_fps": cfg.get("render_fps", 25),
+            "animation": cfg.get("animation", {"strategy":"legacy","limit":10}), "quality": cfg.get("quality", "speed"), "motion": bool(cfg.get("motion", False)), "hd_images": bool(cfg.get("hd_images", False)), "video_first": _vf(cfg.get("video_first", 0)), "render_fps": cfg.get("render_fps", 25),
             "tts_recent": cfg.get("tts_recent", []), "data_dir": data_dir(), "portable": data_dir() == app_dir(), "updates_supported": platform_support.windows_updates_supported(),
             "source": cfg.get("source", "mp3"), "tts_service": cfg.get("tts_service", "voicegen"), "tts_voice": cfg.get("tts_voice", ""),
             "rewrite": bool(cfg.get("rewrite", False)), "rewrite_engine": cfg.get("rewrite_engine", "fastgen"), "rewrite_source": cfg.get("rewrite_source", "youtube"),
@@ -1218,6 +1412,7 @@ class Api:
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
             "elysium_video_model": cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), "elysium_kling_mode": cfg.get("elysium_kling_mode", "std"),
             "location_continuity": bool(cfg.get("location_continuity", False)),
+            "channel_design_id": cfg.get("channel_design_id", ""), "channel_design_revision": cfg.get("channel_design_revision"),
             "video_engine": cfg.get("video_engine", "providers"), "elysium_video_resolution": cfg.get("elysium_video_resolution", "720p"),
             "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
             "openai": mask(cfg.get("openai_api_key", "")),
@@ -1342,6 +1537,9 @@ class Api:
             cfg["qa_engine"] = data["qa_engine"]
         if "qa_model" in data:
             cfg["qa_model"] = str(data.get("qa_model") or "").strip()
+        if "animation" in data:
+            import animation_selection
+            cfg['animation']=animation_selection.settings(data['animation'])
         if "video_first" in data:
             cfg["video_first"] = _vf(data["video_first"])
         if "rewrite" in data:
@@ -1608,7 +1806,7 @@ class Api:
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or "польском").strip()}
 
     def _validate(self, opts, providers):
-        return self._validate_source(opts) or self._validate_common(providers)
+        return self._validate_source(opts) or self._validate_common(providers,opts)
 
     @staticmethod
     def _tts_key_error(service):
@@ -1640,7 +1838,7 @@ class Api:
             return "Файл озвучки не найден. Выберите mp3 или перетащите его в окно."
         return None
 
-    def _validate_common(self, providers):
+    def _validate_common(self, providers, opts=None):
         cfg = load_cfg()
         if "fastgen" in providers and not cfg.get("fastgen_api_key"):
             return "Введите ключ fast-gen."
@@ -1648,7 +1846,11 @@ class Api:
             eng = cfg.get("qa_engine") or "gemini"
             if not cfg.get(f"{eng}_api_key"):
                 return f"Включён автоотбор картинок, введите ключ {pipeline.QA_ENGINES.get(eng, ('', '', None))[0]} в строке «Автоотбор» или выключите опцию."
-        if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key"):
+        try:design=selected_channel_design(opts or {},cfg)
+        except (ValueError,OSError) as error:return str(error)
+        strategy=((opts or {}).get('animation') or cfg.get('animation') or {}).get('strategy','legacy')
+        local = strategy=='local' or strategy=='legacy' and design and design.get('motion_policy','local')=='local'
+        if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key") and not local:
             return "Для видео через Elysium введите ключ Elysium."
         has_fg = bool(cfg.get("fastgen_api_key"))
         stt = cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper"); llm = cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")
@@ -1696,6 +1898,8 @@ class Api:
         script = (opts.get("script") or "").strip() if opts.get("source") == "script" else None
         rw = self._rewrite_opts(opts)
         if rw:
+            try:rw['_channel_design']=selected_channel_design(opts,cfg)
+            except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
             script = None
             cfg = load_cfg()
             cfg.update({"rewrite": True, "rewrite_engine": rw["engine"], "rewrite_source": rw["source"], "rewrite_url": rw["url"],
@@ -1729,6 +1933,8 @@ class Api:
             return {"ok": False, "error": "Вставьте текст сценария для рерайта."}
         if not cfg.get(pipeline.REWRITE_KEYS[rw["engine"]]):
             return {"ok": False, "error": "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."}
+        try:rw['_channel_design']=selected_channel_design(opts,cfg)
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
         cfg.update({"rewrite": True, "rewrite_engine": rw["engine"], "rewrite_source": rw["source"], "rewrite_url": rw["url"],
                     "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
         save_cfg(cfg)
@@ -1777,7 +1983,9 @@ class Api:
         mode, style, subtitles = opts.get("mode", "images"), style_key(opts.get("style"), pipeline.DEFAULT_STYLE), bool(opts.get("subtitles"))
         use_refs = (load_cfg().get("quality") == "quality")
         custom_style = " ".join(str(opts.get("custom_style") or "").split())
-        if style == pipeline.CUSTOM_STYLE and not custom_style and not source_profile:
+        try:channel_design=selected_channel_design(opts)
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+        if style == pipeline.CUSTOM_STYLE and not custom_style and not source_profile and not channel_design:
             return {"ok": False, "error": "Опишите свой стиль на экране «Режим» или выберите стиль из списка."}
         motion = bool(opts.get("motion")) and not bool(source_profile and source_profile.get("montage"))
         try:
@@ -1785,6 +1993,9 @@ class Api:
         except ValueError as error:
             return {"ok": False, "error": str(error)}
         hd = bool(opts.get("hd"))
+        import animation_selection
+        try:animation=animation_selection.settings(opts.get('animation',load_cfg().get('animation')))
+        except ValueError as error:return {'ok':False,'error':str(error)}
         video_first = _vf(opts.get("video_first"))
         script = (opts.get("script") or "").strip() if opts.get("source") == "script" else None
         rw = self._rewrite_opts(opts)
@@ -1793,6 +2004,8 @@ class Api:
         err = self._validate(opts, provider)
         if err:
             return {"ok": False, "error": err}
+        try:channel_design=selected_channel_design(opts)
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
         check=production_check(opts)
         if check.get('blockers'):
             return {'ok':False,'error':' '.join(check['blockers'])}
@@ -1813,13 +2026,13 @@ class Api:
         voice = (opts.get("voice") or "").strip()
         cfg.update({"image_providers": provider, "mode": mode, "style": style, "custom_style": custom_style, "use_refs": use_refs, "subtitles": subtitles, "motion": motion, "hd_images": hd,
                     "qa_images": bool(opts.get("qa", cfg.get("qa_images", False))), "speed_copies": bool(opts.get("speed", cfg.get("speed_copies", False))),
-                    "source": opts.get("source", cfg.get("source", "mp3")), "tts_service": tts, "tts_voice": voice, "video_first": video_first, "render_fps": render_fps})
+                    "source": opts.get("source", cfg.get("source", "mp3")), "animation": animation, "tts_service": tts, "tts_voice": voice, "video_first": video_first, "render_fps": render_fps})
         if voice:
             rec = [x for x in cfg.get("tts_recent", []) if x.get("id") != voice]
             rec.insert(0, {"id": voice, "service": tts})
             cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
-        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile, board, preview_range, render_fps), daemon=True).start()
+        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile, board, preview_range, render_fps, channel_design, animation), daemon=True).start()
         return {"ok": True}
 
     def prepare_storyboard(self, opts):
@@ -1850,6 +2063,7 @@ class Api:
             public = {k: copy.deepcopy(board[k]) for k in ("id", "script", "rows")}
             public["sample"] = copy.deepcopy(board["profile"].get("sample"))
             public["creative_direction"] = copy.deepcopy(board["profile"].get("creative_direction") or {})
+            public['channel_design_ref'] = copy.deepcopy(board['profile'].get('channel_design_ref'))
             public["visual_style"] = copy.deepcopy(board["profile"].get("visual_style") or {})
             public["sources"] = [{"id": shot["index"], "description": shot["description"][:250]}
                                  for shot in board["profile"]["montage"]["shots"]]
@@ -1967,15 +2181,22 @@ class Api:
         """Общие настройки — как у обычного запуска; текст/файл и голос у каждого задания свои."""
         global QUEUE_STOP
         provider = pipeline.normalize_providers(opts.get("providers"))
-        err = self._validate_common(provider)
+        err = self._validate_common(provider, opts)
         if err:
             return {"ok": False, "error": err}
         cfg = load_cfg()
+        import animation_selection
+        try:
+            selection=animation_selection.settings(opts.get('animation',cfg.get('animation')))
+            if selection['strategy']=='manual':raise ValueError('Ручной выбор запускается из раскадровки одного ролика, а не из общей очереди.')
+        except ValueError as error:return {'ok':False,'error':str(error)}
         try:
             render_fps = pipeline.validate_fps(opts.get("render_fps", cfg.get("render_fps", 25)))
         except ValueError as error:
             return {"ok": False, "error": str(error)}
         tts = opts.get("tts") or cfg.get("tts_service") or "voicegen"
+        try:channel_design=selected_channel_design(opts)
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
         with LOCK:
             todo = [x for x in QUEUE if x.get("status") == "queued"]
             if not todo:
@@ -1989,7 +2210,7 @@ class Api:
                     return {"ok": False, "error": "Для рерайта не введён ключ выбранной модели."}
             style = style_key(opts.get("style"), pipeline.DEFAULT_STYLE)
             custom_style = " ".join(str(opts.get("custom_style") or "").split())
-            if not custom_style and (style == pipeline.CUSTOM_STYLE or any(x.get("style") == pipeline.CUSTOM_STYLE for x in todo)):
+            if not channel_design and not custom_style and (style == pipeline.CUSTOM_STYLE or any(x.get("style") == pipeline.CUSTOM_STYLE for x in todo)):
                 return {"ok": False, "error": "Для «Своего стиля» опишите его на экране «Режим» или выберите стиль из списка."}
             pipeline.CANCEL.clear()
             pipeline.LAST_JOB_DIR = None
@@ -2000,11 +2221,11 @@ class Api:
             QUEUE_STOP = False
         common = {"provider": provider, "mode": opts.get("mode", "images"), "style": style, "use_refs": cfg.get("quality") == "quality",
                   "subtitles": bool(opts.get("subtitles")), "motion": bool(opts.get("motion")), "hd": bool(opts.get("hd")),
-                  "video_first": _vf(opts.get("video_first")), "tts": tts}
+                  "video_first": _vf(opts.get("video_first")), "tts": tts, "channel_design": channel_design, "animation": selection}
         cfg.update({"image_providers": provider, "mode": common["mode"], "style": style, "custom_style": custom_style, "use_refs": common["use_refs"], "subtitles": common["subtitles"],
                     "motion": common["motion"], "hd_images": common["hd"], "qa_images": bool(opts.get("qa", cfg.get("qa_images", False))),
                     "speed_copies": bool(opts.get("speed", cfg.get("speed_copies", False))),
-                    "tts_service": tts, "video_first": common["video_first"], "render_fps": render_fps})
+                    "animation": common["animation"], "tts_service": tts, "video_first": common["video_first"], "render_fps": render_fps})
         for x in todo:
             v = (x.get("voice") or "").strip()
             if v:
@@ -2020,7 +2241,8 @@ class Api:
             job_dir, n = STATE.get("job_dir") or pipeline.LAST_JOB_DIR, STATE.get("scenes") or 0
         if not job_dir:
             return {"total": 0, "items": []}
-        known = set(int(x) for x in (known or []))
+        known = set(known or [])
+        layers=pipeline.read_json(os.path.join(job_dir,'channel_layers.json'),{})
         img_dir = os.path.join(job_dir, "images")
         vid_dir = os.path.join(job_dir, "videos")
         active = pipeline.read_json(os.path.join(job_dir, "active_scenes.json"))
@@ -2046,9 +2268,10 @@ class Api:
                 i = display[i] if display is not None else i
                 has_video = os.path.exists(os.path.join(vid_dir, f"{source_index:04d}.mp4"))
                 key = i * 2 + (1 if has_video else 0)
-                if key in known or (i * 2 in known and not has_video):
+                if layers:key='channel:'+layers['signature']+':'+str(key)
+                if key in known or (not layers and i * 2 in known and not has_video):
                     continue
-                thumb = make_thumb(os.path.join(img_dir, name))
+                thumb = make_thumb(os.path.join(img_dir, name),overlays=layers.get('scenes',{}).get(str(source_index),[]))
                 if thumb:
                     items.append({"i": i, "source_index": source_index, "key": key, "img": thumb, "video": has_video})
         if not n:
@@ -2163,6 +2386,7 @@ class Api:
         before = pipeline.dir_size(jobs) if os.path.isdir(jobs) else 0
         if os.path.isdir(jobs):
             for n in os.listdir(jobs):
+                if n == "channel_designs":continue
                 shutil.rmtree(os.path.join(jobs, n), ignore_errors=True)
         after = pipeline.dir_size(jobs) if os.path.isdir(jobs) else 0
         return {"ok": True, "freed_mb": round((before - after) / 1048576)}

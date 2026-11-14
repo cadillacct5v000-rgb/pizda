@@ -452,6 +452,10 @@
       <label class="tile"><input type="radio" name="mode" value="video"><span class="dot"></span>
         <svg viewBox="0 0 64 64"><rect x="8" y="22" width="48" height="32"/><path d="M8 22l6-12 42 6-4 6M14 10l8 8M28 12l8 8M42 14l8 8M27 30l12 8-12 8z"/></svg><span class="t" data-i18n="m_video"></span></label>
     </div>
+    <div class="qrow" style="flex-wrap:wrap;gap:12px"><label for="animation_strategy">Какие сцены оживлять</label><select id="animation_strategy" onchange="animationChanged()">
+      <option value="legacy">По выбранному режиму</option><option value="key">Ключевые сцены</option><option value="hook">Начало и смысловые повороты</option><option value="manual">Выбрать вручную в раскадровке</option><option value="local">Без нейрооживления</option>
+    </select><label id="animation_budget">Не больше <input id="animation_limit" type="number" min="0" max="150" step="1" value="10" onchange="animationChanged()" style="width:75px"> видеовставок</label></div>
+    <p class="note" id="animation_hint" style="text-align:center">Автовыбор использует готовую раскадровку без нового запроса к модели. Схемы и сложные столкновения остаются картинками. Выбор можно проверить и изменить до сборки.</p>
     <div class="vfrow" id="vf_row"><span class="lbl" data-i18n="vf_lbl"></span><span class="q" data-tipkey="tip_vf">?</span><input type="range" id="vf" min="0" max="150" step="1" value="0"><span class="val zero" id="vf_val"></span></div>
     <div class="qrow"><span class="lbl" data-i18n="regime"></span><span class="q" data-tipkey="tip_quality">?</span><div class="seg"><input type="radio" name="fgq" value="speed" id="fgq_speed"><label for="fgq_speed" data-i18n="speed"></label><input type="radio" name="fgq" value="quality" id="fgq_quality"><label for="fgq_quality" data-i18n="quality"></label></div></div>
     <div class="qrow srow"><span class="lbl" data-i18n="style_lbl"></span><span class="q" data-tipkey="tip_style">?</span><select id="style_sel"></select><span class="arr">&#9660;</span></div>
@@ -636,7 +640,7 @@ function mode() { const r = document.querySelector('input[name=mode]:checked'); 
 function fgq() { const r = document.querySelector('input[name=fgq]:checked'); return r ? r.value : 'speed'; }
 function mark() { document.querySelectorAll('.tile, .opt').forEach(l => l.classList.toggle('sel', l.querySelector('input').checked)); const any = ['use_rw','use_tts','use_motion','use_subs','use_qa','use_speed'].some(id => $(id).checked); $('btn_opts').textContent = any ? t('next') : t('no_next'); }
 document.querySelectorAll('input[name=prov]').forEach(r => r.addEventListener('change', () => { mark(); $('hint1').textContent = t('hint1'); $('hint1').style.color = ''; pywebview.api.save_config({providers: provs()}); }));
-document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => { mark(); drawVf(); pywebview.api.save_config({mode: mode()}); }));
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', () => { $('animation_strategy').value='legacy';animationChanged();mark(); drawVf(); pywebview.api.save_config({mode: mode()}); }));
 function vf() { return mode() === 'video' ? 0 : +$('vf').value; }
 // ===== стиль картинок: общий на ролик (экран «Режим»), в очереди можно свой на задание =====
 let styleKey = 'ultrareal', STYLES = [], queueStyles = false;
@@ -742,11 +746,12 @@ async function pollRewrite() {
   }
 }
 function renderReview(script) {
-  const montageMode = !!(reviewSourceProfile && reviewSourceProfile.montage);
+  const channelMode = !!reviewSourceProfile?.content_only || !!boardState?.channel_design_ref;
+  const montageMode = !channelMode && !!(reviewSourceProfile && reviewSourceProfile.montage);
   if (montageMode || boardState) $('use_motion').checked = false;
   const sourceVisual = reviewSourceProfile?.visual_style || boardState?.visual_style;
   const hasSourceStyle = !!(sourceVisual || boardState);
-  const hasSourceCuts = montageMode || !!boardState;
+  const hasSourceCuts = !channelMode && (montageMode || !!boardState);
   const p = provs(), rows = [];
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
@@ -754,14 +759,16 @@ function renderReview(script) {
   if(boardState?.sample)row('Проба исходника',`${boardState.sample.start}–${boardState.sample.start+boardState.sample.source_seconds} с · только этот отрезок`);
   if(boardState)row(L==='ru'?'Постановка':'Storyboard', ({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   if (reviewSourceProfile) {
-    row(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style', reviewSourceProfile.visual_style.description);
+    row(channelMode ? 'Сохранённый дизайн канала' : (L === 'ru' ? 'Стиль исходного ролика' : 'Source video style'), reviewSourceProfile.visual_style.description);
     const sample = reviewSourceProfile.sampling;
-    row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? (montageMode ? `Планов исходника: ${reviewSourceProfile.montage.shots.length}. Ритм найденных склеек; движение оценено по трём кадрам на план. Плавные переходы и звук не переносятся.` : `Весь исходный текст; ${sample.frame_count} выборочных кадров. Монтаж и звук не переносятся.`) : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
+    if(channelMode)row('Источник содержания','Только субтитры/транскрипция. Кадры, стиль и склейки исходника не анализировались.');
+    else row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? (montageMode ? `Планов исходника: ${reviewSourceProfile.montage.shots.length}. Ритм найденных склеек; движение оценено по трём кадрам на план. Плавные переходы и звук не переносятся.` : `Весь исходный текст; ${sample.frame_count} выборочных кадров. Монтаж и звук не переносятся.`) : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
   }
   row(t('regime'), sel('rv_mode', [['images', t('m_images')], ['mixed', t('m_mixed')], ['video', t('m_video')]], mode()), true);
   row(t('speed') + ' / ' + t('quality'), sw('rv_fgq', fgq() === 'quality', ['quality', 'speed']), true);
-  row(t('style_lbl'), (hasSourceStyle ? `<select id="rv_style" disabled><option>${L === 'ru' ? 'Стиль исходного ролика' : 'Source video style'}</option></select>` : sel('rv_style', styleOpts(false), styleKey)) + (!hasSourceStyle && styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
-  if (mode() !== 'video') row(t('rv_vf'), (vf() ? plural(vf(), t('vf_scenes')) : t('vf_none')) + (mode() === 'mixed' ? ' ' + t('rv_vf_mixed') : ''));
+  row(t('style_lbl'), (hasSourceStyle ? `<select id="rv_style" disabled><option>${channelMode?'Дизайн канала':(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style')}</option></select>` : sel('rv_style', styleOpts(false), styleKey)) + (!hasSourceStyle && styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
+  if (animationOptions().strategy!=='legacy') row('Оживление', $('animation_strategy').selectedOptions[0].textContent+' · лимит '+animationOptions().limit);
+  if (animationOptions().strategy==='legacy' && mode() !== 'video') row(t('rv_vf'), (vf() ? plural(vf(), t('vf_scenes')) : t('vf_none')) + (mode() === 'mixed' ? ' ' + t('rv_vf_mixed') : ''));
   row(t('o_rw'), rwOn() ? (rwSrc === 'youtube' ? F.rwUrl : t('rw_text_src')) + ` · ${F.rwWords} ${t('rv_words')} · ${langName(F.rwLang)}` : t('rv_no'));
   if (queueMode) { const q = queueItems.filter(x => x.status === 'queued'); rows.push(`<div class="qfull"><span>${t('rv_queue')} · ${q.length}</span><div class="qlist">${q.map((x, i) => `<div><span>${i + 1}. ${esc(x.title)}</span><span>${queueStyles && x.style ? esc(styleName(x.style)) + ' · ' : ''}${esc(x.voice || t('q_default'))}</span></div>`).join('')}</div></div>`); }
   row(t('o_tts'), queueMode ? tts : source === 'script' ? `${tts}${F.voice ? ' · ' + F.voice : ''}` : t('rv_no'));
@@ -772,7 +779,7 @@ function renderReview(script) {
   row(t('o_speed'), sw('rv_speed', $('use_speed').checked, ['rv_yes', 'rv_no']), true);
   if (source !== 'script') row(t('file_lbl'), audioPath || t('rv_none'));
   $('rv_sum').innerHTML = rows.join('');
-  $('rv_mode').addEventListener('change', () => { const r = document.querySelector(`input[name=mode][value=${$('rv_mode').value}]`); if (r) { r.checked = true; mark(); pywebview.api.save_config({mode: mode()}); } });
+  $('rv_mode').addEventListener('change', () => { const r = document.querySelector(`input[name=mode][value=${$('rv_mode').value}]`); if (r) { r.checked = true; $('animation_strategy').value='legacy';animationChanged();drawVf();renderReview($('rv_script').value); } });
   $('rv_fgq').addEventListener('change', () => { const r = document.querySelector(`input[name=fgq][value=${$('rv_fgq').checked ? 'quality' : 'speed'}]`); if (r) r.checked = true; $('rv_fgq').nextElementSibling.nextElementSibling.textContent = t($('rv_fgq').checked ? 'quality' : 'speed'); pywebview.api.save_config({quality: fgq()}); });
   $('rv_style').addEventListener('change', () => { styleKey = $('rv_style').value; fillStyles(); pywebview.api.save_config({style: styleKey}); renderReview(script); });
   $('rv_motion')?.addEventListener('change', () => { $('use_motion').checked = $('rv_motion').checked; mark(); $('rv_motion').nextElementSibling.nextElementSibling.textContent = t($('rv_motion').checked ? 'rv_yes' : 'rv_no'); pywebview.api.save_config({motion: $('use_motion').checked}); });
@@ -964,7 +971,7 @@ async function poll() {
       const d = $('fr' + it.i); if (!d) return;
       const redraw = st.active_board_id ? '' : `<button class="redo" title="${esc(t('redo_btn'))}" onclick="redoScene(${it.source_index ?? it.i})">&#8635;</button>`;
       d.classList.remove('redo');
-      if (!d.querySelector('img')) { d.classList.remove('pending', 'active'); d.classList.add('flash'); d.innerHTML = `<span class="ph"></span><img src="${it.img}"><span class="n">${String(it.i + 1).padStart(2, '0')}</span>${redraw}`; setTimeout(() => d.classList.remove('flash'), 800); }
+      if (!d.querySelector('img') || d.dataset.assetKey!==String(it.key)) { d.dataset.assetKey=String(it.key);d.classList.remove('pending', 'active'); d.classList.add('flash'); d.innerHTML = `<span class="ph"></span><img src="${it.img}"><span class="n">${String(it.i + 1).padStart(2, '0')}</span>${redraw}`; setTimeout(() => d.classList.remove('flash'), 800); }
       if (it.video && !d.querySelector('.live')) { const b = document.createElement('span'); b.className = 'live'; b.textContent = 'LIVE'; d.appendChild(b); }
     }, k * 160);
   });
@@ -1014,7 +1021,7 @@ async function loadConfig(keepScreen) {
   let r = document.querySelector(`input[name=mode][value=${c.mode}]`); if (r) r.checked = true;
   r = document.querySelector(`input[name=fgq][value=${c.quality || 'speed'}]`); if (r) r.checked = true;
   $('use_tts').checked = c.source === 'script' || !!c.rewrite; $('use_subs').checked = !!c.subtitles; $('use_motion').checked = !!c.motion; $('use_hd').checked = !!c.hd_images; $('use_qa').checked = !!c.qa_images; $('use_speed').checked = !!c.speed_copies; qaEngine = c.qa_engine || 'gemini'; qaModel = c.qa_model || ''; mark();
-  $('vf').value = c.video_first || 0; drawVf();
+  $('vf').value = c.video_first || 0; drawVf(); animationLoad(c.animation);
   $('render_fps').value = c.render_fps || 25;
   STYLES = st.styles || c.styles || STYLES; styleKey = c.style || 'ultrareal'; queueStyles = !!c.queue_styles; if (!keepScreen) $('custom_style').value = c.custom_style || ''; fillStyles();
   models.elysium_model = c.elysium_model || 'gpt-4.1-mini'; models.llm_model = c.llm_model || models.llm_model; models.openai_model = c.openai_model || models.openai_model; models.anthropic_model = c.anthropic_model || 'claude-sonnet-5-5'; models.gemini_model = c.gemini_model || 'gemini-3.6-flash'; baseUrls = c.base_urls || {}; baseDefaults = c.base_defaults || baseDefaults;
@@ -1121,7 +1128,7 @@ function renderAccess() {
                              : `<textarea id="rw_text" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.rwText)}</textarea>`)));
     if (rwSrc === 'youtube') {
       H.push(row(L === 'ru' ? 'Обработка ролика' : 'Video processing', '',
-        sel('youtube_mode', [['montage', L === 'ru' ? 'Редизайн видео + ритм склеек (эксперимент)' : 'Video redesign + cut rhythm (experimental)'], ['full', L === 'ru' ? 'Полный сценарий + стиль кадров' : 'Full narrative + image style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? (sourceMontage ? 'montage' : 'full') : 'text')
+        (window.channelDesignChoice && channelDesignChoice().channel_design_id ? sel('youtube_mode',[['channel','Только содержание → дизайн канала']],'channel') : sel('youtube_mode', [['montage', L === 'ru' ? 'Редизайн видео + ритм склеек (эксперимент)' : 'Video redesign + cut rhythm (experimental)'], ['full', L === 'ru' ? 'Полный сценарий + стиль кадров' : 'Full narrative + image style'], ['text', L === 'ru' ? 'Только рерайт текста' : 'Text rewrite only']], analyzeVideo ? (sourceMontage ? 'montage' : 'full') : 'text'))
         + `<span class="note">${L === 'ru' ? 'Полный режим сохраняет ход рассказа и анализирует кадры по всей длительности. Использует модель с поддержкой изображений; у fast-gen нужен доступ chat.multimodal.' : 'Full mode preserves the narrative and samples frames across the entire video. Requires an image-capable model; fast-gen needs chat.multimodal access.'}</span>`));
       H.push(row(L === 'ru' ? 'Доступ к YouTube' : 'YouTube access', '',
         sel('youtube_browser', [['', L === 'ru' ? 'Без входа' : 'No sign-in'], ['chrome','Chrome'], ['firefox','Firefox'], ['safari','Safari'], ['edge','Edge'], ['brave','Brave']], youtubeBrowser)
@@ -1407,6 +1414,7 @@ async function loadDesktopProject(id) {
   desktopProject = r.project;
   if(window.studioBoardReady)studioBoardReady();
   const o = r.project.options;
+  if(window.channelDesignLoad)channelDesignLoad({channel_design_id:o.channel_design_id||'',channel_design_revision:o.channel_design_revision||null},true);
   F.script = o.script || ''; F.voice = o.voice || ''; audioPath = o.audio || ''; source = o.source || 'script';
   tts = o.tts || tts; styleKey = o.style || styleKey;
   document.querySelectorAll('input[name=fgq]').forEach(el => el.checked = el.value === (o.use_refs ? 'quality' : 'speed'));
@@ -1416,7 +1424,7 @@ async function loadDesktopProject(id) {
   const rw = o.rewrite || {}; sourceMontage = rw.montage !== false; analyzeVideo = rw.analyze_video !== false;
   $('use_rw').checked = !!rw.on; $('use_tts').checked = source === 'script'; F.rwUrl = rw.url || ''; F.rwText = rw.text || ''; F.rwWords = rw.words || 1500; F.rwLang = rw.language || 'русском'; rwEngine = rw.engine || rwEngine; rwSrc = rw.source || 'youtube';
   for (const [field,control] of Object.entries({subtitles:'use_subs',motion:'use_motion',hd:'use_hd',qa:'use_qa',speed:'use_speed'})) $(control).checked = !!o[field];
-  $('render_fps').value = o.render_fps || 25; $('vf').value = o.video_first || 0; drawVf(); mark();
+  $('render_fps').value = o.render_fps || 25; $('vf').value = o.video_first || 0; drawVf(); mark(); animationLoad(o.animation);
   if(o.studio && window.loadStudioSettings){loadStudioSettings({studio:o.studio,studio_configured:true,subtitles:!!o.subtitles});await pywebview.api.save_config({studio:o.studio});}
   resetStoryboard(); reviewProfileId = null; reviewSourceProfile = null;
   $('projects_dialog').close(); go(4);
@@ -1431,7 +1439,7 @@ async function importDesktopDocx(withPrompts) {
   if (result.warnings.length) $('board_status').textContent = result.warnings.join(' · ');
 }
 
-function opts() { syncAll(); return {audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
+function opts() { syncAll(); return {...(window.channelDesignChoice?channelDesignChoice():{}),audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), animation: animationOptions(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   render_fps: +$('render_fps').value,
   studio: window.studioFields ? studioFields() : undefined,
   storyboard_id: boardState ? boardState.id : null,
@@ -1569,16 +1577,16 @@ function renderStoryboard() {
     <div class="board-ref"><img alt="${boardText('Референс исходного плана', 'Source shot reference')}" data-reference="${esc(r.id)}"><strong>${boardText('План', 'Plan')} ${boardPage * 20 + i + 1}</strong>
     <span class="board-confidence ${r.confidence === 'low' ? 'low' : ''}">${esc(({high:boardText('Уверенная привязка','Strong match'),medium:boardText('Проверьте привязку','Review match'),low:boardText('Нужно проверить','Needs review'),manual:boardText('Выбрано вручную','Manually selected')})[r.confidence] || r.confidence)}</span>
     <small>${esc(r.reason)}</small><button class="ghost" data-take="${esc(r.id)}">${boardText('Новый вариант этого плана', 'New take for this plan')}</button></div>
-    <div class="board-edit"><label>${boardText('Фраза озвучки', 'Narration')}<textarea data-field="narration">${esc(r.narration)}</textarea></label>
+    <div class="board-edit"><label><input type="checkbox" data-animate="${esc(r.id)}" onchange="animationToggle(this)"> Оживить этот план</label><small data-animation-reason="${esc(r.id)}"></small><label>${boardText('Фраза озвучки', 'Narration')}<textarea data-field="narration">${esc(r.narration)}</textarea></label>
     <label>${boardText('Исходный референс', 'Source reference')}<select data-field="source_shot"><option value="">${boardText('Новый кадр без референса', 'New shot without a reference')}</option>${boardState.sources.map(s => `<option value="${s.id}"${s.id === r.source_shot ? ' selected' : ''}>${s.id + 1}. ${esc(s.description)}</option>`).join('')}</select></label>
     <label>${boardText('Что показать — можно изменить', 'Visual description — editable')}<textarea data-field="prompt">${esc(r.prompt)}</textarea></label>
     ${r.editorial_role ? `<p class="studio-note">Назначение: ${esc(({hook:'Вступление',explain:'Объяснение',example:'Пример',contrast:'Сопоставление',reveal:'Раскрытие',resolve:'Вывод'})[r.editorial_role]||r.editorial_role)} · Крупность: ${esc(({wide:'Общий',medium:'Средний',close:'Крупный',detail:'Деталь',diagram:'Схема'})[r.shot_size||'medium']||r.shot_size)}</p>` : ''}<label>Короткий акцент на экране — необязательно<input data-field="overlay_text" maxlength="45" value="${esc(r.overlay_text || '')}"></label>
     <label>${boardText('Движение камеры и объектов', 'Camera and subject motion')}<input type="text" data-field="motion" value="${esc(r.motion)}"></label>
     <label>${boardText('Секунд — пусто: по речи', 'Seconds — blank: follow speech')}<input type="number" min="0.5" max="30" step="0.1" data-field="duration" value="${r.duration ?? ''}" placeholder="${boardText('авто', 'auto')}"></label></div></article>`).join('');
-  $('board_rows').querySelectorAll('textarea,input,select').forEach(el => el.addEventListener('input', markBoardDirty));
+  $('board_rows').querySelectorAll('textarea,input:not([data-animate]),select').forEach(el => el.addEventListener('input', markBoardDirty));
   $('board_rows').querySelectorAll('select').forEach(el => el.addEventListener('change', () => { markBoardDirty(); refreshBoardReferences(); }));
   $('board_rows').querySelectorAll('[data-take]').forEach(el => el.addEventListener('click', () => newStoryboardTake(el.dataset.take)));
-  refreshBoardReferences();
+  refreshBoardReferences();refreshAnimationPreview();
 }
 async function refreshBoardReferences() {
   if (!boardState) return;
@@ -1627,7 +1635,7 @@ async function storyboardPreview() {
     <label>Положение субтитров<select id="studio_caption_position"><option value="bottom">Снизу, в безопасной зоне</option><option value="top">Сверху</option></select></label>
     <label><input type="checkbox" id="studio_labels" checked>Короткие смысловые надписи</label>
     <label>Фон приложения<select id="studio_wallpaper"><option value="horizon">Тихий горизонт</option><option value="graphite">Графит</option><option value="none">Однотонный</option></select></label>
-    <button class="ghost" id="studio_apply" onclick="applyStudio()">Применить оформление</button>
+    <button class="ghost" onclick="openChannelDesign()">Дизайн канала</button><p id="channel_design_badge" class="studio-note">Дизайн исходника</p><button class="ghost" id="studio_apply" onclick="applyStudio()">Применить оформление</button>
     <p class="studio-note">HD и повторные генерации расходуют больше кредитов. Готовые проекты не переписываются автоматически.</p>
   </aside><section class="studio-main">
     <div class="studio-actions">
@@ -1651,3 +1659,30 @@ async function storyboardPreview() {
 <script src="studio_ui.js"></script>
 </body>
 </html>
+
+<dialog id="channel_design_dialog" style="width:min(850px,94vw);max-height:90vh;overflow:auto">
+  <h2>Постоянный дизайн канала</h2>
+  <p>Выбранный профиль сохраняется между роликами. Изменения создают новую версию; сохранённые проекты используют свою.</p>
+  <label>Профили<select id="cd_profiles" onchange="channelDesignView()"><option value="">Новый профиль</option></select></label><button class="ghost small" onclick="channelDesignView()">Открыть последнюю версию выбранного профиля</button>
+  <p>После сохранения профиля новые ссылки используются только как содержание: субтитры или транскрипция. Чужие кадры, стиль и склейки повторно не анализируются.</p>
+  <label>Образец понравившейся стилистики<input id="cd_source_url" placeholder="Ссылка YouTube — для однократного изучения дизайна"></label>
+  <button class="ghost" onclick="channelDesignAction('learn')">Однократно изучить стиль по ссылке</button>
+  <p>Это анализ нескольких кадров, без разбора всех сцен и озвучки. Если исходник уже разобран, кнопка «Сохранить дизайн из исходника» использует готовый анализ без нового запроса.</p>
+  <button id="cd_cancel" class="danger" hidden onclick="pywebview.api.cancel()">Остановить изучение</button>
+  <label>Название<input id="cd_name" maxlength="120" value="Мой канал"></label>
+  <label>Описание стиля<textarea id="cd_description" rows="4" maxlength="6000" placeholder="Рисовка, пропорции персонажей, фоны, степень детализации"></textarea></label>
+  <label>Палитра<input id="cd_palette" placeholder="#FFFFFF, #141414, #B8172D"></label>
+  <label>Лица людей<select id="cd_faces"><option value="reference">Как в утверждённых референсах</option><option value="blank">Пустые, без черт лица</option><option value="simple">Упрощённые черты</option><option value="detailed">Детальные утверждённые лица</option></select></label>
+  <label>Оформление схем<select id="cd_layout"><option value="source">По описанию и референсам</option><option value="minimal">Минимальное: 1–2 объекта, свободное место</option></select></label>
+  <label>Движение<select id="cd_motion"><option value="local">Монтаж из картинок и слоёв — без нейрооживления</option><option value="generated">Генерация видеоклипов — нужна проверка пробой</option></select></label><label>Шрифт подписей<select id="cd_font"><option>Arial</option><option>Intro Demo Black CAPS</option></select></label>
+  <label>Постоянные правила<textarea id="cd_rules" rows="3" maxlength="4000" placeholder="Что сохранять, что запрещено менять"></textarea></label>
+  <div class="row"><button onclick="channelDesignAction('save')">Сохранить и использовать</button><button class="ghost" onclick="channelDesignAction('select')">Использовать выбранный</button></div>
+  <div class="row"><button class="ghost" onclick="channelDesignAction('capture')">Сохранить дизайн из исходника</button><button class="ghost" onclick="channelDesignAction('source')">Дизайн текущего исходника</button></div>
+  <h3>Утверждённые изображения</h3>
+  <p>Эталон передаётся модели как образец. Ведущий и логотип с прозрачным фоном накладываются программой после оживления и не перерисовываются: ведущий — на схемы, логотип — на все кадры. Готовый ведущий остаётся статичным.</p>
+  <pre id="cd_assets" style="white-space:pre-wrap"></pre>
+  <div class="row"><select id="cd_role"><option value="reference">Эталон дизайна</option><option value="host">Ведущий — прозрачный PNG/WebP</option><option value="logo">Логотип — прозрачный PNG/WebP</option></select><button id="cd_import" onclick="channelDesignAction('import')" disabled>Добавить файл</button></div>
+  <p>Сохранение профиля не запускает платные запросы. Другой дизайн может потребовать новых картинок: сначала проверьте 30-секундную пробу. Старые материалы сохраняются.</p>
+  <p id="cd_status" role="status"></p>
+  <button class="ghost" onclick="$('channel_design_dialog').close()">Закрыть</button>
+</dialog>

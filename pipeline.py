@@ -24,6 +24,7 @@ import requests
 import endpoints
 import netutil
 import model_reply
+import channel_design as channel_designs
 from media_tools import ffmpeg_bin, run_media
 
 from fastgen_api import BASE_URL, FastGen, app_dir, data_dir, file_to_data_uri
@@ -203,6 +204,10 @@ def clear_wait(kind=None):
 
 
 class SceneRejected(Exception):
+    pass
+
+
+class DesignCheckUnavailable(RuntimeError):
     pass
 
 
@@ -836,7 +841,14 @@ def style_line_of(style):
 
 def video_prompt(scene):
     """Промпт оживления: движение + содержание + стиль + запрет текста."""
-    return f"{scene.get('motion', 'slow gentle camera movement')}. {scene.get('raw_prompt', '')} {scene.get('style_line', '')} {NO_TEXT}"
+    original = f"{scene.get('motion', 'slow gentle camera movement')}. {scene.get('raw_prompt', '')} {scene.get('style_line', '')} {NO_TEXT}"
+    if scene.get('channel_design'):
+        from channel_design import guide
+        return (original + ' ' + guide(scene['channel_design']) + ' Preserve the exact input character drawing and proportions. '
+                'Blank faces remain blank. Do not add facial details, extra limbs, invented gestures or head turns. '
+                'Do not change digits, labels or object geometry. ' +
+                ('Approved host/logo overlays are added separately; never generate them.' if scene.get('channel_overlays') else ''))
+    return original  # Keep old receipt identities unchanged for existing/uncertain paid submissions.
 
 
 def compose_prompt(prompt, names, chars, use_refs, scene=None, props=None, locs=None, anchors=None, style_line=""):
@@ -1771,7 +1783,17 @@ QA_MAX_REDO = 2  # сколько раз перерисовывать забра
 def qa_check(client, scene, path):
     """→ (ok, score, issues). При любой ошибке проверки кадр считается годным (проверка не должна валить ролик)."""
     try:
+        qa_system = QA_SYSTEM
+        if scene.get('channel_design'):
+            qa_system += (' The approved channel design is a strict requirement. Set ok=false for added facial features on blank human faces, '
+                          'a redesigned approved character, a changed rendering technique or clutter violating the required layout, '
+                          'even if the image is otherwise attractive and anatomically valid. These are not minor style differences.')
         desc = scene.get("raw_prompt") or scene.get("prompt") or ""
+        if scene.get('channel_design'):
+            from channel_design import guide
+            desc += '\nMandatory approved design: ' + guide(scene['channel_design'])
+            if any(a['role']=='host' for a in scene.get('channel_overlays', [])):
+                desc += '\nThe host is composited by the program AFTER this check. Do not reject the background because that host is absent.'
         chars = ", ".join(scene.get("characters") or [])
         user = f"Описание кадра: {desc}" + (f"\nПерсонажи по описанию: {chars}" if chars else "") + "\nОцени картинку."
         anchor = scene.get("location_reference_path")
@@ -1780,7 +1802,7 @@ def qa_check(client, scene, path):
             from PIL import Image, ImageOps
             import tempfile
             references = object_refs + ([anchor] if anchor and os.path.isfile(anchor) else [])
-            system = QA_SYSTEM + (' LEFT side contains object identity sheets and optionally the approved room, RIGHT side is the target shot. '
+            system = qa_system + (' LEFT side contains object identity sheets and optionally the approved room, RIGHT side is the target shot. '
                 'Judge ONLY the RIGHT side; sheets/collages/text in reference panels are not defects. '
                 'Verify the recurring vehicle/object matches canonical body shape/type, colors, lights, wheels and interior, even across different rendering styles. '
                 'Different view, lighting, stylization, occlusion and narrated damage are allowed. A substituted vehicle model or color is a defect. '
@@ -1805,7 +1827,7 @@ def qa_check(client, scene, path):
         elif anchor and os.path.isfile(anchor):
             from PIL import Image, ImageOps
             import tempfile
-            system = QA_SYSTEM + " LEFT panel is the approved room reference, RIGHT panel is the new target. Judge ONLY the RIGHT panel. Compare permanent architecture, doors/windows, furniture and materials against LEFT. A different camera angle, occlusion, people or action is allowed. An unrelated room/layout is a defect. Do not count people/text in LEFT as defects in RIGHT."
+            system = qa_system + " LEFT panel is the approved room reference, RIGHT panel is the new target. Judge ONLY the RIGHT panel. Compare permanent architecture, doors/windows, furniture and materials against LEFT. A different camera angle, occlusion, people or action is allowed. An unrelated room/layout is a defect. Do not count people/text in LEFT as defects in RIGHT."
             user += "\nStable location: " + scene.get("location_description", "")
             with tempfile.TemporaryDirectory(prefix="qa-location-", dir=os.path.dirname(path)) as temp:
                 comparison = os.path.join(temp, "comparison.png")
@@ -1817,7 +1839,9 @@ def qa_check(client, scene, path):
                 canvas.save(comparison)
                 j = client.see_json(system, user, comparison)
         else:
-            j = client.see_json(QA_SYSTEM, user, path)
+            j = client.see_json(qa_system, user, path)
+        if scene.get('channel_design') and type(j.get('ok')) is not bool:
+            raise ValueError('Проверка не вернула решение о качестве дизайна.')
         ok = bool(j.get("ok", True))
         try:
             score = float(j.get("score") or (8 if ok else 3))
@@ -1828,6 +1852,8 @@ def qa_check(client, scene, path):
         raise
     except Exception as e:
         log(f"автоотбор: проверка не удалась ({str(e)[:120]}), кадр оставлен")
+        if scene.get('channel_design'):
+            raise DesignCheckUnavailable('Проверка дизайна канала временно недоступна. Картинка сохранена; повтор проверит её без новой генерации.') from None
         return True, 10, ""
 
 
@@ -1911,7 +1937,7 @@ def drop_failed_images(scenes, job_dir):
     for sc in scenes:
         st = state.get(str(sc["index"])) or {}
         pth = os.path.join(img_dir, f"{sc['index']:04d}.png")
-        if st and not st.get("ok"):
+        if st and not st.get("ok") and not st.get('design_check_pending'):
             try:
                 if os.path.exists(pth):
                     os.remove(pth)
@@ -1922,6 +1948,18 @@ def drop_failed_images(scenes, job_dir):
     if redo:
         write_json(state_path, state)
         log(f"{redo} незавершённых сцен — повторяю получение картинок")
+
+
+def stage_channel_checks(scenes, job_dir, enabled):
+    if not enabled:return
+    state_path=Path(job_dir,'images.json');state=read_json(str(state_path),{})
+    changed=False
+    for scene in scenes:
+        key=str(scene['index']);prior=state.get(key) or {}
+        if scene.get('channel_design') and not prior.get('design_approved') and Path(job_dir,'images',f"{scene['index']:04d}.png").is_file():
+            state[key]={**prior,'ok':False,'design_check_pending':True}
+            changed=True
+    if changed:write_json(str(state_path),state)
 
 
 class VideoOverlap:
@@ -2003,7 +2041,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     for sc in scenes:
         st = state.get(str(sc["index"])) or {}
         pth = os.path.join(img_dir, f"{sc['index']:04d}.png")
-        if st and not st.get("ok") and os.path.exists(pth):
+        if st and not st.get("ok") and not st.get('design_check_pending') and os.path.exists(pth):
             try:
                 os.remove(pth)
                 redo += 1
@@ -2011,7 +2049,9 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                 pass
     if redo:
         log(f"{redo} незавершённых сцен — повторяю получение картинок")
-    todo = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png"))]
+    todo = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) or
+            (state.get(str(s['index'])) or {}).get('design_check_pending') or
+            (s.get('channel_design') and ctx.get('qa') and not (state.get(str(s['index'])) or {}).get('design_approved'))]
     done_count = len(scenes) - len(todo)
     names = " + ".join(f"{unit_name(p)} ({ctx['gates'][p].threads})" for p in ctx["providers"])
     progress("images", done_count, len(scenes), f"перерисовываю {len(todo)} кадров" if only is not None else f"генерирую картинки: {names}")
@@ -2101,6 +2141,9 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         if s.get("source_reference"):
             scene_refs.insert(len(object_refs), s["source_reference"])
             s = {**s, "prompt": s["prompt"] + " The attached source-video frame is a SOURCE STYLE/COMPOSITION reference. Create new original artwork with the requested action and framing; preserve architectural layout, permanent furniture and materials. Do not reproduce exact pixels, text or logos."}
+        if s.get('channel_design'):
+            scene_refs = list(s.get('channel_references') or []) + scene_refs
+            s = {**s, 'prompt': s['prompt'] + ' Channel artwork references define the approved DESIGN. Source video art direction is secondary; use the source only for composition and subject. Do not copy any source text.'}
         anchor = s.get("location_anchor_index")
         if anchor is not None and anchor != s["index"]:
             anchor_path = os.path.join(img_dir, f"{anchor:04d}.png")
@@ -2117,13 +2160,20 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             s = {**s, "location_reference_path": anchor_path, "prompt": s["prompt"] +
                  " The FIRST attached image is the APPROVED LOCATION ANCHOR. Preserve its room layout, permanent furniture, doors, windows, finishes and colors across this shot. Use it for the environment ONLY; do not copy its people, poses or action. Any source-style reference after it is secondary. Follow the current shot's action and camera angle."}
         identity_failed = False
+        ok = False
         invalid_candidates = set()
-        model = draw(s, path, scene_refs)
+        previous=state.get(str(s['index'])) or {}
+        existing_check=s.get('channel_design') and os.path.isfile(path) and (previous.get('design_check_pending') or (ctx.get('qa') and not previous.get('design_approved')))
+        model = (previous.get('model') or 'cache:image') if existing_check else draw(s, path, scene_refs)
         if model and not os.path.isfile(path):
             model = None
             with lock:
                 failures[s["index"]] = "Сервис сообщил успех, но файл картинки не получен"
         if model and ctx.get("qa") and not CANCEL.is_set():
+            if s.get('channel_design'):
+                with lock:
+                    state[str(s['index'])]={**previous,'ok':False,'model':model,'design_check_pending':True}
+                    write_json(state_path,state)
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
             ok, score, issues = qa_check(ctx["qa"], s, path)
             identity_failed = bool(object_refs) and issues.startswith("IDENTITY_MISMATCH:")
@@ -2166,7 +2216,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     if identity_failed:
                         invalid_candidates.add(path)
                 eligible = [c for c in cands if c[1] not in invalid_candidates]
-                identity_failed = bool(object_refs) and not eligible
+                identity_failed = (bool(object_refs) and not eligible) or bool(s.get('channel_design') and not ok)
                 best = (score, path) if ok and os.path.exists(path) else max(eligible or cands, key=lambda c: c[0])
                 if not ok and not identity_failed:
                     with lock:
@@ -2185,20 +2235,30 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                 for _, c in cands:
                     if c != path and os.path.exists(c):
                         try:
-                            os.remove(c)
+                            if s.get('channel_design'):
+                                archive=Path(job_dir,'design_rejected',f"{time.time_ns()}_{Path(c).name}")
+                                archive.parent.mkdir(parents=True,exist_ok=True)
+                                os.replace(c,archive)
+                            else:os.remove(c)
                             if os.path.exists(c + ".source.json"):
                                 os.remove(c + ".source.json")
                         except OSError:
                             pass
+            if s.get('channel_design') and not ok:
+                identity_failed=True
         if identity_failed:
             model = None
-            Path(path).unlink(missing_ok=True)
+            if s.get('channel_design') and Path(path).is_file():
+                archive=Path(job_dir,'design_rejected',f"{time.time_ns()}_{Path(path).name}")
+                archive.parent.mkdir(parents=True,exist_ok=True);os.replace(path,archive)
+            else:Path(path).unlink(missing_ok=True)
             with lock:
                 rejected.add(s['index'])
-                failures[s['index']] = 'Кадр не совпадает с общим референсом предмета: ' + issues
+                failures[s['index']] = ('Кадр не прошёл проверку дизайна канала: ' if s.get('channel_design') else 'Кадр не совпадает с общим референсом предмета: ') + issues
         with lock:
             reason = failures.get(s["index"]) if not model else None
-            state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model, "object_reference_signature": s.get("object_reference_signature") if model else None}
+            state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model, "object_reference_signature": s.get("object_reference_signature") if model else None,
+                                      'design_approved':bool(model and s.get('channel_design') and ctx.get('qa') and ok)}
             write_json(state_path, state)
             if model:
                 done_count += 1
@@ -2252,7 +2312,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         progress("images", done_count, len(scenes), msg)
 
     missing = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) or (state.get(str(s["index"])) or {}).get("ok") is False]
-    identity_errors = [row for row in missing if 'референсом предмета' in failures.get(row['index'], '')]
+    identity_errors = [row for row in missing if any(t in failures.get(row['index'], '') for t in ('референсом предмета','дизайна канала'))]
     if identity_errors:
         details = '; '.join(f"план {row['index'] + 1}: {failures[row['index']]}" for row in identity_errors[:3])
         raise RuntimeError('Не совпадают с общим референсом предмета: ' + details + '. Готовые кадры сохранены; чужой автомобиль не подставляется.')
@@ -2392,6 +2452,9 @@ def gen_nonstop_video(api, gate, scene, img_path, out_path, progress):
 
 def animated_scenes(scenes, mode, video_first=0):
     """Какие сцены оживляются: «только видео» — все; иначе первые video_first сцен, а в «50 на 50» ещё и каждая вторая."""
+    if any('_animate' in s for s in scenes):
+        return [s for s in scenes if s.get('_animate') is True]
+    scenes=[s for s in scenes if not s.get('channel_design') or s['channel_design'].get('motion_policy','local')=='generated']
     if mode == "video":
         return list(scenes)
     return [s for s in scenes if s["index"] < int(video_first or 0) or (mode == "mixed" and s["index"] % 2 == 0)]
@@ -2711,6 +2774,9 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
             render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
+        if s.get('channel_overlays'):
+            from channel_design import decorate_clip
+            clip = decorate_clip(s, clip, job_dir, W, H, FPS)
         return clip
 
     done = 0
@@ -3228,6 +3294,7 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
     import rewrite as rwmod
     say = lambda m: progress("rewrite", 0, 1, m)
     profile = None
+    design = rw['_channel_design'] if '_channel_design' in rw else channel_designs.selected(data_dir(),cfg)
     if (rw.get("source") or "text") == "youtube":
         url = (rw.get("url") or "").strip()
         if not url:
@@ -3265,7 +3332,11 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         text = (rw.get("text") or "").strip()
         if not text:
             raise SystemExit("Вставьте текст сценария для рерайта.")
-    if rw.get("analyze_video") and rw.get("source") == "youtube":
+    if design:
+        profile=channel_designs.content_profile(design)
+        say('Источник используется только для содержания. Стиль канала уже сохранён; видеоряд, склейки и подача исходника не анализируются.')
+        if profile_callback:profile_callback(profile)
+    elif rw.get("analyze_video") and rw.get("source") == "youtube":
         import youtube_source
         import source_analysis
         source_video = youtube_source.video(url, source_dir, os.path.dirname(ffmpeg_bin()), say, **auth)
@@ -3284,9 +3355,9 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
             profile=studio.with_direction(profile,cfg)
             if profile_callback:profile_callback(profile)
         client=studio.text_client({**cfg,'llm_engine':engine},say)
-        return studio.improve_script(text,profile,cfg,os.path.join(data_dir(),'jobs','studio_scripts'),say,client,language=rw.get('language') or cfg.get('rewrite_lang'))
-    extra = {"source_profile": profile, "preserve_structure": True} if profile else {}
-    target_words = len(text.split()) if profile else (rw.get("words") or cfg.get("rewrite_words") or 1500)
+        return studio.improve_script(text,None if design else profile,cfg,os.path.join(data_dir(),'jobs','studio_scripts'),say,client,language=rw.get('language') or cfg.get('rewrite_lang'))
+    extra = {"source_profile": profile, "preserve_structure": True} if profile and not design else {}
+    target_words = len(text.split()) if profile and not design else (rw.get("words") or cfg.get("rewrite_words") or 1500)
     return rwmod.rewrite(text, engine, key, cfg.get(engine + "_model"), target_words,
                          rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say, **extra)
 
@@ -3303,7 +3374,7 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
         job_dir, base = script_job_dir(script_text)
         service = tts_service or cfg.get("tts_service") or "voicegen"
         voice = tts_voice if tts_voice is not None else cfg.get("tts_voice", "")
-        identity = json.dumps({"service": service, "voice": voice, "source_profile": source_profile}, sort_keys=True, ensure_ascii=False)
+        identity = json.dumps({"service": service, "voice": voice, "source_profile": None if (source_profile or {}).get('content_only') else source_profile}, sort_keys=True, ensure_ascii=False)
         base += "_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
         job_dir = os.path.join(data_dir(), "jobs", base)
         os.makedirs(job_dir, exist_ok=True)
@@ -3377,12 +3448,15 @@ def managed_pools():
             pool.shutdown(wait=True, cancel_futures=True)
 
 
-def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None, location_continuity=False):
+def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None, location_continuity=False, channel_design=None):
     profile = read_json(os.path.join(job_dir, "source_profile.json"))
     identity = {"style": style_key, "quality": quality, "refs": bool(use_refs), "hd": bool(hd),
                 "profile": profile, "schema": PROMPT_SCHEMA, "storyboard": board_id}
     if location_continuity:
         identity["location_continuity"] = 1
+    if channel_design:
+        from channel_design import generation_fingerprint
+        identity['channel_design'] = generation_fingerprint(channel_design)
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:12]
     directory = os.path.join(job_dir, "visual_" + digest)
     os.makedirs(directory, exist_ok=True)
@@ -3393,7 +3467,7 @@ def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None, loc
 
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None, sample_seconds=None):
+               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None, sample_seconds=None, channel_design=channel_designs.DEFAULT, animation=None):
     global FASTGEN_QUALITY, HD_IMAGES, FPS
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
@@ -3402,6 +3476,15 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     clear_wait()
     take_redo()
     cfg = load_config()
+    if channel_design is channel_designs.DEFAULT:channel_design=channel_designs.selected(data_dir(),cfg)
+    cfg={**cfg,'_channel_design':channel_design}
+    import animation_selection
+    animation=animation_selection.settings(animation if animation is not None else cfg.get('animation'))
+    if channel_design:
+        from channel_design import validate
+        validate(channel_design)
+        store=channel_designs.DesignStore(data_dir())
+        for asset in channel_design.get('assets',[]):store.asset_path(asset)
     FPS = validate_fps(render_fps if render_fps is not None else cfg.get("render_fps", 25))
     providers = normalize_providers(provider or cfg.get("image_providers") or cfg.get("image_provider"))
     if mode not in MODES:
@@ -3459,7 +3542,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     global LAST_JOB_DIR
     root_job_dir = job_dir
     profile = read_json(os.path.join(job_dir, "source_profile.json"))
-    source_montage = bool(profile and profile.get("montage"))
+    source_montage = bool(profile and profile.get("montage") and not profile.get('content_only'))
     if storyboard:
         import storyboard as sb
         aligned, score = sb.align(storyboard, tr["words"], duration, FPS)
@@ -3477,7 +3560,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         scenes = montage.map_scenes(profile, tr["words"], duration, FPS)
         motion = False
         progress("scenes", len(scenes), len(scenes), f"монтаж исходника: режим {mode}, длительности и склейки по исходным планам")
-    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None, bool(cfg.get("location_continuity")))
+    job_dir, visual_id = visual_job_dir(job_dir, style_key, FASTGEN_QUALITY, use_refs, hd, storyboard["id"] if storyboard else None, bool(cfg.get("location_continuity")), channel_design)
     LAST_JOB_DIR = job_dir
     base += "_" + visual_id
     out_mp4 = os.path.join(out_dir, base + ".mp4")
@@ -3491,8 +3574,14 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
                      "style_hint": json.dumps(profile["visual_style"], ensure_ascii=False), "characters": []}
             for scene in scenes:
                 scene.update(raw_prompt=scene["source_redesign"], style_key=style["style_key"], schema=PROMPT_SCHEMA)
+        elif channel_design:
+            style={'style_key':'channel-'+channel_designs.generation_fingerprint(channel_design),
+                   'style':channel_design['description'],'style_hint':channel_design['description'],
+                   'characters':[],'props':[],'locations':[]}
         else:
             style = build_style(llm, tr["text"], job_dir, progress, style_key, style_hint)
+        if channel_design:
+            style = {**style, 'style': channel_design['description'], 'style_hint': channel_design['description']}
         refs, ref_pool = {}, None
         if use_refs:
             # портреты героев зависят только от библии — рисуем их, пока пишутся промпты сцен (сообщения пока в журнал)
@@ -3540,19 +3629,38 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             import scene_continuity
             scenes = scene_continuity.prepare(scenes, llm, job_dir, progress)
         scenes = object_continuity.references(scenes, ctx, object_directory, style, progress)
+        if channel_design:
+            import channel_design as designs
+            scenes = designs.apply(scenes, channel_design, data_dir())
+            profile = {**(profile or {}), 'channel_design': channel_design,
+                       'visual_style': {'description': channel_design['description'], 'palette': channel_design['palette']}}
+            # Preview uses a trimmed assembly list; carry the same immutable design to captions/layers.
+            if assembly_scenes is not None:
+                assembly_scenes = designs.apply(assembly_scenes, channel_design, data_dir())
+        scenes = animation_selection.apply(scenes, animation, mode, video_first)
+        progress('scenes', 0, 0, f"Выбрано видеовставок: {len(animated_scenes(scenes, mode, video_first))}")
         if storyboard:
             write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
             progress("scenes", len(scenes), len(scenes), "планы текущей сборки")
+        if channel_design:
+            write_json(os.path.join(job_dir,'channel_layers.json'),{'signature':channel_designs.fingerprint(channel_design),
+                'scenes':{str(s['index']):s.get('channel_overlays',[]) for s in scenes}})
         drop_failed_images(scenes, job_dir)
         if storyboard:
             storyboard_cache.restore(scenes, job_dir, asset_directory)
+        stage_channel_checks(scenes, job_dir, ctx.get('qa'))
         pre = Prerender(scenes, os.path.join(job_dir, "images"), job_dir, mode, motion, video_first)
         pools.append(pre.pool)
-        overlap = VideoOverlap(ctx, scenes, job_dir, progress, mode, video_first) if (mode in ("video", "mixed") or video_first) else None
+        overlap = VideoOverlap(ctx, scenes, job_dir, progress, mode, video_first) if animated_scenes(scenes, mode, video_first) else None
         if overlap:
             pools.append(overlap.pool)
         try:
-            img_dir = generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=pre.submit)
+            cache_publish_lock=threading.Lock()
+            def image_done(scene):
+                if storyboard:
+                    with cache_publish_lock:storyboard_cache.publish([scene], job_dir, asset_directory)
+                pre.submit(scene)
+            img_dir = generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=image_done)
         except BaseException:
             if overlap:
                 overlap.abort()

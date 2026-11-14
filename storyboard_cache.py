@@ -21,6 +21,8 @@ def image_key(scene):
         identity.append(scene['location_reference_signature'])
     if scene.get('object_reference_signature'):
         identity.append(scene['object_reference_signature'])
+    if scene.get('channel_design_signature'):
+        identity.append(scene['channel_design_signature'])
     return digest(identity)
 
 
@@ -97,6 +99,15 @@ def restore(scenes, job_dir, cache_dir):
         if not image.exists() and valid(cached_image, 'image'):
             shutil.copyfile(cached_image, image)
         if image.is_file():
+            try:
+                approval=json.loads(Path(str(cached_image)+'.approval.json').read_text(encoding='utf-8'))
+                if approval=={'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'design':scene.get('channel_design_signature')} and approval['design']:
+                    from storyboard import atomic
+                    state_path=job_dir/'images.json'
+                    state=json.loads(state_path.read_text(encoding='utf-8')) if state_path.exists() else {}
+                    state[str(scene['index'])]={**state.get(str(scene['index']),{}),'ok':True,'design_approved':True,'design_check_pending':False,'object_reference_signature':scene.get('object_reference_signature')}
+                    atomic(state_path,state)
+            except (OSError,ValueError,TypeError):pass
             restore_source(image, [Path(str(cached_image) + ".source.json")])
         if not image.exists():
             continue
@@ -120,6 +131,9 @@ def publish(scenes, job_dir, cache_dir):
         image = job_dir / 'images' / f"{scene['index']:04d}.png"
         if not valid(image, 'image'):
             continue
+        if scene.get('channel_design_signature') and (image_states.get(str(scene['index'])) or {}).get('design_approved'):
+            from storyboard import atomic
+            atomic(cache_dir/('i_'+image_key(scene)+'.png.approval.json'),{'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'design':scene['channel_design_signature']})
         for kind, source, destination in [
             ('image', image, cache_dir / ('i_' + image_key(scene) + '.png')),
             ('video', job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4", cache_dir / ('v_' + video_key(scene, image) + '.mp4'))]:

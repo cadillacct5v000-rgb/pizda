@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 
 OPTION_FIELDS = {'audio', 'source', 'script', 'tts', 'voice', 'providers', 'mode', 'use_refs', 'subtitles',
-                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id', 'studio'}
+                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id', 'studio', 'channel_design_id', 'channel_design_revision', 'animation'}
 REWRITE_FIELDS = {'on', 'montage', 'analyze_video', 'source', 'url', 'text', 'engine', 'words', 'language'}
 
 
@@ -19,10 +19,18 @@ def safe_options(options):
     if not isinstance(options, dict):
         raise ValueError('Некорректные настройки проекта')
     result = {key: value for key, value in options.items() if key in OPTION_FIELDS}
+    if result.get('channel_design_id'):
+        from channel_design import checked_id
+        checked_id(result['channel_design_id'])
+        if type(result.get('channel_design_revision')) is not int or result['channel_design_revision']<1:
+            raise ValueError('Сохраните конкретную версию дизайна канала.')
     if 'rewrite' in result:
         if not isinstance(result['rewrite'], dict):
             raise ValueError('Некорректные настройки рерайта')
         result['rewrite'] = {key: value for key, value in result['rewrite'].items() if key in REWRITE_FIELDS}
+    if 'animation' in result:
+        import animation_selection
+        result['animation']=animation_selection.settings(result['animation'])
     if 'studio' in result:
         if not isinstance(result['studio'],dict):raise ValueError('Некорректные настройки студии')
         import studio
