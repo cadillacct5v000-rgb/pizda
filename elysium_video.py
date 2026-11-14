@@ -23,7 +23,9 @@ DEFAULT_BASE = 'https://elysiumai.garden/v1'
 
 
 class ElysiumVideoError(RuntimeError):
-    pass
+    def __init__(self, message, *, retry_operation=None):
+        super().__init__(message)
+        self.retry_operation = retry_operation
 
 
 class ElysiumVideo:
@@ -125,7 +127,7 @@ class ElysiumVideo:
         task = state.get('id')
         if not task:
             if state.get('status') in ('submitting', 'uncertain'):
-                raise ElysiumVideoError('Отправка видео в Elysium не подтверждена. Проверьте историю в кабинете; повтор остановлен, чтобы не создать второе платное задание.')
+                raise ElysiumVideoError('Отправка видео в Elysium не подтверждена. Можно вручную разрешить одну новую отправку; возможно повторное списание.', retry_operation=operation)
             try:
                 url = PublicImages(self.store).ensure(image, progress)
             except PublicImageError as error:
@@ -147,24 +149,25 @@ class ElysiumVideo:
             netutil.check_cancel()
             if progress:
                 progress(f'{self.label} через Elysium: отправляю новое видеозадание для этой картинки. Генерация оплачивается сервисом.')
-            self.store.operation(operation, {'status': 'submitting'})
+            self.store.operation(operation, {**state, 'status': 'submitting'})
             try:
                 response = self.session.post(self.base + '/videos', json=body, timeout=120)
                 if 400 <= response.status_code < 500:
-                    self.store.operation(operation, {'status': 'rejected'})
+                    self.store.operation(operation, {**state, 'status': 'rejected'})
                     self._json(response, 'отправка нового задания POST /videos')
                 result = self._json(response, 'отправка нового задания POST /videos')
                 task = result.get('id')
                 if not isinstance(task, str) or not task:
                     raise ValueError('missing task ID')
-            except ElysiumVideoError:
+            except ElysiumVideoError as error:
                 if self.store.operation(operation).get('status') != 'rejected':
-                    self.store.operation(operation, {'status': 'uncertain'})
+                    self.store.operation(operation, {**state, 'status': 'uncertain'})
+                    error.retry_operation = operation
                 raise
             except Exception:
-                self.store.operation(operation, {'status': 'uncertain'})
-                raise ElysiumVideoError('Elysium: ответ на отправку видео не подтверждён. Автоповтора нет; проверьте историю запросов в кабинете.') from None
-            state = {'id': task, 'status': result.get('status', 'queued')}
+                self.store.operation(operation, {**state, 'status': 'uncertain'})
+                raise ElysiumVideoError('Elysium: ответ на отправку видео не подтверждён. Автоповтора нет; проверьте историю запросов в кабинете.', retry_operation=operation) from None
+            state = {**state, 'id': task, 'status': result.get('status', 'queued')}
             self.store.operation(operation, state)
         deadline = time.monotonic() + self.max_wait
         while time.monotonic() < deadline:
@@ -176,7 +179,7 @@ class ElysiumVideo:
             except ElysiumVideoError as error:
                 raise ElysiumVideoError(f'{error} · ID задания {self._safe_error(task)} сохранён. Отказ при получении статуса, а не при отправке. Проверьте эту задачу в Elysium; повторной генерации нет.') from None
             status = result.get('status')
-            state = {'id': task, 'status': status or 'unknown'}
+            state = {**state, 'id': task, 'status': status or 'unknown'}
             if status == 'failed':
                 detail = self._failure_detail(result)
                 state['error'] = detail

@@ -522,7 +522,7 @@
         <div class="bar"><i id="stage_bar"></i></div>
         <div class="time" id="p_time"></div><div id="p_message" class="studio-note" role="status"></div><div id="p_err"></div>
         <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small></div>
-        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="renderReview(boardState?.script || F.script);go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
+        <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="renderReview(boardState?.script || F.script);go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_video_retry" class="ghost" onclick="retryUncertainVideo()" hidden>Повторить отправку видео</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
         <div id="result" class="result"><b data-i18n="done"></b><div class="path" id="r_path"></div><button class="primary" onclick="pywebview.api.open_result()" data-i18n="open"></button> <button class="ghost" onclick="pywebview.api.open_output()" data-i18n="folder"></button></div>
@@ -976,9 +976,24 @@ async function poll() {
   if (st.queue && !st.queue_active) { $('result').classList.add('show'); $('r_path').innerHTML = queueSummary(st); $('g_title').textContent = t('frames_done'); queueItems = st.queue_items || queueItems; }
   else if (st.result && !st.queue_active) { $('result').classList.add('show'); $('r_path').textContent = st.result; $('g_title').textContent = t('frames_done'); }
   if (st.error) { $('error').textContent = t('error') + st.error; $('p_err').textContent = st.error; $('btn_again').textContent = t('to_settings'); } else { $('p_err').textContent = ''; $('btn_again').textContent = t('again'); }
+  if ($('btn_video_retry')) $('btn_video_retry').hidden = !st.video_retry || !!st.running || !!st.preparing || !!st.queue_active || !!st.queue;
   if (st.cancelled) $('error').textContent = t('stopped');
   if ($('btn_board_return')) $('btn_board_return').hidden = !st.active_board_id || !!st.running;
   if (st.running || st.queue_active) setTimeout(poll, 1400); else { $('btn_again').disabled = false; $('btn_cancel').disabled = true; }
+}
+async function retryUncertainVideo() {
+  const button = $('btn_video_retry'); button.disabled = true;
+  try {
+    const st = await pywebview.api.get_state();
+    if (!st.video_retry) throw new Error('Обновите экран: задача уже изменилась.');
+    const plan = st.video_retry.plan ? ' для плана ' + st.video_retry.plan : '';
+    if (!confirm('Отправить видео заново' + plan + '? Первая задача могла создаться и списать деньги. Это разрешит одну новую платную отправку и продолжит сборку.')) return;
+    const r = await pywebview.api.retry_uncertain_video(st.video_retry.operation, true);
+    if (!r.ok) throw new Error(r.error);
+    $('btn_again').disabled = true; $('btn_cancel').disabled = false;
+    button.hidden = true; poll();
+  } catch (e) { $('error').textContent = String(e); }
+  finally { button.disabled = false; }
 }
 async function loadConfig(keepScreen) {
   const st = await pywebview.api.get_state(); const c = st.config;

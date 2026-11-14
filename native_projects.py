@@ -118,6 +118,22 @@ class ProjectStore:
             row = db.execute('SELECT payload FROM operations WHERE id=?', (key,)).fetchone()
             return json.loads(row[0]) if row else None
 
+    def authorize_video_retry(self, key):
+        """Explicit one-shot authorization; keep the ambiguous attempt for support."""
+        if not isinstance(key, str) or not key.startswith('elysium-video:'):
+            raise ValueError('Некорректное видеозадание.')
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT payload FROM operations WHERE id=?', (key,)).fetchone()
+            state = json.loads(row[0]) if row else {}
+            if state.get('id') or state.get('status') not in ('uncertain', 'submitting'):
+                raise ValueError('Повтор недоступен: состояние задачи изменилось. Обновите экран.')
+            history = list(state.get('retry_history') or [])
+            history.append({'status': state['status'], 'authorized_at': timestamp()})
+            state.update(status='retry_authorized', retry_history=history)
+            db.execute('UPDATE operations SET payload=? WHERE id=?', (json.dumps(state), key))
+            return state
+
     def delete(self, project_id):
         with self.connection() as db:
             db.execute('DELETE FROM projects WHERE id=?', (project_id,))

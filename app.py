@@ -33,7 +33,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.16-dev"
+VERSION = "2.0.17-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -51,10 +51,17 @@ STAGE_NAMES = {
 }
 
 STATE = {"running": False, "preparing": False, "stage": "", "done": 0, "total": 0, "message": "", "log": [],
-         "result": None, "error": None, "started_at": None, "estimate": None, "cancelled": False, "job_dir": None,
+         "result": None, "error": None, "video_retry": None, "started_at": None, "estimate": None, "cancelled": False, "job_dir": None,
          "scenes": 0, "script": None, "storyboard_id": None, "active_board_id": None, "is_preview": False, "update": None, "queue": None, "queue_active": False}
 QUEUE = []          # задания на ночь: [{id, title, source, script, audio, rewrite, voice, status, result, error}]
 QUEUE_STOP = False  # «Стоп» во время очереди: текущее задание прерывается, следующие не стартуют
+_VIDEO_RESUME = None  # Original arguments stay private; never expose scripts/profiles through recovery metadata.
+
+
+def video_retry_error(error):
+    operation = getattr(error, 'retry_operation', None)
+    STATE['video_retry'] = ({'operation': operation, 'plan': getattr(error, 'retry_plan', None)}
+                            if operation and _VIDEO_RESUME else None)
 
 
 def queue_path():
@@ -103,7 +110,7 @@ def run_queue(common):
                 item["status"] = "running"
                 pos = QUEUE.index(item) + 1
                 STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "message": "запуск", "log": [],
-                              "result": None, "error": None, "cancelled": False, "started_at": time.time(), "scenes": 0,
+                              "result": None, "error": None, "video_retry": None, "cancelled": False, "started_at": time.time(), "scenes": 0,
                               "queue": {"id": item["id"], "pos": pos, "total": len(QUEUE), "title": item.get("title", "")}})
             queue_save()
             rw = item.get("rewrite") if item.get("source") == "rewrite" else None
@@ -684,6 +691,11 @@ def keep_awake(on):
 
 
 def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None, storyboard=None, preview_range=None, render_fps=None):
+    global _VIDEO_RESUME
+    with LOCK:
+        _VIDEO_RESUME = (run_job, copy.deepcopy((audio, provider, mode, style, use_refs, subtitles, motion,
+                         script, rewrite, tts, voice, video_first, hd, source_profile, storyboard, preview_range, render_fps)))
+        STATE['video_retry'] = None
     keep_awake(True)
     try:
         apply_engine(provider)
@@ -706,6 +718,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
         pipeline.log(f"ОШИБКА: {type(e).__name__}: {e}")
         error_traceback = _record_error_traceback()
         with LOCK:
+            video_retry_error(e)
             STATE["error"] = f"{type(e).__name__}: {e}"
             STATE["log"].append(error_traceback[-1500:])
     finally:
@@ -716,6 +729,10 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
 
 
 def run_youtube_sample(opts,cfg,start,seconds):
+    global _VIDEO_RESUME
+    with LOCK:
+        _VIDEO_RESUME = (run_youtube_sample, copy.deepcopy((opts, cfg, start, seconds)))
+        STATE['video_retry'] = None
     import sample_preview
     keep_awake(True)
     try:
@@ -739,6 +756,7 @@ def run_youtube_sample(opts,cfg,start,seconds):
         pipeline.log('Проба YouTube: '+str(error))
         error_traceback = _record_error_traceback()
         with LOCK:
+            video_retry_error(error)
             STATE.update(error=str(error))
             STATE['log'].append(error_traceback[-1500:])
     finally:
@@ -926,6 +944,30 @@ def check_update():
 
 
 class Api:
+    def retry_uncertain_video(self, operation, confirmed=False):
+        """Authorize one replacement submission, then resume the exact stopped run."""
+        try:
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):
+                    raise ValueError('Программа уже занята.')
+                pending = STATE.get('video_retry') or {}
+                if confirmed is not True or not operation or operation != pending.get('operation') or not _VIDEO_RESUME:
+                    raise ValueError('Нужно подтвердить повтор текущего проблемного плана.')
+                if STATE.get('queue'):
+                    raise ValueError('Повторите это задание отдельно от очереди, затем разрешите новую отправку.')
+                from native_projects import ProjectStore
+                ProjectStore(data_dir()).authorize_video_retry(operation)
+                target, args = _VIDEO_RESUME
+                pipeline.CANCEL.clear()
+                pipeline.clear_wait()
+                STATE.update(running=True, error=None, cancelled=False, result=None, video_retry=None,
+                             ended_at=None, started_at=time.time(), message='Продолжаю сборку; новая отправка разрешена вручную')
+                STATE['log'].append('Разрешена одна новая отправка проблемного видеоплана. Возможно повторное списание.')
+                threading.Thread(target=target, args=copy.deepcopy(args), daemon=True).start()
+            return {'ok': True}
+        except (ValueError, OSError) as error:
+            return {'ok': False, 'error': str(error)}
+
     def youtube_sample(self, opts):
         import source_analysis
         import youtube_source
@@ -1668,7 +1710,7 @@ class Api:
             STATE["ended_at"] = None
             pipeline.clear_wait()
             STATE.update({"preparing": True, "stage": "prepare", "done": 0, "total": 0, "message": "распознаю речь",
-                          "log": [], "result": None, "error": None, "estimate": None, "cancelled": False, "started_at": time.time()})
+                          "log": [], "result": None, "error": None, "video_retry": None, "estimate": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_prepare, args=(audio, provider, mode, use_refs, script, rw), daemon=True).start()
         return {"ok": True}
 
@@ -1699,7 +1741,7 @@ class Api:
             STATE["ended_at"] = None
             pipeline.clear_wait()
             STATE.update({"sample_board_id":None,"sample_info":None,"preparing": True, "stage": "rewrite", "done": 0, "total": 0, "message": "переписываю сценарий",
-                          "log": [], "result": None, "error": None, "script": None, "source_profile": None, "source_profile_id": None, "cancelled": False, "started_at": time.time()})
+                          "log": [], "result": None, "error": None, "video_retry": None, "script": None, "source_profile": None, "source_profile_id": None, "cancelled": False, "started_at": time.time()})
         threading.Thread(target=run_rewrite, args=(rw,), daemon=True).start()
         return {"ok": True}
 
@@ -1763,7 +1805,7 @@ class Api:
             STATE["ended_at"] = None
             pipeline.clear_wait()
             STATE.update({"running": True, "stage": "start", "done": 0, "total": 0, "message": "запуск",
-                          "log": [], "result": None, "error": None, "cancelled": False, "started_at": time.time()})
+                          "log": [], "result": None, "error": None, "video_retry": None, "cancelled": False, "started_at": time.time()})
         with LOCK:
             STATE.update(active_board_id=board["id"] if board else None, is_preview=preview_range is not None,sample_board_id=None,sample_info=None)
         cfg = load_cfg()
@@ -1954,7 +1996,7 @@ class Api:
             STATE["job_dir"] = None
             STATE["ended_at"] = None
             pipeline.clear_wait()
-            STATE.update({"sample_board_id":None,"sample_info":None,"queue_active": True, "running": True, "stage": "start", "message": "очередь: запуск", "log": [], "result": None, "error": None, "cancelled": False})
+            STATE.update({"sample_board_id":None,"sample_info":None,"queue_active": True, "running": True, "stage": "start", "message": "очередь: запуск", "log": [], "result": None, "error": None, "video_retry": None, "cancelled": False})
             QUEUE_STOP = False
         common = {"provider": provider, "mode": opts.get("mode", "images"), "style": style, "use_refs": cfg.get("quality") == "quality",
                   "subtitles": bool(opts.get("subtitles")), "motion": bool(opts.get("motion")), "hd": bool(opts.get("hd")),

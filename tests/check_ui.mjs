@@ -90,3 +90,22 @@ const idleState = {running: false, queue_active: false, log: [], stage: 'done'};
   resolvePrepare({ok:true}); await pending;
 }
 console.log(`UI: ${scripts.length} script syntax check, ${used.size} Python bridge methods, 6 recovery checks passed.`);
+{
+  const elements = new Map();
+  const element = id => {if (!elements.has(id)) elements.set(id, {disabled:false, hidden:false, textContent:''}); return elements.get(id);};
+  const calls = [];
+  let accepted = false, polled = 0;
+  const context = vm.createContext({$:element, confirm:()=>accepted, poll:()=>polled++, Error,
+    pywebview:{api:{get_state:async()=>({video_retry:{operation:'elysium-video:stopped',plan:83}}),
+      retry_uncertain_video:async(...args)=>{calls.push(args);return {ok:true};}}}});
+  const start = source.indexOf('async function retryUncertainVideo(');
+  const end = source.indexOf('async function loadConfig(',start);
+  vm.runInContext(source.slice(start,end),context);
+  await context.retryUncertainVideo();
+  assert.equal(calls.length,0,'Declined recovery must never authorize another paid submission');
+  assert.equal(element('btn_video_retry').disabled,false);
+  accepted=true;await context.retryUncertainVideo();
+  assert.deepEqual(calls[0],['elysium-video:stopped',true]);
+  assert.equal(polled,1);
+  assert.equal(element('btn_video_retry').hidden,true);
+}

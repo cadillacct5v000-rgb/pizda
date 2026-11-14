@@ -2379,7 +2379,9 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
                 return api.generate(video_prompt(scene), image, output, scene['duration'],
                                     lambda message: report('videos', done_count, len(scenes), message))
             except ElysiumVideoError as error:
-                raise ElysiumVideoError(f"План {scene['index'] + 1}: {error}") from None
+                error.args = (f"План {scene['index'] + 1}: {error}",)
+                error.retry_plan = scene['index'] + 1
+                raise
         video_gen = {"elysium": (Gate(), elysium_clip)}
         provs = ["elysium"]
     else:
