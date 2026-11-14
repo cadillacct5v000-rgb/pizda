@@ -53,6 +53,7 @@ def test_registry_cannot_change_car_between_batches(tmp_path):
 def test_reference_created_once_shared_across_styles_and_kept_after_restart(tmp_path):
     scenes=oc.prepare(shots(),{},SimpleNamespace(chat_json=Mock(return_value=answer())),tmp_path,Mock())
     def draw(scene,path,progress,refs):
+        assert isinstance(scene['index'], int)  # provider error/progress paths use numeric scene indices
         Image.new('RGB',(64,36),'blue' if 'Blue' in scene['prompt'] else 'red').save(path)
         return 'fixture'
     gen=Mock(side_effect=draw); context={'providers':['fastgen'],'image_gen':{'fastgen':gen}}

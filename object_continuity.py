@@ -124,7 +124,7 @@ def references(scenes, ctx, directory, style, progress):
                       'Show coherent front/side/rear and, for vehicles, one cabin/dashboard view of this SAME object. '
                       'All views must share exactly the same design and colors. Not a narrative scene. ' + obj['description'] +
                       ' Rendering style: ' + style.get('style', ''))
-            frame = {'index': 'object-' + key, 'prompt': prompt}
+            frame = {'index': -1, 'reference_id': 'object-' + key, 'prompt': prompt}
             for provider in ctx['providers']:
                 if ctx['image_gen'][provider](frame, str(path), progress, []) and valid(path):
                     break
