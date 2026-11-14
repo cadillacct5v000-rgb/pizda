@@ -47,7 +47,7 @@ def test_registry_cannot_change_car_between_batches(tmp_path):
     assert result[0]['recurring_objects']==result[1]['recurring_objects']
     request=json.loads(llm.chat_json.call_args.args[1].split('Reference JSON:\n')[1])
     assert request['registry']['hero_car']['description'].startswith('Blue')
-    with pytest.raises(ValueError):oc.validate({'objects':[answer()['objects'][0]],'assignments':[]},[],request['registry'])
+    with pytest.raises(ValueError):oc.validate({'objects':[{**answer()['objects'][0], 'description':'A different red SUV'}],'assignments':[]},[],request['registry'])
 
 
 def test_reference_created_once_shared_across_styles_and_kept_after_restart(tmp_path):
@@ -116,3 +116,26 @@ def test_fastgen_does_not_drop_object_reference_on_provider_rejection(tmp_path,m
     assert result is None
     assert api.run.call_count==2
     assert all(call.args[0].get('inputs') for call in api.run.call_args_list)
+
+
+def test_editing_one_plan_reuses_canonical_car_sheet_and_other_plan_cache_keys(tmp_path):
+    batches=[{'objects':answer()['objects'],'assignments':answer()['assignments'][:2]},
+             {'objects':[],'assignments':answer()['assignments'][2:4]},
+             {'objects':[],'assignments':answer()['assignments'][4:]},
+             {'objects':[],'assignments':answer()['assignments'][:2]}]
+    llm=SimpleNamespace(chat_json=Mock(side_effect=batches))
+    shared=tmp_path/'shared-identities'
+    original=shots()
+    first=oc.prepare(original,{},llm,shared,Mock(),batch_size=2)
+    def draw(sc,path,*args):Image.new('RGB',(64,36),'blue').save(path);return 'fixture'
+    gen=Mock(side_effect=draw);context={'providers':['fastgen'],'image_gen':{'fastgen':gen}}
+    oc.references(first,context,shared,{},Mock())
+    old_key=cache.image_key(first[2]);old_sheet=first[0]['object_reference_signature']
+    edited=copy.deepcopy(original);edited[0].update(raw_prompt='Closer angle on the hero car.',plan_take=1)
+    second=oc.prepare(edited,{},llm,shared,Mock(),batch_size=2)
+    oc.references(second,context,shared,{},Mock())
+    assert llm.chat_json.call_count==4  # only the edited batch, not all later batches
+    assert gen.call_count==2  # no newly paid identity sheets after editing a plan
+    assert cache.image_key(second[2])==old_key
+    assert second[0]['object_reference_signature']==old_sheet
+    assert cache.image_key(second[0])!=cache.image_key(first[0])

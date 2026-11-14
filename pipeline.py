@@ -3510,8 +3510,11 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             ref_fut = ref_pool.submit(make_references, ctx, style, job_dir, ref_progress)
         scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
         import object_continuity
-        if cfg.get('object_continuity', True) and (Path(job_dir, 'object-continuity').is_dir() or any(not Path(job_dir, 'images', f"{sc['index']:04d}.png").is_file() for sc in scenes)):
-            scenes = object_continuity.prepare(scenes, style, llm, job_dir, progress)
+        object_directory = job_dir
+        if storyboard:
+            object_directory = os.path.join(data_dir(), 'jobs', 'storyboard-assets', sb.digest([profile, FASTGEN_QUALITY, hd, providers]), 'identities')
+        if cfg.get('object_continuity', True) and (Path(object_directory, 'object-continuity').is_dir() or any(not Path(job_dir, 'images', f"{sc['index']:04d}.png").is_file() for sc in scenes)):
+            scenes = object_continuity.prepare(scenes, style, llm, object_directory, progress)
         if ref_pool:
             ref_quiet.clear()
             if not ref_fut.done():
@@ -3536,7 +3539,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         if cfg.get("location_continuity"):
             import scene_continuity
             scenes = scene_continuity.prepare(scenes, llm, job_dir, progress)
-        scenes = object_continuity.references(scenes, ctx, job_dir, style, progress)
+        scenes = object_continuity.references(scenes, ctx, object_directory, style, progress)
         if storyboard:
             write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
             progress("scenes", len(scenes), len(scenes), "планы текущей сборки")

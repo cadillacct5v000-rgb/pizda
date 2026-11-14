@@ -33,10 +33,13 @@ def validate(value, batch, registry):
         if not isinstance(obj, dict):
             raise ValueError('Некорректный постоянный предмет.')
         key, name, description = (obj.get(k) for k in ('id', 'name', 'description'))
-        if (not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', key) or key in known
+        if (not isinstance(key, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', key)
                 or not isinstance(name, str) or not name.strip() or not isinstance(description, str) or not description.strip()):
             raise ValueError('Неверное или повторное описание постоянного предмета.')
-        known[key] = {'name': name.strip()[:200], 'description': description.strip()[:2500]}
+        entry = {'name': name.strip()[:200], 'description': description.strip()[:2500]}
+        if key in known and known[key] != entry:
+            raise ValueError('Модель попыталась изменить уже закреплённый предмет.')
+        known[key] = entry
     if len(known) > 12:
         raise ValueError('Слишком много постоянных предметов.')
     expected, links = {s['index'] for s in batch}, {}
@@ -56,7 +59,13 @@ def validate(value, batch, registry):
 def prepare(scenes, style, llm, directory, progress, batch_size=48):
     directory = Path(directory) / 'object-continuity'
     directory.mkdir(parents=True, exist_ok=True)
-    registry, links = {}, {}
+    registry_file = directory / 'registry.json'
+    try:
+        saved = json.loads(registry_file.read_text(encoding='utf-8'))
+        registry, _ = validate({'objects': [{'id': key, **obj} for key, obj in saved.items()], 'assignments': []}, [], {})
+    except (OSError, ValueError, TypeError, AttributeError):
+        registry = {}
+    links = {}
     for offset in range(0, len(scenes), batch_size):
         netutil.check_cancel()
         batch = scenes[offset:offset + batch_size]
@@ -65,7 +74,8 @@ def prepare(scenes, style, llm, directory, progress, batch_size=48):
                          'source_visual': s.get('source_visual', '')[:450]} for s in batch]
         prompt = SYSTEM + '\nReference JSON:\n' + json.dumps({'bible': style.get('props') or [], 'registry': registry,
                     'shots': observations}, ensure_ascii=False)
-        signature = digest(prompt)
+        # Assignments are keyed by observations, so growing the registry does not bill old batches again.
+        signature = digest([SYSTEM, style.get('props') or [], observations])
         cache, receipt = directory / (signature + '.json'), directory / (signature + '.reply.json')
         progress('prompts', offset, len(scenes), f'закрепляю внешний вид предметов: планы {offset + 1}–{offset + len(batch)}')
         try:
@@ -82,6 +92,7 @@ def prepare(scenes, style, llm, directory, progress, batch_size=48):
                 raise
             atomic(cache, value)
         registry = updated
+        atomic(registry_file, registry)
         links.update(assigned)
     counts = Counter(key for keys in links.values() for key in keys)
     recurring = {key: obj for key, obj in registry.items() if counts[key] > 1}
