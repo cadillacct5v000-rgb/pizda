@@ -220,7 +220,9 @@ async function channelDesignAction(action) {
 }
 
 // Clip selection uses the same local backend rules for preview and rendering.
-let animationPreview = null, animationPreviewRequest = 0;
+let animationPreview = null, animationPreviewRequest = 0, animationPreviewTimer=null;
+const animationHintText=$('animation_hint').textContent;
+function queueAnimationPreview(){++animationPreviewRequest;clearTimeout(animationPreviewTimer);animationPreviewTimer=setTimeout(refreshAnimationPreview,250);}
 function animationOptions(){return {strategy:$('animation_strategy').value,limit:Number($('animation_limit').value)}}
 function animationLoad(value){const a=value||{strategy:'legacy',limit:10};$('animation_strategy').value=a.strategy||'legacy';$('animation_limit').value=a.limit??10;animationDraw();}
 function animationDraw(){
@@ -230,17 +232,22 @@ function animationDraw(){
   $('animation_hint').hidden=strategy==='legacy';
 }
 async function animationChanged(){
-  const a=animationOptions();
-  if(['key','hook','manual'].includes(a.strategy))document.querySelector('input[name=mode][value=mixed]').checked=true;
-  if(a.strategy==='local')document.querySelector('input[name=mode][value=images]').checked=true;
-  mark();animationDraw();
-  const r=await pywebview.api.save_config({animation:a,mode:mode()});if(r?.ok===false){$('animation_hint').textContent=r.error;return;}
-  await refreshAnimationPreview();
+  try {
+    const a=animationOptions();
+    if(!Number.isInteger(a.limit)||a.limit<0||a.limit>150)throw new Error('Лимит видеовставок: целое число от 0 до 150.');
+    $('animation_hint').textContent=animationHintText;
+    if(['key','hook','manual'].includes(a.strategy))document.querySelector('input[name=mode][value=mixed]').checked=true;
+    if(a.strategy==='local')document.querySelector('input[name=mode][value=images]').checked=true;
+    mark();animationDraw();
+    const r=await pywebview.api.save_config({animation:a,mode:mode()});if(r?.ok===false)throw new Error(r.error);
+    await refreshAnimationPreview();
+  } catch(error){$('animation_hint').textContent=String(error);$('animation_hint').hidden=false;}
 }
+
 async function refreshAnimationPreview(){
-  if(!boardState)return;
+  clearTimeout(animationPreviewTimer);if(!boardState)return;
   const request=++animationPreviewRequest, board=boardState;
-  const r=await pywebview.api.animation_preview(board.rows,opts());
+  let r;try{r=await pywebview.api.animation_preview(board.rows,opts());}catch(error){r={ok:false,error:String(error)};}
   if(request!==animationPreviewRequest||board!==boardState)return;
   animationPreview=r;
   if(!r.ok){$('board_status').textContent=r.error;return;}

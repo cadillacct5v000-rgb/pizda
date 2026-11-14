@@ -53,3 +53,23 @@ def run_media(command, *, cwd=None, creationflags=0, cancel_check=None):
                 proc.kill()
             proc.communicate()
             raise
+
+
+_VALID_VIDEOS = {}  # Bounded cache of verified local file revisions.
+
+
+def valid_video(path):
+    """Reject interrupted/HTML cache files without decoding or loading the whole clip."""
+    try:
+        path=Path(path);st=path.stat()
+        if not st.st_size:return False
+        identity=(str(path.resolve()),st.st_size,st.st_mtime_ns)
+        if identity in _VALID_VIDEOS:return True
+        result=run_media([ffmpeg_bin('ffprobe'),'-v','error','-select_streams','v:0',
+                          '-show_entries','stream=codec_type','-of','csv=p=0',str(path)])
+        valid=result.returncode==0 and result.stdout.strip()==b'video'
+        if valid:
+            if len(_VALID_VIDEOS)>=256:_VALID_VIDEOS.pop(next(iter(_VALID_VIDEOS)),None)
+            _VALID_VIDEOS[identity]=True
+        return valid
+    except (OSError,ValueError):return False

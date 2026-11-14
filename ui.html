@@ -1481,6 +1481,7 @@ function syncBoardPage() {
 function markBoardDirty() {
   syncBoardPage(); boardDirty = true;
   $('board_status').textContent = boardText('Есть несохранённые изменения.', 'Unsaved changes.');
+  if(window.queueAnimationPreview)queueAnimationPreview();
 }
 async function createStoryboard(enhance = false) {
   if (boardBusy) return;

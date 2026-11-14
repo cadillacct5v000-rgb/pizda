@@ -10,6 +10,7 @@ import functools
 import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -33,7 +34,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.19-dev"
+VERSION = "2.0.20-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -118,7 +119,7 @@ def run_queue(common):
             audio = item.get("audio") if item.get("source") == "mp3" else None
             # стиль у задания свой, если включён «Разный стиль» и выбран; иначе общий
             run_job(audio, common["provider"], common["mode"], style_key(item.get("style"), common["style"]), common["use_refs"], common["subtitles"], common["motion"],
-                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"], channel_design=common.get("channel_design"), animation=common.get("animation"))
+                    script, rw, common["tts"], (item.get("voice") or "").strip(), common["video_first"], common["hd"], render_fps=common.get("render_fps"), channel_design=common.get("channel_design"), animation=common.get("animation"), config_snapshot=common.get("config_snapshot"))
             with LOCK:
                 if STATE.get("cancelled"):
                     item["status"] = "stopped"
@@ -186,7 +187,7 @@ def estimate_plan(opts, *, limits=True):
     scenes = max(1, round(duration / 5.7))
     with LOCK:
         profile = STATE.get("source_profile") if opts.get("source_profile_id") and opts.get("source_profile_id") == STATE.get("source_profile_id") else None
-    if profile and profile.get("montage"):
+    if profile and not profile.get("content_only") and (profile.get("montage") or {}).get("shots"):
         import montage
         scenes = len(montage.map_scenes(profile, [], duration, pipeline.FPS))
     if opts.get("storyboard_id"):
@@ -486,6 +487,7 @@ def make_thumb(path, size=480, overlays=None):
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=80)
         url = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()
+        if len(THUMBS)>=256:THUMBS.pop(next(iter(THUMBS)))
         THUMBS[key] = (mt, url)
         return url
     except Exception:
@@ -498,17 +500,9 @@ CFG_LOCK = threading.RLock()  # окно читает config.json каждые 1
 
 
 def load_cfg():
+    import config_store
     with CFG_LOCK:
-        if os.path.exists(CONFIG_PATH):
-            for attempt in range(5):
-                try:
-                    with open(CONFIG_PATH, encoding="utf-8") as f:
-                        return json.load(f)
-                except PermissionError:
-                    time.sleep(0.1 * (attempt + 1))
-                except Exception:
-                    break
-    return {}
+        return config_store.read(CONFIG_PATH)
 
 
 def sync_keys(cfg):
@@ -574,18 +568,9 @@ def save_cfg(cfg):
     cfg.setdefault("use_refs", False)
     cfg.setdefault("subtitles", False)
     cfg.setdefault("llm_model", pipeline.DEFAULT_LLM_MODEL)
-    tmp = CONFIG_PATH + ".tmp"
+    import config_store
     with CFG_LOCK:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-        for attempt in range(10):  # файл может держать антивирус или параллельное чтение — ждём и пробуем снова
-            try:
-                os.replace(tmp, CONFIG_PATH)
-                break
-            except PermissionError:
-                if attempt == 9:
-                    raise
-                time.sleep(0.15 * (attempt + 1))
+        config_store.write(CONFIG_PATH,cfg)
 
 
 def config_transaction(method):
@@ -721,11 +706,12 @@ def keep_awake(on):
         traceback.print_exc()
 
 
-def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None, storyboard=None, preview_range=None, render_fps=None, channel_design=None, animation=None):
+def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=False, script=None, rewrite=None, tts=None, voice=None, video_first=0, hd=False, source_profile=None, storyboard=None, preview_range=None, render_fps=None, channel_design=None, animation=None, config_snapshot=None):
     global _VIDEO_RESUME
+    config_snapshot=copy.deepcopy(load_cfg() if config_snapshot is None else config_snapshot)
     with LOCK:
         _VIDEO_RESUME = (run_job, copy.deepcopy((audio, provider, mode, style, use_refs, subtitles, motion,
-                         script, rewrite, tts, voice, video_first, hd, source_profile, storyboard, preview_range, render_fps, channel_design, animation)))
+                         script, rewrite, tts, voice, video_first, hd, source_profile, storyboard, preview_range, render_fps, channel_design, animation, config_snapshot)))
         STATE['video_retry'] = None
     keep_awake(True)
     try:
@@ -735,7 +721,7 @@ def run_job(audio, provider, mode, style, use_refs, subtitles=False, motion=Fals
             STATE["job_dir"] = d
         out = pipeline.make_video(audio, progress_cb=progress_cb, provider=provider, mode=mode, style_key=style,
                                   use_refs=use_refs, subtitles=subtitles, motion=motion, script_text=script, rewrite=rewrite,
-                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile, reset_cancel=False, storyboard=storyboard, preview_range=preview_range, render_fps=render_fps, channel_design=channel_design, animation=animation)
+                                  tts_service=tts, tts_voice=voice, video_first=video_first, hd=hd, source_profile=source_profile, reset_cancel=False, storyboard=storyboard, preview_range=preview_range, render_fps=render_fps, channel_design=channel_design, animation=animation, config_snapshot=config_snapshot)
         with LOCK:
             STATE["result"] = out
     except pipeline.Cancelled:
@@ -780,7 +766,7 @@ def run_youtube_sample(opts,cfg,start,seconds):
                      motion=bool(opts.get('motion')),hd=bool(opts.get('hd')),video_first=_vf(opts.get('video_first')),
                      tts_service=opts.get('tts') or cfg.get('tts_service'),tts_voice=opts.get('voice'),storyboard=board,
                      source_profile=board['profile'],preview_range={'start':0.,'seconds':target},sample_seconds=target,
-                     render_fps=opts['render_fps'],progress_cb=progress_cb,reset_cancel=False,channel_design=opts.get('_channel_design'), animation=opts.get('animation'))
+                     render_fps=opts['render_fps'],progress_cb=progress_cb,reset_cancel=False,channel_design=opts.get('_channel_design'), animation=opts.get('animation'), config_snapshot=cfg)
         with LOCK:STATE['result']=result
     except pipeline.Cancelled:
         with LOCK:STATE.update(cancelled=True,message='Проба остановлена; готовые части сохранены')
@@ -1250,7 +1236,7 @@ class Api:
         try:
             script,profile,board=studio_context(opts)
             if not script.strip():raise ValueError('Сначала подготовьте сценарий.')
-            if action=='board' and not ((profile or {}).get('montage') or {}).get('shots'):
+            if action=='board' and not (profile or {}).get('content_only') and not ((profile or {}).get('montage') or {}).get('shots'):
                 raise ValueError('Для улучшения постановки нужен анализ исходника или сохранённая раскадровка.')
             cfg=load_cfg();cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
             with LOCK:
@@ -1336,7 +1322,9 @@ class Api:
                     return {"ok": False, "error": "Сначала остановите текущую работу."}
             project = ProjectStore(data_dir()).get(project_id)
             board_id = project['options'].get('storyboard_id')
-            board = self.get_storyboard(board_id)['board'] if board_id else None
+            loaded=self.get_storyboard(board_id) if board_id else None
+            if loaded and not loaded['ok']:raise ValueError(loaded['error'])
+            board = loaded['board'] if loaded else None
             return {"ok": True, "project": project, "board": board}
         except Exception as error:
             return {"ok": False, "error": str(error)}
@@ -1848,9 +1836,14 @@ class Api:
                 return f"Включён автоотбор картинок, введите ключ {pipeline.QA_ENGINES.get(eng, ('', '', None))[0]} в строке «Автоотбор» или выключите опцию."
         try:design=selected_channel_design(opts or {},cfg)
         except (ValueError,OSError) as error:return str(error)
-        strategy=((opts or {}).get('animation') or cfg.get('animation') or {}).get('strategy','legacy')
+        import animation_selection
+        try:selection=animation_selection.settings((opts or {}).get('animation',cfg.get('animation')))
+        except ValueError as error:return str(error)
+        strategy=selection['strategy']
         local = strategy=='local' or strategy=='legacy' and design and design.get('motion_policy','local')=='local'
-        if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key") and not local:
+        needs_video = not local and ((strategy in ('key','hook','manual') and selection['limit']>0) or
+                      strategy=='legacy' and ((opts or {}).get('mode',cfg.get('mode','images')) in ('video','mixed') or _vf((opts or {}).get('video_first',cfg.get('video_first')))>0))
+        if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key") and needs_video:
             return "Для видео через Elysium введите ключ Elysium."
         has_fg = bool(cfg.get("fastgen_api_key"))
         stt = cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper"); llm = cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")
@@ -2032,7 +2025,7 @@ class Api:
             rec.insert(0, {"id": voice, "service": tts})
             cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
-        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile, board, preview_range, render_fps, channel_design, animation), daemon=True).start()
+        threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile, board, preview_range, render_fps, channel_design, animation), kwargs={"config_snapshot":copy.deepcopy(cfg)}, daemon=True).start()
         return {"ok": True}
 
     def prepare_storyboard(self, opts):
@@ -2232,6 +2225,7 @@ class Api:
                 rec = [r for r in cfg.get("tts_recent", []) if r.get("id") != v]
                 rec.insert(0, {"id": v, "service": tts}); cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
+        common.update(render_fps=render_fps, config_snapshot=copy.deepcopy(cfg))
         threading.Thread(target=run_queue, args=(common,), daemon=True).start()
         return {"ok": True}
 
@@ -2244,7 +2238,11 @@ class Api:
         known = set(known or [])
         layers=pipeline.read_json(os.path.join(job_dir,'channel_layers.json'),{})
         img_dir = os.path.join(job_dir, "images")
-        vid_dir = os.path.join(job_dir, "videos")
+        video_display=pipeline.read_json(os.path.join(job_dir,'video_display.json'),{})
+        directory=video_display.get('directory','videos')
+        if not re.fullmatch(r'videos(?:_[0-9a-f]{12})?',directory):directory='videos'
+        vid_dir = os.path.join(job_dir,directory)
+        selected_videos=set(video_display.get('selected',[])) if video_display else None
         active = pipeline.read_json(os.path.join(job_dir, "active_scenes.json"))
         display = {item["index"]: pos for pos, item in enumerate(active)} if active is not None else None
         if display is not None:
@@ -2266,7 +2264,7 @@ class Api:
                     continue
                 source_index = i
                 i = display[i] if display is not None else i
-                has_video = os.path.exists(os.path.join(vid_dir, f"{source_index:04d}.mp4"))
+                has_video = (selected_videos is None or source_index in selected_videos) and os.path.exists(os.path.join(vid_dir, f"{source_index:04d}.mp4"))
                 key = i * 2 + (1 if has_video else 0)
                 if layers:key='channel:'+layers['signature']+':'+str(key)
                 if key in known or (not layers and i * 2 in known and not has_video):

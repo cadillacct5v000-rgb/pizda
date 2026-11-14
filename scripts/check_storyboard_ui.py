@@ -34,12 +34,12 @@ def chat(self,system,user,**kwargs):
  data=json.JSONDecoder().raw_decode(user.split('Reference JSON:\n')[1])[0]
  if 'source' in data:return {'script':data['source']}
  if 'script' in data:return {'titles':['Title '+str(i) for i in range(5)],'hooks':['One','Two','Three'],'thumbnail_concepts':[{'concept':'Ink cat','image_prompt':'Original ink cat illustration','overlay_text':'Heat'} for _ in range(3)],'experiment_plan':['Compare titles','Compare thumbnails','Measure sufficient data']}
- return {'plans':[{'index':u['index'],'source_shot':1 if 'spaceship' in u['narration'] else 0,'confidence':'high',
+ return {'plans':[{'index':u['index'],'source_shot':(1 if 'spaceship' in u['narration'] else 0) if data.get('source_shots') else None,'confidence':'high',
                   'reason':'Содержание фразы совпадает с предметом в кадре','prompt':'New original redesign: '+u['narration'],'motion':'slow camera pan', 'editorial_role':'explain','shot_size':'detail','overlay_text':'Cooling'}
                  for u in data['passages']]}
 pipeline.LLM.chat_json=chat
 launched=[]
-def run_job(*args):
+def run_job(*args, **kwargs):
  launched.append(args)
  with app.LOCK:
   app.STATE.update(running=False,stage='done',done=1,total=1,result=str(root/'fixture.mp4'),ended_at=time.time())
@@ -379,6 +379,31 @@ with sync_playwright() as p:
  page.evaluate("async () => {document.getElementById('animation_strategy').value='local';await animationChanged();}")
  page.wait_for_function('animationPreview && animationPreview.ok && animationPreview.count===0')
  assert app.load_cfg()['animation']['strategy']=='local'
+ # Invalid clip budgets stay in the UI; editing a visual updates the recommendation.
+ saved_limit=app.load_cfg()['animation']['limit']
+ page.evaluate("async()=>{$('animation_limit').value='151';await animationChanged()}")
+ assert '0 до 150' in page.locator('#animation_hint').text_content()
+ assert app.load_cfg()['animation']['limit']==saved_limit
+ page.evaluate("async()=>{$('animation_limit').value='1';$('animation_strategy').value='key';await animationChanged()}")
+ first=page.locator('.board-row').first
+ first.locator('[data-field=prompt]').fill('A whiteboard diagram of a wheel.')
+ page.wait_for_function('animationPreview.ok && !!animationPreview.rows[0].risk')
+ assert not first.locator('[data-animate]').is_checked()
+ # Content-only source -> Studio -> own storyboard -> start, through actual bridge endpoints.
+ import channel_design
+ pipeline.LLM.chat_json=chat
+ assert api.channel_design_select(saved_design['channel_design_id'],2)['ok']
+ content=channel_design.content_profile(api.channel_design_get(saved_design['channel_design_id'],2)['profile'])
+ app.STATE.update(source_profile=content,source_profile_id='channel-content-fixture',script=script,sample_info=None,sample_board_id=None)
+ page.evaluate("""async ({profile,text})=>{resetStoryboard();reviewSourceProfile=profile;reviewProfileId='channel-content-fixture';F.script=text;source='script';$('use_rw').checked=false;await loadConfig(true);$('animation_strategy').value='local';await animationChanged();renderReview(text);go(5);openStudio();}""",{'profile':content,'text':script})
+ page.wait_for_selector('#studio_dialog[open]')
+ page.locator('#studio_board_btn').click()
+ page.wait_for_function('boardState && boardState.channel_design_ref && boardState.rows.every(r=>r.source_shot===null)',timeout=15000)
+ page.evaluate('closeStudio();showStoryboard()')
+ before=len(launched)
+ page.evaluate('startFromReview()')
+ page.wait_for_selector('#screen6.active')
+ assert len(launched)==before+1 and launched[-1][13]['content_only']
  assert not errors,errors
  b.close()
 print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery, bounded 30-second source trial and marked result-board navigation.')

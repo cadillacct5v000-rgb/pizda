@@ -5,17 +5,20 @@ STRATEGIES = {'legacy', 'key', 'hook', 'manual', 'local'}
 
 
 def settings(value=None):
-    value = value or {}
+    if value is None:value = {}
     if not isinstance(value,dict):raise ValueError('Некорректные настройки оживления.')
     strategy = value.get('strategy', 'legacy')
     limit = value.get('limit', 10)
-    if strategy not in STRATEGIES or type(limit) is not int or not 0 <= limit <= 150:
+    if not isinstance(strategy,str) or strategy not in STRATEGIES or type(limit) is not int or not 0 <= limit <= 150:
         raise ValueError('Выбор оживления: неизвестный режим или лимит вне 0–150.')
     return {'strategy': strategy, 'limit': limit}
 
 
 def suitability(scene):
-    raw = ' '.join(str(scene.get(k) or '') for k in ('prompt', 'raw_prompt', 'source_redesign', 'source_motion', 'motion'))
+    visual = scene.get('source_redesign') or scene.get('raw_prompt') or scene.get('prompt') or ''
+    # Appended design rules mention diagrams even in ordinary live-action shots.
+    visual = str(visual).split('APPROVED CHANNEL DESIGN,',1)[0]
+    raw = visual + ' ' + str(scene.get('source_motion') or scene.get('motion') or '')
     if scene.get('shot_size') == 'diagram' or re.search(r'diagram|infographic|схем|инфограф|whiteboard', raw, re.I):
         return 'Схема: движение может исказить детали и подписи'
     if re.search(r'colli\w*|crash\w*|impact|столкнов\w*|авари\w*|наезд\w*|three.legs|размах\w*|head.turn|тряс\w*.голов', raw, re.I):
@@ -50,20 +53,23 @@ def select(scenes, value=None, mode='images', video_first=0):
     if strategy in ('key', 'hook'):
         candidates = [row for row in rows if not row['risk']]
         picked = []
+        for row in candidates:row['_rank']=row['_score']
         used = set()
         while candidates and len(picked) < limit:
             # Spread clips over the story while keeping strong narrative roles first.
-            best = max(candidates, key=lambda r:(r['_score'] - sum(max(0, 15-abs(r['_position']-p['_position'])*5) for p in picked), -r['_position']))
+            best = max(candidates, key=lambda r:(r['_rank'], -r['_position']))
             candidates.remove(best)
             if best['id'] in used:continue
             best['selected'] = True; picked.append(best); used.add(best['id'])
+            for row in candidates:
+                row['_rank']-=max(0,15-abs(row['_position']-best['_position'])*5)
         for row in rows:
             if not row['selected']:row['reason'] = row['risk'] or 'За пределами лимита видеовставок'
     count = sum(row['selected'] for row in rows)
     if strategy == 'manual' and count > limit:
         raise ValueError(f'Выбрано {count} видеовставок при лимите {limit}. Снимите отметки или увеличьте лимит.')
     for row in rows:
-        row.pop('_score');row.pop('_position')
+        row.pop('_score');row.pop('_position');row.pop('_rank',None)
     return {'rows':rows, 'count':count, **config}
 
 

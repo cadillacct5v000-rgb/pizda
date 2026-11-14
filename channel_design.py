@@ -193,12 +193,13 @@ def decorate_clip(scene, clip, directory, width, height, fps):
     """Stamp immutable PNG/WebP artwork AFTER generated movement, never through a video model."""
     overlays=scene.get('channel_overlays') or []
     if not overlays:return clip
-    from media_tools import ffmpeg_bin, run_media
+    from media_tools import ffmpeg_bin, run_media, valid_video
     import netutil
-    signature=digest([hashlib.sha256(Path(clip).read_bytes()).hexdigest(),
+    with Path(clip).open('rb') as source:clip_sha=hashlib.file_digest(source,'sha256').hexdigest()
+    signature=digest([clip_sha,
                       [[a['sha256'],a['role']] for a in overlays],width,height,fps,'fixed-overlays-v1'])
     output=Path(directory)/'channel_layers'/(signature+'.mp4');output.parent.mkdir(parents=True,exist_ok=True)
-    if output.is_file():return str(output)
+    if valid_video(output):return str(output)
     args=[ffmpeg_bin(),'-y','-loglevel','error','-threads','2','-filter_complex_threads','1','-i',str(clip)];filters=[];previous='0:v'
     for n,asset in enumerate(overlays,1):
         path=Path(asset['path'])

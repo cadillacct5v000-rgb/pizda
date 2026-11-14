@@ -25,7 +25,7 @@ import endpoints
 import netutil
 import model_reply
 import channel_design as channel_designs
-from media_tools import ffmpeg_bin, run_media
+from media_tools import ffmpeg_bin, run_media, valid_video
 
 from fastgen_api import BASE_URL, FastGen, app_dir, data_dir, file_to_data_uri
 from nonstop_api import NonStop, NonStopError, MODELS as NONSTOP_MODELS
@@ -292,16 +292,10 @@ def load_config():
     path = os.path.join(data_dir(), "config.json")
     if not os.path.exists(path):
         raise SystemExit("Не найден config.json — введите ключи в окне программы.")
-    for attempt in range(5):  # окно в этот момент может переписывать файл — подождём
-        try:
-            with open(path, encoding="utf-8") as f:
-                cfg = json.load(f)
-            endpoints.configure(cfg)  # свои адреса API, если заданы
-            return cfg
-        except (PermissionError, json.JSONDecodeError):
-            if attempt == 4:
-                raise
-            time.sleep(0.15 * (attempt + 1))
+    import config_store
+    cfg=config_store.read(path)
+    endpoints.configure(cfg)
+    return cfg
 
 
 def make_text_engine(cfg):
@@ -2474,7 +2468,7 @@ def generate_all_videos(ctx, scenes, img_dir, job_dir, progress, mode="video", v
     scenes = animated_scenes(scenes, mode, video_first)
     if not scenes:
         return {}
-    why = {"video": "режим «Только видео» — все сцены",
+    why = 'выбранные в раскадровке видеовставки' if any('_animate' in s for s in scenes) else {"video": "режим «Только видео» — все сцены",
            "mixed": "режим «50 на 50» — каждая вторая" + (f" плюс первые {int(video_first)}" if video_first else "")}.get(
         mode, f"первые {int(video_first)} сцен")
     msg = f"оживляю {len(scenes)} из {total_scenes} сцен: {why}"
@@ -2661,7 +2655,8 @@ def _clip_signature(source, duration, kind):
 def _clip_cached(out_path, signature):
     try:
         return (os.path.getsize(out_path) > 0
-                and read_json(out_path + ".json") == signature)
+                and read_json(out_path + ".json") == signature
+                and valid_video(out_path))
     except (OSError, ValueError):
         return False
 
@@ -3108,7 +3103,7 @@ def cleanup_job(job_dir):
     Картинки, оживлённые клипы, озвучка и json остаются — повторный запуск по-прежнему ничего не рисует заново.
     Раньше не удалялось ничего: сорокаминутный ролик оставлял около 5 ГБ."""
     freed = 0
-    for name in ("clips", "clips_m", "groups"):
+    for name in ("clips", "clips_m", "groups", "channel_layers"):
         p = os.path.join(job_dir, name)
         if os.path.isdir(p):
             freed += dir_size(p)
@@ -3467,7 +3462,7 @@ def visual_job_dir(job_dir, style_key, quality, use_refs, hd, board_id=None, loc
 
 def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, mode="images", style_key=None, use_refs=False,
                subtitles=False, motion=False, script_text=None, tts_service=None, tts_voice=None, fastgen_quality=None, rewrite=None,
-               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None, sample_seconds=None, channel_design=channel_designs.DEFAULT, animation=None):
+               video_first=0, hd=False, source_profile=None, reset_cancel=True, storyboard=None, preview_range=None, render_fps=None, sample_seconds=None, channel_design=channel_designs.DEFAULT, animation=None, config_snapshot=None):
     global FASTGEN_QUALITY, HD_IMAGES, FPS
     HD_IMAGES = bool(hd)
     progress = Progress(progress_cb)
@@ -3475,7 +3470,8 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         CANCEL.clear()
     clear_wait()
     take_redo()
-    cfg = load_config()
+    cfg = dict(config_snapshot) if config_snapshot is not None else load_config()
+    endpoints.configure(cfg)
     if channel_design is channel_designs.DEFAULT:channel_design=channel_designs.selected(data_dir(),cfg)
     cfg={**cfg,'_channel_design':channel_design}
     import animation_selection
@@ -3645,6 +3641,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         if channel_design:
             write_json(os.path.join(job_dir,'channel_layers.json'),{'signature':channel_designs.fingerprint(channel_design),
                 'scenes':{str(s['index']):s.get('channel_overlays',[]) for s in scenes}})
+        write_json(os.path.join(job_dir,'video_display.json'),{
+            'directory':'videos'+('_'+ctx['video_identity'] if ctx.get('video_identity') else ''),
+            'selected':[s['index'] for s in animated_scenes(scenes,mode,video_first)]})
         drop_failed_images(scenes, job_dir)
         if storyboard:
             storyboard_cache.restore(scenes, job_dir, asset_directory)
@@ -3670,11 +3669,11 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         videos = redo_pass(ctx, scenes, style, job_dir, progress, refs, mode, motion, video_first, videos)
     if storyboard:
         storyboard_cache.publish(scenes, job_dir, asset_directory)
-    if source_montage:
+    if source_montage or animation["strategy"] in ("key","hook","manual") or (channel_design and channel_design.get("motion_policy")=="generated"):
         required = animated_scenes(scenes, mode, video_first)
         missing = [s["index"] + 1 for s in required if s["index"] not in videos]
         if missing:
-            raise RuntimeError(f"Монтаж исходника: не получены видео для {len(missing)} планов. Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
+            raise RuntimeError((f"Монтаж исходника: не получены видео для {len(missing)} планов." if source_montage else f"Не получены выбранные видеовставки для {len(missing)} планов.") + " Готовое сохранено; повторный запуск продолжит работу. Подмена картинками отключена.")
     if assembly_scenes is not None:
         scenes = assembly_scenes
     annotations=assembly_scenes if assembly_scenes is not None else scenes
