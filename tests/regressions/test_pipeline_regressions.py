@@ -200,7 +200,7 @@ def test_montage_describes_every_shot_and_resumes(source_video, tmp_path, monkey
 
 def test_cancel_not_cleared_in_background_pipeline_entry(monkeypatch):
     pipeline.CANCEL.set()
-    monkeypatch.setattr(pipeline, 'load_config', lambda:{})
+    monkeypatch.setattr(pipeline, 'load_config', lambda:{'object_continuity':False,})
     monkeypatch.setattr(pipeline, 'resolve_source', lambda *a, **k:pipeline.check_cancel())
     with pytest.raises(pipeline.Cancelled):
         pipeline.prepare(reset_cancel=False)
@@ -230,7 +230,7 @@ def test_complete_montage_pipeline_encodes_video_and_audio(tmp_path, monkeypatch
     monkeypatch.setattr(pipeline, 'W', 320)
     monkeypatch.setattr(pipeline, 'H', 180)
     monkeypatch.setattr(pipeline, 'resolve_source', lambda *a,**k:(str(audio), str(job), 'test'))
-    monkeypatch.setattr(pipeline, 'load_config', lambda:{'quality':'speed','fastgen_api_key':'fake'})
+    monkeypatch.setattr(pipeline, 'load_config', lambda:{'object_continuity':False,'quality':'speed','fastgen_api_key':'fake'})
     monkeypatch.setattr(pipeline, 'make_context', lambda *a:ctx)
     monkeypatch.setattr(pipeline, 'make_text_engine', lambda *a:('fastgen',fake,'fastgen',fake))
     monkeypatch.setattr(pipeline, 'transcribe', lambda *a,**k:tr)

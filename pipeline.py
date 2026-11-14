@@ -985,7 +985,7 @@ def build_prompts(llm: LLM, style, scenes, job_dir, progress, use_refs, batch=25
     а при повторном запуске дописываются только недостающие. Переключение «скорость/качество» промпты не сбрасывает —
     описания героев и подсказка про референсы добавляются в compose_prompt без обращения к модели."""
     out = os.path.join(job_dir, "scenes.json")
-    style_text = json.dumps({k: style.get(k, "") for k in ("summary", "style", "characters", "locations", "avoid")}, ensure_ascii=False)
+    style_text = json.dumps({k: style.get(k, "") for k in ("summary", "style", "characters", "locations", "props", "avoid")}, ensure_ascii=False)
     chars = {c["name"]: c["description"] for c in (style.get("characters") or []) if c.get("name") and c.get("description")}
     latin = {c["name"]: c.get("latin", "") for c in (style.get("characters") or []) if c.get("name")}
     anchors = {c["name"]: c["anchors"] for c in (style.get("characters") or []) if c.get("name") and c.get("anchors")}
@@ -1375,6 +1375,10 @@ def gen_fastgen_image(api, gate, scene, out_path, progress, refs, chain=None):
                 gate.request_done(False, credits)
             low = err.lower()
             if inputs and ("reference" in low or "invalid_argument" in low or "invalid_request" in low):
+                if scene.get("require_object_refs"):
+                    # A different car is not an acceptable successful fallback.
+                    log(f"сцена {scene['index'] + 1}: модель не приняла референс предмета, пробую другую модель с тем же референсом")
+                    break
                 inputs = []  # сервер не принял портреты героев — та же модель, но без них
                 log(f"сцена {scene['index'] + 1}: повторяю без референсов")
                 continue
@@ -1771,7 +1775,34 @@ def qa_check(client, scene, path):
         chars = ", ".join(scene.get("characters") or [])
         user = f"Описание кадра: {desc}" + (f"\nПерсонажи по описанию: {chars}" if chars else "") + "\nОцени картинку."
         anchor = scene.get("location_reference_path")
-        if anchor and os.path.isfile(anchor):
+        object_refs = [p for p in (scene.get('object_reference_paths') or {}).values() if os.path.isfile(p)]
+        if object_refs:
+            from PIL import Image, ImageOps
+            import tempfile
+            references = object_refs + ([anchor] if anchor and os.path.isfile(anchor) else [])
+            system = QA_SYSTEM + (' LEFT side contains object identity sheets and optionally the approved room, RIGHT side is the target shot. '
+                'Judge ONLY the RIGHT side; sheets/collages/text in reference panels are not defects. '
+                'Verify the recurring vehicle/object matches canonical body shape/type, colors, lights, wheels and interior, even across different rendering styles. '
+                'Different view, lighting, stylization, occlusion and narrated damage are allowed. A substituted vehicle model or color is a defect. '
+                'Also return identity_ok: true/false. Set false only for a visible identity contradiction, not hidden details.')
+            user += '\nCanonical identities: ' + json.dumps(scene.get('recurring_objects') or {}, ensure_ascii=False)
+            with tempfile.TemporaryDirectory(prefix='qa-objects-', dir=os.path.dirname(path)) as temp:
+                comparison = os.path.join(temp, 'comparison.png')
+                canvas = Image.new('RGB', (1920, 1080), '#303030')
+                height = max(1, 1080 // len(references))
+                for n, image in enumerate(references):
+                    with Image.open(image) as src:
+                        view = ImageOps.contain(src.convert('RGB'), (960, height))
+                        canvas.paste(view, ((960-view.width)//2, n*height+(height-view.height)//2))
+                with Image.open(path) as src:
+                    view = ImageOps.contain(src.convert('RGB'), (960,1080))
+                    canvas.paste(view, (960+(960-view.width)//2,(1080-view.height)//2))
+                canvas.save(comparison)
+                j = client.see_json(system, user, comparison)
+            if j.get('identity_ok') is False:
+                j = dict(j)
+                j.update(ok=False, issues='IDENTITY_MISMATCH: ' + str(j.get('issues') or 'wrong recurring object appearance'))
+        elif anchor and os.path.isfile(anchor):
             from PIL import Image, ImageOps
             import tempfile
             system = QA_SYSTEM + " LEFT panel is the approved room reference, RIGHT panel is the new target. Judge ONLY the RIGHT panel. Compare permanent architecture, doors/windows, furniture and materials against LEFT. A different camera angle, occlusion, people or action is allowed. An unrelated room/layout is a defect. Do not count people/text in LEFT as defects in RIGHT."
@@ -2063,8 +2094,12 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             return
         path = os.path.join(img_dir, f"{s['index']:04d}.png")
         scene_refs = [refs[n] for n in s.get("characters", []) if n in refs]
+        object_refs = s.get("object_reference_paths") or {}
+        scene_refs = list(object_refs.values()) + scene_refs
+        if object_refs:
+            s = {**s, "prompt": s["prompt"] + " Attached OBJECT IDENTITY sheets define recurring object appearance. Preserve their body shape, lights, wheels, colors and cabin. Their multiple views are identity references ONLY: render one normal shot, never a sheet or collage. Current shot action/damage and style may change, object identity must not."}
         if s.get("source_reference"):
-            scene_refs.insert(0, s["source_reference"])
+            scene_refs.insert(len(object_refs), s["source_reference"])
             s = {**s, "prompt": s["prompt"] + " The attached source-video frame is a SOURCE STYLE/COMPOSITION reference. Create new original artwork with the requested action and framing; preserve architectural layout, permanent furniture and materials. Do not reproduce exact pixels, text or logos."}
         anchor = s.get("location_anchor_index")
         if anchor is not None and anchor != s["index"]:
@@ -2081,6 +2116,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
             scene_refs.insert(0, anchor_path)
             s = {**s, "location_reference_path": anchor_path, "prompt": s["prompt"] +
                  " The FIRST attached image is the APPROVED LOCATION ANCHOR. Preserve its room layout, permanent furniture, doors, windows, finishes and colors across this shot. Use it for the environment ONLY; do not copy its people, poses or action. Any source-style reference after it is secondary. Follow the current shot's action and camera angle."}
+        identity_failed = False
+        invalid_candidates = set()
         model = draw(s, path, scene_refs)
         if model and not os.path.isfile(path):
             model = None
@@ -2089,6 +2126,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         if model and ctx.get("qa") and not CANCEL.is_set():
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
             ok, score, issues = qa_check(ctx["qa"], s, path)
+            identity_failed = bool(object_refs) and issues.startswith("IDENTITY_MISMATCH:")
             with lock:
                 QA_STATS["checked"] += 1
             cands = []
@@ -2108,6 +2146,8 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                 if os.path.exists(source_note):
                     os.replace(source_note, cand + ".source.json")
                 cands.append((score, cand))
+                if identity_failed:
+                    invalid_candidates.add(cand)
                 log(f"сцена {s['index'] + 1}: автоотбор забраковал ({issues}), рисую заново ({attempt}/{QA_MAX_REDO})")
                 progress("images", done_count, len(scenes), f"сцена {s['index'] + 1}: брак, перерисовываю ({attempt}/{QA_MAX_REDO})")
                 s2 = dict(s)
@@ -2117,17 +2157,22 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     break
                 model = m2
                 ok, score, issues = qa_check(ctx["qa"], s, path)
+                identity_failed = bool(object_refs) and issues.startswith("IDENTITY_MISMATCH:")
                 with lock:
                     QA_STATS["checked"] += 1
             if cands:
                 if os.path.exists(path):
                     cands.append((score, path))
-                best = (score, path) if ok and os.path.exists(path) else max(cands, key=lambda c: c[0])
-                if not ok:
+                    if identity_failed:
+                        invalid_candidates.add(path)
+                eligible = [c for c in cands if c[1] not in invalid_candidates]
+                identity_failed = bool(object_refs) and not eligible
+                best = (score, path) if ok and os.path.exists(path) else max(eligible or cands, key=lambda c: c[0])
+                if not ok and not identity_failed:
                     with lock:
                         QA_STATS["kept_bad"] += 1
                     log(f"сцена {s['index'] + 1}: все варианты с замечаниями, беру лучший (оценка {best[0]:.0f}/10)")
-                if best[1] != path:
+                if best[1] != path and not identity_failed:
                     try:
                         os.replace(best[1], path)
                         note = best[1] + ".source.json"
@@ -2145,9 +2190,15 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                                 os.remove(c + ".source.json")
                         except OSError:
                             pass
+        if identity_failed:
+            model = None
+            Path(path).unlink(missing_ok=True)
+            with lock:
+                rejected.add(s['index'])
+                failures[s['index']] = 'Кадр не совпадает с общим референсом предмета: ' + issues
         with lock:
             reason = failures.get(s["index"]) if not model else None
-            state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model}
+            state[str(s["index"])] = {"ok": bool(model), "model": model, "error": reason, "blocked": s["index"] in rejected and not model, "object_reference_signature": s.get("object_reference_signature") if model else None}
             write_json(state_path, state)
             if model:
                 done_count += 1
@@ -2201,6 +2252,10 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
         progress("images", done_count, len(scenes), msg)
 
     missing = [s for s in scenes if not os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")) or (state.get(str(s["index"])) or {}).get("ok") is False]
+    identity_errors = [row for row in missing if 'референсом предмета' in failures.get(row['index'], '')]
+    if identity_errors:
+        details = '; '.join(f"план {row['index'] + 1}: {failures[row['index']]}" for row in identity_errors[:3])
+        raise RuntimeError('Не совпадают с общим референсом предмета: ' + details + '. Готовые кадры сохранены; чужой автомобиль не подставляется.')
     blocked = [row['index'] + 1 for row in missing if row['index'] in rejected and
                any(token in failures.get(row['index'], '').lower() for token in ('content_policy', 'safety', 'фильтр', 'содерж'))]
     if blocked:
@@ -3454,6 +3509,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             pools.append(ref_pool)
             ref_fut = ref_pool.submit(make_references, ctx, style, job_dir, ref_progress)
         scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
+        import object_continuity
+        if cfg.get('object_continuity', True) and (Path(job_dir, 'object-continuity').is_dir() or any(not Path(job_dir, 'images', f"{sc['index']:04d}.png").is_file() for sc in scenes)):
+            scenes = object_continuity.prepare(scenes, style, llm, job_dir, progress)
         if ref_pool:
             ref_quiet.clear()
             if not ref_fut.done():
@@ -3478,6 +3536,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         if cfg.get("location_continuity"):
             import scene_continuity
             scenes = scene_continuity.prepare(scenes, llm, job_dir, progress)
+        scenes = object_continuity.references(scenes, ctx, job_dir, style, progress)
         if storyboard:
             write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
             progress("scenes", len(scenes), len(scenes), "планы текущей сборки")

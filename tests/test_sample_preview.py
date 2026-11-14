@@ -144,7 +144,7 @@ def test_actual_sample_render_includes_audio_captions_and_exact_duration(tmp_pat
     original=board(profile);job=tmp_path/'voice';job.mkdir()
     pipeline.write_json(str(job/'source_profile.json'),profile)
     monkeypatch.setattr(pipeline,'W',640);monkeypatch.setattr(pipeline,'H',360)
-    monkeypatch.setattr(pipeline,'load_config',lambda:{'caption_style':'focus','on_screen_labels':True})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'object_continuity':False,'caption_style':'focus','on_screen_labels':True})
     monkeypatch.setattr(pipeline,'resolve_source',lambda *args:(audio,str(job),'sample'))
     monkeypatch.setattr(pipeline,'make_text_engine',lambda cfg:('fastgen',Mock(),'fastgen',Mock()))
     monkeypatch.setattr(pipeline,'make_context',lambda *args:{})

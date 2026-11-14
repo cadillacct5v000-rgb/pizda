@@ -219,7 +219,7 @@ def test_preview_then_full_then_single_edit_reuses_completed_generations(profile
     ctx={'api':api,'providers':['fastgen'],'bases':['fastgen'],'fallback':[],
          'gates':{'fastgen':Mock(threads=1)},'image_gen':{'fastgen':image}}
     monkeypatch.setattr(pipeline,'W',320);monkeypatch.setattr(pipeline,'H',180)
-    monkeypatch.setattr(pipeline,'load_config',lambda:{'fastgen_api_key':'fake','quality':'speed'})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'object_continuity':False,'fastgen_api_key':'fake','quality':'speed'})
     monkeypatch.setattr(pipeline,'resolve_source',lambda *a,**kw:(audio,str(job),'test'))
     monkeypatch.setattr(pipeline,'transcribe',lambda *a,**kw:{'text':original['script'],'words':words()})
     monkeypatch.setattr(pipeline,'make_context',lambda *a:ctx)
@@ -244,7 +244,7 @@ def test_preview_then_full_then_single_edit_reuses_completed_generations(profile
 
 def test_changed_script_rejected_before_tts(profile,monkeypatch):
     paid=Mock();monkeypatch.setattr(pipeline,'resolve_source',paid)
-    monkeypatch.setattr(pipeline,'load_config',lambda:{})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'object_continuity':False,})
     with pytest.raises(sb.StoryboardError,match='изменился'):
         pipeline.make_video(script_text='Other narration',storyboard=board(profile))
     paid.assert_not_called()
@@ -254,7 +254,7 @@ def test_missing_reference_rejected_before_paid_tts(profile,monkeypatch):
     original=board(profile)
     Path(profile['montage']['shots'][0]['reference_frame']).unlink()
     paid=Mock();monkeypatch.setattr(pipeline,'resolve_source',paid)
-    monkeypatch.setattr(pipeline,'load_config',lambda:{})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'object_continuity':False,})
     with pytest.raises(sb.StoryboardError,match='Референсы'):
         pipeline.make_video(script_text=original['script'],storyboard=original)
     paid.assert_not_called()
@@ -296,7 +296,7 @@ def test_storyboard_honours_images_and_source_style_without_video_access(profile
         return 'fixture'
     ctx={'api':api,'providers':['fastgen'],'bases':['fastgen'],'fallback':[],
          'gates':{'fastgen':Mock(threads=1)},'image_gen':{'fastgen':image}}
-    monkeypatch.setattr(pipeline,'load_config',lambda:{'style':'custom','custom_style':'','quality':'speed','location_continuity':location_mode})
+    monkeypatch.setattr(pipeline,'load_config',lambda:{'object_continuity':False,'style':'custom','custom_style':'','quality':'speed','location_continuity':location_mode})
     monkeypatch.setattr(pipeline,'resolve_source',lambda *a:(audio,str(job),'fixture'))
     monkeypatch.setattr(pipeline,'transcribe',lambda *a:{'text':original['script'],'words':words()})
     monkeypatch.setattr(pipeline,'make_context',lambda *a:ctx)

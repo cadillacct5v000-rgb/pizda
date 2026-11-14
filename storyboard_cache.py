@@ -19,6 +19,8 @@ def image_key(scene):
     identity = [scene.get('plan_id'), scene.get('prompt'), scene.get('characters'), fingerprint, scene.get('plan_take', 0)]
     if scene.get('location_reference_signature'):
         identity.append(scene['location_reference_signature'])
+    if scene.get('object_reference_signature'):
+        identity.append(scene['object_reference_signature'])
     return digest(identity)
 
 
@@ -108,7 +110,13 @@ def restore(scenes, job_dir, cache_dir):
 def publish(scenes, job_dir, cache_dir):
     job_dir, cache_dir = Path(job_dir), Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        image_states = json.loads((job_dir / 'images.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        image_states = {}
     for scene in scenes:
+        if scene.get('object_reference_signature') and (image_states.get(str(scene['index'])) or {}).get('object_reference_signature') != scene['object_reference_signature']:
+            continue  # Do not relabel an older paid frame as having used the new identity reference.
         image = job_dir / 'images' / f"{scene['index']:04d}.png"
         if not valid(image, 'image'):
             continue

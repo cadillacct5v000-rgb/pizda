@@ -32,7 +32,7 @@ def offline_workflow(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "data_dir", lambda: str(data))
     monkeypatch.setattr(pipeline, "W", 320)
     monkeypatch.setattr(pipeline, "H", 180)
-    monkeypatch.setattr(pipeline, "load_config", lambda: {"image_providers": ["google"]})
+    monkeypatch.setattr(pipeline, "load_config", lambda: {"object_continuity":False, "image_providers": ["google"]})
     # Any unexpected network request is a test failure, never a paid API call.
     def reject_network(*args, **kwargs):
         raise AssertionError("Unexpected network request in offline integration test")
