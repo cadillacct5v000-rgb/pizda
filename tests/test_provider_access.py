@@ -125,3 +125,33 @@ def test_model_check_does_not_require_permission_to_list_models(monkeypatch, tmp
     monkeypatch.setattr(GeminiClient,'chat_json',lambda *a,**k: {'ok':True})
     assert app.Api().check_keys(['gemini'])['gemini'] == 'OK · vision-fixture отвечает'
     listed.assert_not_called()
+
+
+@pytest.mark.parametrize('ids,expected',[
+    (['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5','anthropic/claude-sonnet-5.5'],'anthropic/claude-sonnet-5.5'),
+    (['anthropic/claude-sonnet-5.5-provider-4','anthropic/claude-sonnet-5.5','anthropic/claude-sonnet-5.5-cc'],'anthropic/claude-sonnet-5.5'),
+    (['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5.5-cc'],'anthropic/claude-sonnet-5.5-cc'),
+])
+def test_sonnet_uses_only_exact_available_ids_and_prefers_automatic_route(monkeypatch,ids,expected):
+    monkeypatch.setattr(access,'models',lambda *a:ids)
+    assert access.sonnet_model('elysium','fixture')==expected
+    assert access.sonnet_model('elysium','fixture',ids[0])==ids[0]
+    with pytest.raises(ValueError,match='отсутствует'):
+        access.sonnet_model('elysium','fixture','anthropic/claude-sonnet-99')
+
+
+def test_sonnet_direct_provider_uses_its_own_catalog_and_ignores_snapshot_dates(monkeypatch):
+    monkeypatch.setattr(access,'models',lambda *a:['claude-sonnet-4-20250514','claude-sonnet-4-6'])
+    assert access.sonnet_model('anthropic','fixture')=='claude-sonnet-4-6'
+
+
+@pytest.mark.parametrize('payload',[{}, {'data':{}},{'data':[None]}])
+def test_malformed_model_catalog_is_not_accepted_as_success(monkeypatch,payload):
+    monkeypatch.setattr(access.requests,'get',Mock(return_value=response(payload)))
+    with pytest.raises(ValueError,match='список моделей'):access.models('elysium','fixture')
+
+
+def test_model_check_does_not_confirm_a_different_routing_id():
+    client=OpenAIClient('fixture',provider='elysium')
+    client.s.get=Mock(return_value=response({'data':[{'id':'anthropic/claude-sonnet-5.5'}]}))
+    with pytest.raises(OpenAIError,match='отсутствует'):client.check_model('claude-sonnet-5.5')

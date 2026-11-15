@@ -44,7 +44,7 @@ def image_response():
 def config():
     return {'elysium_replace_fastgen':True,'elysium_api_key':'fixture-elysium-secret','fastgen_api_key':'fixture-old-fastgen',
             'llm_engine':'fastgen','stt_engine':'fastgen','source_analysis_engine':'fastgen','rewrite_engine':'fastgen',
-            'tts_service':'fastgen','elysium_model':'anthropic/claude-sonnet-5.5-provider-4'}
+            'tts_service':'fastgen','elysium_model':'anthropic/claude-sonnet-5.5'}
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +54,8 @@ def isolate(tmp_path,monkeypatch):
     monkeypatch.setattr(app,'STATE',{**copy.deepcopy(app.STATE),'running':False,'preparing':False,'queue_active':False,
         'cancelled':False,'error':None,'service_switch':None,'queue':None,'log':[]})
     monkeypatch.setattr(app,'_SERVICE_RESUME',None);monkeypatch.setattr(app,'_VIDEO_RESUME',None)
+    import provider_access
+    monkeypatch.setattr(provider_access,'models',lambda engine,key: ['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5','anthropic/claude-sonnet-5.5'] if engine=='elysium' else ['claude-sonnet-4-6','claude-sonnet-5-5'])
     pipeline.CANCEL.clear()
     yield
     pipeline.CANCEL.clear()
@@ -150,7 +152,7 @@ def test_sonnet_preset_applies_to_every_text_entry_point_and_keeps_media_models(
     app.save_cfg(config());preset=app.Api().use_sonnet()
     assert preset['ok']
     cfg=app.load_cfg();assert cfg['llm_engine']==cfg['rewrite_engine']=='elysium'
-    assert cfg['elysium_model']=='anthropic/claude-sonnet-5.5-provider-4'
+    assert cfg['elysium_model']=='anthropic/claude-sonnet-5.5'
     assert routing.effective(cfg)['source_analysis_model'].startswith('google/gemini-')
     client=studio.text_client(cfg)
     assert client.engine=='elysium' and client.model==preset['model']
@@ -184,18 +186,18 @@ def test_live_switch_drains_old_worker_and_preserves_frozen_job_parameters(tmp_p
     app.STATE['running']=True
     old=threading.Thread(target=run_job,kwargs={'config_snapshot':{'marker':'keep-this','elysium_replace_fastgen':False}})
     old.start();assert entered.wait(2)
-    result=app.Api().switch_to_elysium({'elysium_model':'anthropic/claude-sonnet-5.5-provider-4'})
+    result=app.Api().switch_to_elysium({'elysium_model':'anthropic/claude-sonnet-5.5'})
     assert result['ok'] and result['resuming'];assert resumed.wait(3)
     old.join(2);assert not old.is_alive()
     assert seen[0]['marker']=='keep-this' and seen[0]['elysium_replace_fastgen']
-    assert seen[0]['elysium_model']=='anthropic/claude-sonnet-5.5-provider-4'
+    assert seen[0]['elysium_model']=='anthropic/claude-sonnet-5.5'
 
 
 def test_settings_and_project_options_preserve_credentials_and_pin_replacement(tmp_path):
     app.save_cfg(config());app.Api().save_config({'elysium_replace_fastgen':True})
     assert app.load_cfg()['fastgen_api_key']=='fixture-old-fastgen'
     from native_projects import safe_options
-    opts=safe_options({'elysium_replace_fastgen':True,'elysium_model':'anthropic/claude-sonnet-5.5-provider-4'})
+    opts=safe_options({'elysium_replace_fastgen':True,'elysium_model':'anthropic/claude-sonnet-5.5'})
     assert opts['elysium_replace_fastgen'] and opts['elysium_model'].startswith('anthropic/claude-sonnet')
     assert not any('key' in k for k in opts)
 
@@ -266,7 +268,7 @@ def test_sonnet_uses_real_selected_model_in_all_chat_requests(tmp_path,monkeypat
     # Disable streaming only in this transport fixture; keep the production model selection unchanged.
     client.api.stream=False;monkeypatch.setattr(client.api.s,'post',request)
     assert client.chat_json('Write a script','Facts')['script']=='Ready narration.'
-    assert sent[0]['model']=='anthropic/claude-sonnet-5.5-provider-4'
+    assert sent[0]['model']=='anthropic/claude-sonnet-5.5'
 
 
 def test_elysium_only_account_keeps_virtual_fastgen_preferences_after_engine_selection(tmp_path):
@@ -280,3 +282,30 @@ def test_readonly_checks_do_not_release_cancellation_during_handover():
     app.STATE['service_switch']={'state':'stopping'};pipeline.CANCEL.set()
     app.Api()._reset_idle_cancel()
     assert pipeline.CANCEL.is_set()
+
+
+def test_sonnet_catalog_failure_does_not_change_saved_configuration(monkeypatch):
+    import provider_access
+    app.save_cfg(config());before=app.load_cfg()
+    monkeypatch.setattr(provider_access,'models',Mock(side_effect=requests.ConnectionError('catalog unavailable')))
+    result=app.Api().use_sonnet()
+    assert not result['ok'] and app.load_cfg()==before
+    monkeypatch.setattr(provider_access,'models',lambda *a:['openai/gpt-5.4'])
+    assert not app.Api().use_sonnet()['ok'] and app.load_cfg()==before
+
+
+def test_sonnet_button_catalog_id_passes_readonly_check_and_reaches_generation(monkeypatch):
+    import provider_access
+    import openai_api
+    ids=['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5','anthropic/claude-sonnet-5.5']
+    # Same advertised IDs drive the button, credential check, and actual JSON request.
+    monkeypatch.setattr(provider_access,'models',lambda *a:ids)
+    app.save_cfg(config());selected=app.Api().use_sonnet();assert selected['ok']
+    cfg=app.load_cfg();client=studio.text_client(cfg);client.api.stream=False
+    monkeypatch.setattr(client.api.s,'get',Mock(return_value=response({'data':[{'id':i} for i in ids]})))
+    assert 'ключ принят' in client.api.check_model(selected['model'])
+    post=Mock(return_value=response({'choices':[{'message':{'content':'{"script":"ready"}'},'finish_reason':'stop'}]}))
+    monkeypatch.setattr(client.api.s,'post',post)
+    assert client.chat_json('JSON','script')['script']=='ready'
+    assert post.call_args.kwargs['json']['model']==selected['model']=='anthropic/claude-sonnet-5.5'
+    assert app.Api().use_sonnet(model='anthropic/claude-sonnet-5.5-provider-4')['ok'] is False

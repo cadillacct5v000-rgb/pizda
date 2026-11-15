@@ -414,12 +414,21 @@ with sync_playwright() as p:
  page.wait_for_timeout(250)
  assert app.load_cfg()['elysium_api_key']=='browser-elysium-replacement-fixture'
  assert app.load_cfg()['fastgen_api_key']==previous_fastgen
+ provider_access.models=lambda engine,key: ['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5','anthropic/claude-sonnet-5.5']
  page.locator('#replace_sonnet').click()
- page.wait_for_function("models.elysium_model === 'anthropic/claude-sonnet-5.5-provider-4' && llm === 'elysium' && rwEngine === 'elysium'")
+ page.wait_for_function("models.elysium_model === 'anthropic/claude-sonnet-5.5' && llm === 'elysium' && rwEngine === 'elysium'")
  assert app.load_cfg()['llm_engine']==app.load_cfg()['rewrite_engine']=='elysium'
  assert page.evaluate('opts().elysium_replace_fastgen') is True
- assert page.evaluate('opts().elysium_model')=='anthropic/claude-sonnet-5.5-provider-4'
+ assert page.evaluate('opts().elysium_model')=='anthropic/claude-sonnet-5.5'
  assert 'browser-elysium-replacement-fixture' not in json.dumps(api.get_state())
+ # All three text selectors share one value; saving cannot restore a stale model.
+ for selector,value in [('#rw_model','anthropic/claude-sonnet-4.6'),('#elysium_model','anthropic/claude-sonnet-5'),('#replace_text_model','anthropic/claude-sonnet-5.5')]:
+  page.locator(selector).select_option(value)
+  page.wait_for_function("value => models.elysium_model === value",arg=value)
+  page.evaluate('async()=>{syncAll();await saveKeys()}')
+  assert app.load_cfg()['elysium_model']==value
+  for other in ['#rw_model','#elysium_model','#replace_text_model']:assert page.locator(other).input_value()==value
+
  # Native handover waits for the old worker to stop; the frontend resumes polling the same job.
  import threading
  entered=threading.Event();resumed=threading.Event();replacement_snapshots=[]
@@ -443,7 +452,7 @@ with sync_playwright() as p:
  assert resumed.is_set()
  old.join(timeout=2)
  assert not old.is_alive() and replacement_snapshots[0]['marker']=='same stopped project'
- assert replacement_snapshots[0]['elysium_model']=='anthropic/claude-sonnet-5.5-provider-4'
+ assert replacement_snapshots[0]['elysium_model']=='anthropic/claude-sonnet-5.5'
  page.wait_for_function('document.getElementById("btn_again").disabled === false')
  assert not app.STATE.get('service_switch') and not app.STATE['running']
  assert not errors,errors

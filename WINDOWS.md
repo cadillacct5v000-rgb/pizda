@@ -1,3 +1,7 @@
+# KadroGen Studio 2.0.22 для Windows
+
+Исправлены выбор Sonnet из реального каталога и синхронизация модели сценария. После обновления повторно нажмите «Claude Sonnet для всех текстов · Elysium». Полная сборка `KadroGen-2.0.22-Windows-x64`; обновление `KadroGen-2.0.22-update-from-2.0.21` — только для 2.0.21. Закройте приложение, распакуйте все три файла с сохранением `_internal` и своих данных. [Настройка](docs/ELYSIUM_REPLACEMENT_RU.md).
+
 # KadroGen Studio 2.0.21 для Windows
 
 Полная замена FastGen через Elysium и Claude Sonnet для всех текстов. [Настройка и ограничения](docs/ELYSIUM_REPLACEMENT_RU.md). Полная сборка: `KadroGen-2.0.21-Windows-x64`. Обновление `KadroGen-2.0.21-update-from-2.0.20` — только для 2.0.20: закройте программу, скопируйте все три файла, сохранив `_internal` и свои данные.

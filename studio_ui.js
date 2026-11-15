@@ -287,7 +287,7 @@ function replacementFields(){return {...elysiumReplacement,elysium_model:models.
 function syncReplacement(){
   if(elysiumKeyEdit!==null)single.elysium=elysiumKeyEdit;
   for(const key of ['elysium_image_model','elysium_stt_model','elysium_tts_model','elysium_tts_voice'])if($('replace_'+key))elysiumReplacement[key]=$('replace_'+key).value;
-  if($('replace_text_model'))models.elysium_model=$('replace_text_model').value;
+  // Text selectors update one shared model through setTextModel; stale controls cannot override it.
 }
 function replacementPanel(){
   replacementBadge();const c=elysiumReplacement;
@@ -315,7 +315,7 @@ function bindReplacement(){
     await saveKeys();renderAccess();
   });
   for(const key of ['elysium_image_model','elysium_stt_model','elysium_tts_model','elysium_tts_voice'])$('replace_'+key)?.addEventListener('change',async()=>{syncReplacement();await saveKeys()});
-  $('replace_text_model')?.addEventListener('change',async()=>{syncReplacement();await saveKeys()});
+  $('replace_text_model')?.addEventListener('change',async()=>{setTextModel('elysium',$('replace_text_model').value);await saveKeys()});
 }
 async function replacementVoices(){
   try{syncAll();await saveKeys();const result=await pywebview.api.tts_voices('elysium');if(!result.ok)throw new Error(result.error);
@@ -343,6 +343,7 @@ async function switchToElysium(){
 async function useSonnetText(provider){
   try{
     syncAll();await saveKeys();const r=await pywebview.api.use_sonnet(provider);if(!r.ok)throw new Error(r.error);
+    if(Array.isArray(r.models))MODEL_OPTS[provider+'_model']=r.models.map(id=>[id,id]);
     llm=provider;rwEngine=provider;models[provider+'_model']=r.model;elysiumReplacement.elysium_model=models.elysium_model;
     renderAccess();$('s_replace').textContent='Claude Sonnet выбран для сценариев, рерайта, раскадровки и промптов. Генерация не запускалась.';
   }catch(error){if($('s_replace'))$('s_replace').textContent=String(error);}
@@ -352,4 +353,15 @@ async function checkReplacementModels(){
   try{syncAll();await saveKeys();const r=await pywebview.api.elysium_replacement_models();if(!r.ok)throw new Error(r.error);
     const c=replacementFields();$('s_replace').textContent=(r.images.includes(c.elysium_image_model)&&r.tts.includes(c.elysium_tts_model))?'Выбранные модели есть в каталоге. Генерация и списание не запускались.':'Одна из выбранных моделей отсутствует в каталоге; выберите другую.';
   }catch(error){$('s_replace').textContent=String(error)}
+}
+
+function setTextModel(engine, value){
+  models[engine+'_model']=value;
+  const ids=[engine+'_model'];
+  if(engine==='elysium')ids.push('replace_text_model');
+  if(rwEngine===engine)ids.push('rw_model');
+  for(const id of ids){const input=$(id);if(!input)continue;
+    if(!Array.from(input.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;input.appendChild(option);}
+    input.value=value;
+  }
 }

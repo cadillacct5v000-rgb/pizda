@@ -1,5 +1,6 @@
 """Read-only model discovery and safe, actionable provider errors."""
 from urllib.parse import urlsplit
+import re
 import api_response
 
 import requests
@@ -72,7 +73,10 @@ def models(engine, key):
             if response.status_code >= 400:
                 raise ValueError(failure(engine, response, key))
             data = api_response.json_object(response, LABELS.get(engine, engine), '/models', key)
-        for item in data.get('models' if engine == 'gemini' else 'data', []):
+        rows = data.get('models' if engine == 'gemini' else 'data')
+        if not isinstance(rows, list) or any(not isinstance(item, dict) for item in rows):
+            raise ValueError('Сервер не вернул корректный список моделей; настройки не изменены.')
+        for item in rows:
             if not isinstance(item, dict):
                 continue
             if engine == 'gemini' and 'generateContent' not in item.get('supportedGenerationMethods', []):
@@ -87,3 +91,25 @@ def models(engine, key):
             break
         page = next_page
     raise ValueError('Сервер не завершил выдачу списка моделей; неполный список не применён.')
+
+
+def sonnet_model(engine, key, requested=None, *, available=None):
+    """Choose an exact advertised Sonnet ID; never invent a provider route."""
+    if engine not in ('elysium', 'anthropic'):
+        raise ValueError('Выберите Elysium или Anthropic.')
+    prefix = 'anthropic/' if engine == 'elysium' else ''
+    pattern = re.compile(re.escape(prefix) + r'claude-sonnet-(\d+)(?:[.-](\d{1,2})(?=$|[-.]))?(.*)$')
+    if available is None:available = models(engine, key)
+    candidates = []
+    for identifier in available:
+        match = pattern.fullmatch(identifier)
+        if match:
+            major, minor, suffix = match.groups()
+            candidates.append((int(major), int(minor or 0), not bool(suffix), identifier))
+    if requested:
+        if not pattern.fullmatch(requested) or requested not in available:
+            raise ValueError('Выбранный Claude Sonnet отсутствует в каталоге этого ключа. Настройки не изменены.')
+        return requested
+    if not candidates:
+        raise ValueError('В каталоге этого ключа нет Claude Sonnet. Настройки не изменены.')
+    return max(candidates)[-1]

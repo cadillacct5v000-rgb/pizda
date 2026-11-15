@@ -80,10 +80,7 @@ class OpenAIClient:
                 raise OpenAIError(f"{self.provider}: /models не вернул список моделей; ключ не проверен.")
             ids = {item.get("id") for item in models if isinstance(item.get("id"), str)}
             if model not in ids:
-                alias = model.rsplit("/", 1)[-1]
-                matches = [name for name in ids if name.rsplit("/", 1)[-1] == alias]
-                if len(matches) != 1:
-                    raise OpenAIError(f"{self.provider}: ключ принят, но {model} отсутствует в доступном каталоге. Выберите модель через «Модели с сервера».")
+                raise OpenAIError(f"{self.provider}: ключ принят, но {model} отсутствует в доступном каталоге. Выберите точный ID через «Модели с сервера».")
             return f"OK · {self.provider} · ключ принят, {model} есть в каталоге. Генерация проверяется при запуске."
         finally:
             response.close()

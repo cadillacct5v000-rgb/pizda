@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.21-dev"
+VERSION = "2.0.22-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -1040,13 +1040,15 @@ class Api:
             cfg=load_cfg()
             if provider not in ('elysium','anthropic'):raise ValueError('Выберите Elysium или Anthropic.')
             if not cfg.get(provider+'_api_key'):raise ValueError('Сначала введите ключ '+provider+'.')
-            model=model or ('anthropic/claude-sonnet-5.5-provider-4' if provider=='elysium' else 'claude-sonnet-5-5')
+            import provider_access
+            available=provider_access.models(provider,cfg[provider+'_api_key'])
+            model=provider_access.sonnet_model(provider,cfg[provider+'_api_key'],model,available=available)
             prefix='anthropic/claude-sonnet-' if provider=='elysium' else 'claude-sonnet-'
             if not isinstance(model,str) or not model.startswith(prefix) or not re.fullmatch(r'[A-Za-z0-9./_-]{1,160}',model):raise ValueError('Выберите модель Claude Sonnet.')
             cfg.update(llm_engine=provider,rewrite_engine=provider)
             cfg[provider+'_model']=model;save_cfg(cfg)
-            return {'ok':True,'provider':provider,'model':model}
-        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+            return {'ok':True,'provider':provider,'model':model,'models':available}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
 
     def switch_to_elysium(self,options=None):
         global QUEUE_STOP
