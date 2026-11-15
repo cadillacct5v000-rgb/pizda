@@ -102,8 +102,10 @@ def test_real_http_sse_heartbeats_keep_idle_timeout_alive():
             self.send_header('Content-Type','text/event-stream')
             self.end_headers()
             try:
-                for _ in range(8):
-                    self.wfile.write(b': ping\n\n');self.wfile.flush();time.sleep(0.03)
+                # Total stream time exceeds the idle timeout; each heartbeat renews it.
+                # Allow scheduler jitter on shared macOS/Windows CI runners.
+                for _ in range(20):
+                    self.wfile.write(b': ping\n\n');self.wfile.flush();time.sleep(0.1)
                 data='\n'.join(event('{"ok":true}',finish='stop'))+'\n'
                 self.wfile.write(data.encode());self.wfile.flush()
             except Exception as error:
@@ -113,7 +115,7 @@ def test_real_http_sse_heartbeats_keep_idle_timeout_alive():
     server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
-        with requests.post(f'http://127.0.0.1:{server.server_port}/chat',json={'stream':True},stream=True,timeout=(2,0.15)) as response:
+        with requests.post(f'http://127.0.0.1:{server.server_port}/chat',json={'stream':True},stream=True,timeout=(2,1.0)) as response:
             assert chat_stream.read(response)['choices'][0]['message']['content']=='{"ok":true}'
         assert not failures
     finally:
