@@ -87,6 +87,7 @@ class OpenAIClient:
 
     # --- чат ---
     def chat_json(self, system: str, user: str, model: str = None, max_tokens: int = 4000, temperature: float = 0.7) -> dict:
+        provider_access.require_task_model(model or DEFAULT_CHAT_MODEL,"text")
         if self.stream:
             return self._stream_chat_json(system, user, model or DEFAULT_CHAT_MODEL, max_tokens)
         last = None
@@ -159,6 +160,7 @@ class OpenAIClient:
                 response.close()
 
     def see_json(self, system: str, user: str, image_path: str, model: str = None, max_tokens: int = 600, base: str = None) -> dict:
+        provider_access.require_task_model(model or DEFAULT_CHAT_MODEL,"vision")
         """Вопрос по картинке, ответ JSON. base — свой адрес (OpenRouter и другие совместимые сервисы)."""
         from llm_api import image_b64, extract_json
         data = image_b64(image_path)

@@ -141,7 +141,7 @@ for(const id of ['studio_captions','studio_wallpaper']) $(id).addEventListener('
 
 function showYouTubeSample() {
   if(studioBusy)return;
-  youtubeSampleStart=0;closeStudio();go(4);
+  youtubeSampleStart=0;closeStudio();workflowOpen('render');
   setTimeout(()=>{$('youtube_source_url')?.focus();},280);
 }
 
@@ -279,9 +279,9 @@ function replacementLoad(value){
   if(value.elysium_model)models.elysium_model=value.elysium_model;replacementBadge();
 }
 function replacementBadge(){
-  const title=elysiumReplacement.elysium_replace_fastgen?'Elysium · вместо FastGen':'fast-gen';
+  const title=elysiumReplacement.elysium_replace_fastgen?'Elysium':'FastGen';
   SVC_TITLES.fastgen=title;const tile=document.querySelector('#providers input[value=fastgen]')||document.querySelector('input[name=prov][value=fastgen]');
-  if(tile)tile.closest('label').querySelector('.t').textContent=title;
+  if(tile){tile.closest('label').querySelector('.t').textContent=title;const q=tile.closest('label').querySelector('.q');if(q)q.dataset.help=elysiumReplacement.elysium_replace_fastgen?'Картинки создаются через Elysium с выбранной моделью. Ключ вводится в «Подключениях». Настройки текстов, голоса и оживления находятся на своих шагах.':'';}
 }
 function replacementFields(){return {...elysiumReplacement,elysium_model:models.elysium_model}}
 function syncReplacement(){
@@ -343,7 +343,7 @@ async function switchToElysium(){
 async function useSonnetText(provider){
   try{
     syncAll();await saveKeys();const r=await pywebview.api.use_sonnet(provider);if(!r.ok)throw new Error(r.error);
-    if(Array.isArray(r.models))MODEL_OPTS[provider+'_model']=r.models.map(id=>[id,id]);
+    if(Array.isArray(r.models)){MODEL_OPTS[provider+'_model']=r.models.map(id=>[id,id]);TASK_MODEL_OPTS[provider+':text']=r.models.map(id=>[id,id]);}
     llm=provider;rwEngine=provider;models[provider+'_model']=r.model;elysiumReplacement.elysium_model=models.elysium_model;
     renderAccess();$('s_replace').textContent='Claude Sonnet выбран для сценариев, рерайта, раскадровки и промптов. Генерация не запускалась.';
   }catch(error){if($('s_replace'))$('s_replace').textContent=String(error);}
@@ -364,4 +364,262 @@ function setTextModel(engine, value){
     if(!Array.from(input.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=value;input.appendChild(option);}
     input.value=value;
   }
+}
+
+// Numbered production workflow. Existing native operations remain explicit actions.
+let workflowCurrent='source';
+const workflowSteps=[['source','1','Источник'],['style','2','Стиль'],['text','3','Сценарий'],['voice','4','Озвучка'],['board','5','Раскадровка и тайминг'],['images','6','Картинки'],['video','7','Оживление'],['render','8','Проба и сборка']];
+const workflowStatic=new Map();
+const workflowExtraConnections=new Set();
+let workflowOwnScriptDraft='';
+function workflowRail(){
+  if($('workflow_menu'))return;
+  const menu=document.createElement('aside');menu.id='workflow_menu';menu.setAttribute('aria-label','Этапы создания видео');
+  menu.innerHTML='<div class="wf-brand">Создание ролика</div><div id="wf_activity" hidden><p id="wf_activity_text" role="status"></p><button onclick="workflowStopTask()">Остановить текущую задачу</button></div>'+workflowSteps.map(([id,n,title])=>`<button type="button" data-workflow="${id}" onclick="workflowOpen('${id}')"><span>${n}</span>${title}</button>`).join('')+'<div class="wf-service-links"><button type="button" data-workflow="connections" onclick="workflowOpen(\'connections\')">Подключения</button><button type="button" data-workflow="queue" onclick="workflowOpen(\'queue\')">Очередь роликов</button></div><p>Переход между пунктами не запускает генерацию.</p>';
+  document.body.appendChild(menu);document.body.classList.add('workflow-enabled');workflowWatch();
+}
+function workflowMark(){
+  workflowRail();const step=workflowSteps.find(([id])=>id===workflowCurrent);for(const n of [4,5]){const bar=$('screen'+n)?.querySelector('.stepname');if(bar)bar.textContent=step?'Шаг '+step[1]+' · '+step[2]:workflowCurrent==='connections'?'Подключения':'Очередь роликов';}document.querySelectorAll('[data-workflow]').forEach(button=>{button.classList.toggle('wf-current',button.dataset.workflow===workflowCurrent);if(button.dataset.workflow===workflowCurrent)button.setAttribute('aria-current','step');else button.removeAttribute('aria-current');});
+}
+function workflowNotice(text){$('s_prep').textContent=text;}
+function workflowOpen(id){
+  if(cur===5 && !$('screen5').classList.contains('leaving') && $('rv_script')?.value.trim())F.script=$('rv_script').value;
+  workflowCurrent=id;workflowMark();
+  if(id==='board'){
+    if(source!=='script'&&!F.script&&!boardState){renderReview(null);go(5);$('s_prep2').textContent='Для готового аудио сцены и таймкоды будут рассчитаны автоматически при сборке. Для ручной раскадровки сначала подготовьте текст сценария.';workflowCurrent='render';workflowMark();return;}
+    if(cur!==5){renderReview(boardState?.script||F.script||F.rwText||'');go(5);}
+    if(boardState)showStoryboard();else{$('board_controls').hidden=false;$('s_prep2').textContent='Создайте раскадровку после проверки сценария. Это платный текстовый запрос. В каждой строке будут фраза, кадр и длительность.';}
+    return;
+  }
+  if(cur!==4)go(4);else workflowShowPane();
+}
+function workflowShowPane(){
+  document.querySelectorAll('#dropzone [data-workflow-pane]').forEach(p=>p.hidden=p.dataset.workflowPane!==workflowCurrent);
+  workflowMark();$('dropzone').scrollTop=0;const i=workflowSteps.findIndex(([id])=>id===workflowCurrent);const next=$('btn_prep');if(next)next.textContent=workflowCurrent==='render'?'Проверить перед сборкой':i<0?'К производству ролика':'Следующий пункт';const previous=$('screen4').querySelector('.nav>button');if(previous)previous.disabled=workflowCurrent==='source';
+}
+function workflowKeep(selector,host){
+  if(!workflowStatic.has(selector)){const node=document.querySelector(selector);if(node)workflowStatic.set(selector,node);}
+  const node=workflowStatic.get(selector);if(node&&host)host.appendChild(node);
+}
+function workflowKeyLabel(provider){return ({elysium:'Elysium',fastgen:'FastGen',anthropic:'Anthropic · Claude',openai:'OpenAI',gemini:'Google · Gemini',elevenlabs:'ElevenLabs',royal:'RoyalTechno',nonstop:'VeoNonStop',yougen:'YouGen',slider:'SecretSlider',google:'Google Images',syntx:'SYNTX',assemblyai:'AssemblyAI',openrouter:'OpenRouter',voicegen:'VoiceGen',voicer:'Voicer',lumean:'Lumean'})[provider]||provider;}
+async function workflowCheckConnection(provider,index){
+  const put=text=>{const status=$('wf_key_status_'+provider+'_'+index);if(status)status.textContent=text;};put('Проверяю подключение…');
+  try{await saveKeys();const r=await pywebview.api.check_connection(provider,index);put(r.message||r.error);}catch(error){put(String(error));}
+}
+function workflowOrganizeAccess(){
+  workflowRail();
+  const container=$('dropzone').firstElementChild;if(!container)return;
+  const raw=[...container.children];const sections={};
+  for(const [id,n,title] of [...workflowSteps,['connections','','Подключения'],['queue','','Очередь роликов']]){
+    if(id==='board')continue;
+    const pane=document.createElement('section');pane.dataset.workflowPane=id;pane.className='wf-pane';
+    pane.innerHTML=`<div class="wf-heading"><span>${n?'Шаг '+n:'Настройки'}</span><h2>${title}</h2><p>${({source:'Выберите содержание будущего ролика. На этом шаге ничего не генерируется.',style:'Укажите свой дизайн или способ использования оформления исходника.',text:'Выберите модель текста. Сначала подготовьте сценарий и проверьте его.',voice:'Голос и произношение проверяются до генерации картинок и видео.',images:'Выберите сервис картинок и правила проверки повторяющихся героев и мест.',video:'Определите, какие планы оживлять и какой моделью.',render:'Сначала проверьте короткую пробу, затем собирайте весь ролик.',connections:'Ключ каждого сервиса вводится здесь один раз. Выбор модели находится на её рабочем шаге.',queue:'Несколько роликов выполняются последовательно; проверьте общие настройки до запуска.'})[id]||''}</p></div>`;
+    sections[id]=pane;
+  }
+  for(const provider of workflowExtraConnections){
+    if(container.querySelector('input.key[data-k="'+provider+'"]'))continue;
+    if(IMG.includes(provider)){
+      if(!keyRows[provider].length)keyRows[provider].push({idx:-1,value:''});
+      keyRows[provider].forEach((key,index)=>container.insertAdjacentHTML('beforeend',keyIn('wf_key_'+provider+'_'+index,provider,index,key.value,'API-ключ '+workflowKeyLabel(provider))));
+    }else container.insertAdjacentHTML('beforeend',keyIn('wf_key_'+provider,provider,0,TTS_SVCS.includes(provider)?ttsKeys[provider]||'':single[provider]||'','API-ключ '+workflowKeyLabel(provider)));
+  }
+  const keyGroups=new Map();
+  for(const input of container.querySelectorAll('input.key')){
+    const group=input.dataset.k+':'+(IMG.includes(input.dataset.k)?input.dataset.i:'0');
+    if(!keyGroups.has(group))keyGroups.set(group,[]);keyGroups.get(group).push(input);
+  }
+  for(const [group,inputs] of keyGroups){
+    const provider=inputs[0].dataset.k,index=Number(inputs[0].dataset.i||0);
+    const canonical=inputs.find(i=>i.id==='replace_key')||inputs.find(i=>i.id.startsWith('k_'+provider+'_'))||inputs[0];
+    const keyrow=document.createElement('div');keyrow.className='lrow wf-connection';keyrow.dataset.keyProvider=provider;
+    keyrow.innerHTML=`<div class="lab">${esc(workflowKeyLabel(provider))}<small>Ключ хранится локально и используется выбранными задачами этого сервиса.</small></div><div class="ctl"></div><div class="status" id="wf_key_status_${provider}_${index}" role="status"></div>`;
+    const controls=keyrow.querySelector('.ctl');controls.appendChild(canonical);
+    const eyeButton=document.createElement('button');eyeButton.className='ghost';eyeButton.textContent='Показать';eyeButton.type='button';eyeButton.onclick=async()=>{await toggle(canonical.id);eyeButton.textContent=canonical.type==='password'?'Показать':'Скрыть';};controls.appendChild(eyeButton);
+    const check=document.createElement('button');check.className='ghost';check.type='button';check.textContent='Проверить подключение';check.onclick=()=>workflowCheckConnection(provider,index);controls.appendChild(check);
+    if(IMG.includes(provider)){const plus=document.createElement('button');plus.className='ghost';plus.textContent='+ Ключ';plus.onclick=()=>addKey(provider);controls.appendChild(plus);if(inputs[0].dataset.i!=='0'){const minus=document.createElement('button');minus.className='ghost';minus.textContent='Удалить';minus.onclick=()=>rmKey(provider,index);controls.appendChild(minus);}}
+    sections.connections.appendChild(keyrow);
+    for(const input of inputs){if(input===canonical)continue;const sibling=input.nextElementSibling;if(sibling?.classList.contains('eye'))sibling.remove();input.remove();}
+  }
+  let previous='source';
+  for(const node of raw){
+    if(node.classList.contains('qbox')){sections.queue.appendChild(node);continue;}
+    let target=previous;
+    const has=selector=>node.matches(selector)||!!node.querySelector(selector);
+    if(has('#replace_text_model'))continue;
+    if(node.tagName==='BUTTON'&&node.textContent.includes('Sonnet'))continue;
+    if(has('#s_replace')&&!has('#replace_mode'))target='text';
+    else if(has('#replace_mode'))target='connections';
+    else if(has('input.base'))target='connections';
+    else if(has('#replace_sonnet')||has('#llm_sel')||has('#rw_eng')||has('#rw_words'))target='text';
+    else if(has('#replace_elysium_tts_model')||has('#replace_elysium_tts_voice')||has('#tts_sel')||has('#tts_voice'))target='voice';
+    else if(has('#replace_elysium_image_model')||has('#location_continuity')||has('#qa_eng'))target='images';
+    else if(has('#video_engine')||has('#elysium_video_model'))target='video';
+    else if(has('#youtube_mode')||has('#analysis_engine'))target='style';
+    else if(has('#youtube_sample_start'))target='render';
+    else if(has('#youtube_source_url')||has('#rw_src')||has('#youtube_browser')||has('#stt_sel')||has('#replace_elysium_stt_model')||has('#file_name')||has('#script'))target='source';
+    else if(node.tagName==='BUTTON'){
+      if(node.textContent.includes('Sonnet'))target='text';
+      else if(node.textContent.includes('Каталог'))target='connections';
+      else if(node.textContent.includes('Применить Elysium')){const d=document.createElement('details');d.innerHTML='<summary>Переключить незавершённую задачу</summary><p>Останавливает прежние запросы и продолжает работу через Elysium. Новые запросы оплачиваются сервисом.</p>';node.textContent='Продолжить задачу через Elysium';d.appendChild(node);sections.connections.appendChild(d);continue;}
+    }
+    // Credential-only legacy rows have been replaced by one central connection card.
+    if(node.classList.contains('lrow')&&!node.querySelector('input,select,textarea')&&!node.querySelector('.note')&&node.querySelector('.ctl'))continue;
+    if(node.classList.contains('lrow'))node.querySelectorAll('button[onclick^="checkRow"],button.eye').forEach(b=>b.remove());
+    sections[target].appendChild(node);previous=target;
+  }
+  const addConnection=document.createElement('div');addConnection.className='wf-help';
+  const connectionProviders=['elysium','fastgen','anthropic','openai','gemini','elevenlabs','royal','nonstop','yougen','slider','google','syntx','assemblyai','openrouter','voicegen','voicer','lumean'];
+  addConnection.innerHTML='<label>Добавить сервис <select id="wf_connection_provider">'+connectionProviders.map(p=>'<option value="'+p+'">'+esc(workflowKeyLabel(p))+'</option>').join('')+'</select></label><button class="ghost" id="wf_add_connection">Добавить подключение</button><p>Один сохранённый ключ используется на всех шагах, где выбран этот сервис.</p>';
+  addConnection.querySelector('button').onclick=()=>{syncAll();workflowExtraConnections.add(addConnection.querySelector('select').value);renderAccess();};
+  sections.connections.appendChild(addConnection);
+  container.replaceChildren(...Object.values(sections));
+  // Reuse the real controls and their listeners rather than copying their values.
+  workflowKeep('#providers',sections.images);
+  workflowKeep('#screen1 .tiles',sections.images);
+  workflowKeep('#screen2 .srow',sections.style);workflowKeep('#custom_row',sections.style);
+  workflowKeep('#screen2 .qrow:has(#fgq_speed)',sections.images);
+  workflowKeep('#modes',sections.video);workflowKeep('#animation_strategy',null);
+  const animation=$('animation_strategy')?.closest('.qrow');if(animation&&!workflowStatic.has('animation'))workflowStatic.set('animation',animation);
+  if(workflowStatic.has('animation'))sections.video.appendChild(workflowStatic.get('animation'));
+  for(const selector of ['#vf_row','#animation_hint'])workflowKeep(selector,sections.video);
+  for(const selector of ['#hd','#qa'])workflowKeep(selector,sections.images);
+  for(const selector of ['#motion','#subs','#speed'])workflowKeep(selector,sections.render);
+  const fps=$('render_fps')?.closest('label');if(fps&&!workflowStatic.has('fps'))workflowStatic.set('fps',fps);if(workflowStatic.has('fps'))sections.render.appendChild(workflowStatic.get('fps'));
+  const styleHelp=document.createElement('div');styleHelp.className='wf-help';styleHelp.innerHTML='<strong>Дизайн канала</strong><p>Сохранённый профиль позволяет использовать новые ссылки только как источник содержания. Повторное изучение чужого стиля не требуется.</p><button class="ghost" onclick="openChannelDesign()">Выбрать или сохранить дизайн канала</button>';
+  sections.style.querySelector('.wf-heading').after(styleHelp);
+  const sourceMode=document.createElement('div');sourceMode.className='wf-help';sourceMode.innerHTML='<label>Содержание ролика <select id="wf_source_kind"><option value="youtube">Видео YouTube</option><option value="text">Мой текст</option><option value="audio">Готовая озвучка</option></select></label><p>Ссылка или текст — содержание. Стиль и голос выбираются отдельно на следующих шагах.</p>';sections.source.querySelector('.wf-heading').after(sourceMode);
+  sourceMode.querySelector('select').value=source!=='script'?'audio':rwOn()&&rwSrc==='youtube'?'youtube':'text';
+  sourceMode.querySelector('select').onchange=async event=>{syncAll();const value=event.target.value;if(F.script)workflowOwnScriptDraft=F.script;resetStoryboard();reviewProfileId=null;reviewSourceProfile=null;if(value==='audio'||value==='youtube')F.script='';else F.script=F.script||workflowOwnScriptDraft;source=value==='audio'?'mp3':'script';rwSrc=value==='youtube'?'youtube':'text';$('use_rw').checked=value==='youtube';$('use_tts').checked=value!=='audio';await pywebview.api.save_config({source,rewrite:$('use_rw').checked,rewrite_source:rwSrc});renderAccess();};
+  const sonnet=document.createElement('div');sonnet.className='wf-help';sonnet.innerHTML=`<strong>Быстрый выбор текстовой модели</strong><p>Выбирает доступный Sonnet из каталога и применяет к сценарию, раскадровке и промптам. Генерация не запускается.</p><button class="ghost" id="replace_sonnet" onclick="useSonnetText(llm==='anthropic'?'anthropic':'elysium')">Выбрать Claude Sonnet · по каталогу</button>`;sections.text.querySelector('.wf-heading').after(sonnet);
+  const kind=sourceMode.querySelector('select').value;
+  if($('youtube_source_url'))$('youtube_source_url').closest('.lrow').hidden=kind!=='youtube';
+  if($('rw_src')){const old=$('rw_src').closest('.lrow');if(!old.querySelector('textarea'))old.hidden=true;else $('rw_src').hidden=true;}
+  if(kind==='text'){
+    const rewriteToggle=document.createElement('label');rewriteToggle.className='wf-help';rewriteToggle.innerHTML='<input type="checkbox" id="wf_rewrite_text"> Переписать мой текст моделью <small>Выключено — используем текст без рерайта.</small>';
+    rewriteToggle.querySelector('input').checked=rwOn();rewriteToggle.querySelector('input').onchange=async event=>{syncAll();$('use_rw').checked=event.target.checked;if(event.target.checked)F.rwText=F.script;else F.script=F.script||F.rwText;await pywebview.api.save_config({rewrite:event.target.checked});renderAccess();};sections.source.appendChild(rewriteToggle);
+  }
+  const textAction=document.createElement('div');textAction.className='wf-action';textAction.innerHTML='<button class="primary" id="wf_prepare_text" onclick="startAll(false, true)">Создать сценарий заново · платный запрос</button><button class="ghost" onclick="workflowEditScript()">Открыть подготовленный сценарий</button><p>Проверьте факты и формулировки до озвучки. Для YouTube с анализом также оплачивается разбор исходника.</p>';sections.text.appendChild(textAction);
+  if(!rwOn())textAction.querySelector('#wf_prepare_text').textContent='Проверить свой сценарий';
+  if(boardState){const reuse=document.createElement('button');reuse.className='primary';reuse.id='wf_reuse_board';reuse.textContent='Использовать готовую раскадровку · '+boardState.rows.length+' планов';reuse.onclick=()=>workflowOpen('board');textAction.prepend(reuse);}
+  const youtubePrepare=$('youtube_prepare');if(youtubePrepare){youtubePrepare.textContent=boardState?'Создать новый сценарий и планы по ссылке · платно':'Подготовить сценарий и планы по ссылке · платно';if(rwSrc==='youtube'&&rwOn())textAction.querySelector('#wf_prepare_text').hidden=true;textAction.prepend(youtubePrepare);}
+  const voiceHelp=document.createElement('div');voiceHelp.className='wf-help';voiceHelp.innerHTML='<strong>Сначала проверьте голос</strong><p>Язык текста, выбранный голос и манера чтения — разные настройки. Анализ исходника не гарантирует перенос акцентов. Подготовьте 30-секундную пробу и послушайте результат перед полным роликом.</p><button class="ghost" onclick="showYouTubeSample()">Настроить пробу 30 секунд</button>';sections.voice.querySelector('.wf-heading').after(voiceHelp);
+  const voicePreview=document.createElement('div');voicePreview.className='wf-help';voicePreview.innerHTML='<label>Текст пробы голоса<textarea id="wf_voice_text" maxlength="600" rows="4" placeholder="Введите 2–3 фразы на языке будущего ролика. Для русского проверьте ударения, окончания и отсутствие иностранного акцента."></textarea></label><button class="primary" id="wf_voice_preview" onclick="workflowVoiceSample()">Создать пробу голоса · платный синтез</button><button class="ghost" onclick="workflowStopVoice()">Остановить пробу</button><div id="wf_voice_status" role="status"></div><div id="wf_voice_player"></div><p>Создаётся только короткая озвучка этого текста. Картинки, распознавание и видео не запускаются. Совпадение интонации с исходником нужно оценить на слух.</p>';sections.voice.appendChild(voicePreview);
+  voicePreview.querySelector('textarea').value=workflowVoiceDraft||(F.script||F.rwText||'').slice(0,450);voicePreview.querySelector('textarea').oninput=event=>workflowVoiceDraft=event.target.value;
+  if(source!=='script'){
+    voicePreview.hidden=true;
+    voiceHelp.innerHTML='<strong>Используется готовая озвучка</strong><p>Новый синтез не нужен: в сборку поступит выбранный аудиофайл. Проверьте его произношение и подачу в своём плеере до генерации кадров.</p><button class="ghost" onclick="workflowOpen(\'source\')">К выбору аудиофайла</button>';
+  }
+  const imageTrial=document.createElement('div');imageTrial.className='wf-help';imageTrial.innerHTML='<strong>Проверьте картинки до оживления</strong><p>Проба использует готовую раскадровку и создаёт недостающие картинки без запросов видеомодели. Подготовка озвучки для раскадровки может охватывать весь сценарий; короткая проба голоса находится в пункте 4.</p><button class="primary" id="wf_image_trial" onclick="workflowImageTrial()">Проба картинок без оживления · платно</button>';sections.images.appendChild(imageTrial);
+  const renderHelp=document.createElement('div');renderHelp.className='wf-help';renderHelp.innerHTML='<p>Короткая проба запускает платную подготовку выбранного отрезка. Полная сборка создаёт недостающие кадры и клипы; совместимые готовые части используются повторно.</p><button class="primary" onclick="workflowOpen(\'board\')">К раскадровке и предпросмотру</button><button class="ghost" onclick="workflowEditScript()">Проверить сценарий перед сборкой</button>';sections.render.querySelector('.wf-heading').after(renderHelp);
+  container.replaceChildren(...Object.values(sections));
+  for(const pane of Object.values(sections))pane.querySelectorAll('.lrow .ctl').forEach(ctl=>{if(ctl.querySelector('input.key'))return;});
+  const elyVoice=source==='script'&&!!elysiumReplacement.elysium_replace_fastgen&&tts==='fastgen';
+  for(const id of ['replace_elysium_tts_model','replace_elysium_tts_voice'])if($(id))$(id).closest('.lrow').hidden=!elyVoice;
+  if($('tts_voice'))$('tts_voice').closest('.lrow').hidden=elyVoice;
+  if($('replace_elysium_image_model'))$('replace_elysium_image_model').closest('.lrow').hidden=!provs().includes('fastgen');
+  if($('replace_elysium_stt_model'))$('replace_elysium_stt_model').closest('.lrow').hidden=stt!=='fastgen'&&analysisEngine!=='fastgen';
+  for(const id of ['replace_elysium_tts_model','replace_elysium_tts_voice','replace_elysium_image_model'])if($(id)){
+    const label=$(id).closest('.lrow').querySelector('.lab');label.textContent=({'replace_elysium_tts_model':'Модель озвучки Elysium','replace_elysium_tts_voice':'Голос Elysium','replace_elysium_image_model':'Модель картинок Elysium'})[id];
+  }
+  const designSelected=!!channelDesignChoice().channel_design_id;
+  const styleFromSource=rwOn()&&rwSrc==='youtube'&&analyzeVideo&&!designSelected;
+  const styleRow=workflowStatic.get('#screen2 .srow');if(styleRow)styleRow.hidden=designSelected||styleFromSource;
+  if($('custom_row'))$('custom_row').hidden=designSelected||styleFromSource;
+  if($('youtube_mode')){
+    $('youtube_mode').closest('.lrow').querySelector('.lab').textContent='Откуда брать оформление';
+    for(const option of $('youtube_mode').options)option.text=({montage:'Стиль исходника + его планы',full:'Стиль исходника + новые планы',text:'Только содержание → мой стиль',channel:'Только содержание → дизайн канала'})[option.value]||option.text;
+  }
+  if(boardState){const note=document.createElement('p');note.className='note';note.textContent='Стиль текущей раскадровки сохранён в её версии. Для другого оформления создайте новые планы из готового сценария; переписывать сам текст не требуется.';sections.style.appendChild(note);}
+  const ttsSelector=$('tts_sel');if(ttsSelector)ttsSelector.closest('.lrow').querySelector('.lab').textContent='Сервис озвучки';
+  const speedTip=document.querySelector('#dropzone .qrow:has(#fgq_speed) .q');if(speedTip)speedTip.dataset.help='Скорость использует лёгкие модели у поддерживаемых сервисов. Качество включает референсы, когда они поддерживаются. Модель картинок Elysium выбирается отдельно. Постоянство героев нужно проверять вручную.';
+  if($('hd'))$('hd').dataset.help='Повышает разрешение генерируемых изображений у поддерживаемого сервиса. У Elysium запрашивается 2K вместо 1K. Это не меняет разрешение видеоклипов и может увеличить стоимость.';
+  if($('wf_voice_preview')&&tts==='edge')$('wf_voice_preview').textContent='Создать пробу голоса · Edge без ключа';
+  const replacement=$('replace_mode');if(replacement){replacement.closest('.lrow').querySelector('.lab').textContent='Схема работы';replacement.options[0].text='Сервисы по отдельности';replacement.options[1].text='Задачи FastGen через Elysium';}
+  if(window.elysiumReplacement?.elysium_replace_fastgen){for(const select of [$('stt_sel'),$('llm_sel'),$('rw_eng'),$('tts_sel'),$('analysis_engine')])for(const option of select?.options||[])if(option.value==='fastgen')option.text='Elysium · вместо FastGen';}
+  const nav=$('screen4').querySelector('.nav');nav.innerHTML='<button class="ghost" onclick="workflowPrevious()">Предыдущий пункт</button><button class="ghost" onclick="workflowOpen(\'board\')">5 · Раскадровка</button><button class="primary" id="btn_prep" onclick="workflowNext()">Следующий пункт</button>';
+  workflowShowPane();
+}
+function workflowEditScript(){if(source!=='script'){if(!audioPath){workflowOpen('source');workflowNotice('Выберите готовый аудиофайл в пункте 1.');return;}renderReview(null);hideStoryboard();go(5);workflowCurrent='render';workflowMark();return;}if(!F.script&&!F.rwText&&!boardState){workflowCurrent='text';workflowShowPane();workflowNotice('Сначала подготовьте сценарий или вставьте свой текст.');return;}renderReview(boardState?.script||F.script||F.rwText);hideStoryboard();go(5);workflowCurrent='text';workflowMark();}
+function workflowNext(){if(workflowCurrent==='render'){workflowEditScript();return;}const i=workflowSteps.findIndex(([id])=>id===workflowCurrent);workflowOpen(workflowSteps[Math.min(i+1,workflowSteps.length-1)][0]);}
+function workflowPrevious(){const i=workflowSteps.findIndex(([id])=>id===workflowCurrent);workflowOpen(workflowSteps[Math.max(0,i-1)][0]);}
+
+let workflowVoiceDraft='';
+async function workflowVoiceSample(){
+  const status=$('wf_voice_status'),button=$('wf_voice_preview');if(button.disabled)return;button.disabled=true;
+  try{
+    syncAll();const sample={...replacementFields(),text:$('wf_voice_text').value,tts,voice:F.voice,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||null))};await saveKeys();status.textContent='Готовлю пробу голоса…';
+    const result=await pywebview.api.voice_sample(sample);
+    if(!result.ok)throw new Error(result.error);
+    if($('wf_voice_player'))$('wf_voice_player').replaceChildren();
+    let state;do{await new Promise(resolve=>setTimeout(resolve,700));state=await pywebview.api.get_state();if($('wf_voice_status'))$('wf_voice_status').textContent=state.message||'Готовлю озвучку…';}while(state.preparing);
+    if(state.error)throw new Error(state.error);if(state.cancelled)return;
+    const audio=await pywebview.api.voice_sample_result();if(!audio.ok)throw new Error(audio.error);
+    if($('wf_voice_player')){const player=document.createElement('audio');player.controls=true;player.src=audio.audio;$('wf_voice_player').replaceChildren(player);$('wf_voice_status').textContent='Прослушайте: понятны ли все слова, верны ли ударения и подходит ли подача. Полный ролик пока не запускался.';}
+  }catch(error){if($('wf_voice_status'))$('wf_voice_status').textContent=String(error);}
+  finally{if($('wf_voice_preview'))$('wf_voice_preview').disabled=false;}
+}
+const workflowOriginalLoadConfig=loadConfig;
+loadConfig=async function(keepScreen){await workflowOriginalLoadConfig(keepScreen);workflowRail();if(!keepScreen&&cur===1)workflowOpen('source');};
+
+const workflowCreateStoryboard=createStoryboard;
+createStoryboard=async function(...args){workflowCurrent='board';workflowMark();return workflowCreateStoryboard(...args);};
+
+function workflowOnScreen(n){
+  if(n===6)workflowCurrent='render';
+  if(n===5)workflowCurrent=$('board_panel').hidden?'text':'board';
+  workflowMark();
+}
+
+$('use_qa').addEventListener('change',()=>{if(cur===4)renderAccess();});
+for(const input of document.querySelectorAll('input[name=prov]'))input.addEventListener('change',()=>{if(cur===4)renderAccess();});
+
+async function workflowImageTrial(){
+  if(!boardState){workflowOpen('board');$('s_prep2').textContent='Сначала создайте или откройте раскадровку.';return;}
+  if(boardBusy||studioBusy)return;
+  const previous={mode:mode(),animation:animationOptions(),video_first:vf()};
+  try{
+    if(!await saveStoryboard())return;
+    const value=opts();value.source='script';value.script=boardState.script;value.rewrite.on=false;value.storyboard_id=boardState.id;value.source_profile_id=null;
+    value.mode='images';value.animation={strategy:'local',limit:0};value.video_first=0;value.motion=false;value.preview={start:Number($('preview_start').value)||0,seconds:30};
+    await start(value);
+  }finally{await pywebview.api.save_config(previous);}
+}
+
+function workflowHelp(){
+  let dialog=$('workflow_help_dialog');
+  if(!dialog){
+    dialog=document.createElement('dialog');dialog.id='workflow_help_dialog';dialog.className='wf-help-dialog';
+    dialog.innerHTML=`<header><h2>От ссылки до вашего видео</h2><button class="ghost" onclick="document.getElementById('workflow_help_dialog').close()">Закрыть</button></header>
+    <p>Переход по меню сохраняет доступ к настройкам и не запускает нейросеть. Генерация начинается только отдельной кнопкой действия.</p>
+    <ol>
+    <li><strong>Источник.</strong> Выберите YouTube, свой текст или готовую озвучку. Для YouTube вставьте ссылку. Браузер и cookies нужны только если YouTube требует входа. Распознавание переводит речь в текст и таймкоды; это не новая озвучка.</li>
+    <li><strong>Стиль.</strong> Выберите сохранённый дизайн канала, готовый стиль или опишите свой. Анализ исходника изучает его оформление и планы. Дизайн канала позволяет использовать новые ссылки только как содержание. Смена стиля может потребовать новых изображений.</li>
+    <li><strong>Сценарий.</strong> Модель пишет рерайт, раскадровку и промпты. Sonnet выбирается по каталогу выбранного сервиса. «Создать заново» — платная подготовка нового текста; «Открыть подготовленный сценарий» и «Использовать готовую раскадровку» не переписывают его. Проверьте факты, язык и объём. В полном разборе YouTube объём следует исходнику; поле количества слов там не используется.</li>
+    <li><strong>Озвучка.</strong> Выберите сервис и голос. Голос с иностранной манерой может не подойти для русского даже у многоязычной модели. Введите несколько фраз и нажмите «Создать пробу голоса»: оплачивается только короткий синтез, без картинок и видео. Послушайте ударения и интонацию. Анализ подачи исходника даёт ориентир; точный перенос интонации и ручной редактор голосовых акцентов пока не реализованы.</li>
+    <li><strong>Раскадровка и тайминг.</strong> Для каждого плана указаны фраза, описание изображения, движение и длительность. Текст плана связан со сценарием. При сборке планы автоматически выравниваются по словам озвучки. Ручная длительность меняет темп соответствующей фразы в допустимых пределах. «Сохранить» фиксирует правки; «Открыть сохранённую» возвращает существующую версию без нового анализа.</li>
+    <li><strong>Картинки.</strong> Выберите сервис, модель и разрешение. «Качество» включает работу с референсами, когда они поддерживаются; модель Elysium выбирается отдельно. HD повышает размер исходных картинок, а не разрешение видеоклипа. Автоотбор использует зрительную чат-модель: Gemini/Claude/подходящий GPT. Seedream рисует, Kling оживляет — они не проверяют картинки через чат API. Проверки и перерисовки оплачиваются. Единые локации связывают планы одной комнаты, но не гарантируют идеального постоянства. Проба картинок без оживления использует готовые планы и не отправляет задания видеомодели.</li>
+    <li><strong>Оживление.</strong> Укажите видеомодель и разрешение. Можно оживлять ключевые сцены, начало и повороты, выбрать планы вручную либо оставить локальное движение картинок. Лимит относится к видеовставкам. Автовыбор локальный, без отдельного запроса. «Только видео» оживляет все планы при выборе по режиму; выборочная стратегия имеет приоритет. Смена модели видео требует новых клипов, а не нового сценария.</li>
+    <li><strong>Проба и сборка.</strong> Сначала соберите 20–30 секунд и проверьте голос, кадры и движение. Проба по YouTube готовит только указанный исходный отрезок; предпросмотр существующей раскадровки может сначала подготовить озвучку всего сценария. Затем соберите полный ролик. Субтитры накладываются на готовое видео. Моушн-дизайн — локальные переходы; в режиме исходных склеек/раскадровки он может быть отключён. FPS задаёт частоту кадров итогового файла. Готовый MP4 открывается кнопкой результата или через папку видео.</li>
+    </ol>
+    <h3>Подключения и выбор моделей</h3><p>Ключ сервиса вводится один раз и используется на всех шагах, где выбран этот сервис. «Показать/Скрыть» меняет видимость ключа. «Добавить сервис» создаёт поле подключения, «+ Ключ» — ещё один ключ того же сервиса. «Проверить подключение» читает данные доступа без генерации. «Модели с сервера» загружает каталог, но не подтверждает качество и право на платную генерацию. Списки текста и проверки изображений разделены по назначению.</p>
+    <p>Схема «Задачи FastGen через Elysium» заменяет этапы FastGen. Отдельно выбранные ElevenLabs, Anthropic и другие прямые сервисы сохраняются. Свой адрес API нужен для прокси; обычно его оставляют пустым. Ключ должен принадлежать выбранному сервису и адресу.</p>
+    <h3>Очередь, проекты, студия</h3><p>«+ В очередь» добавляет текущий источник; затем можно заполнить следующий. Задания выполняются последовательно. «Разный стиль» задаёт оформление отдельно для каждого задания. «Проекты» сохраняют сценарий, настройки и ссылку на раскадровку; ключи остаются общими. «Студия» содержит улучшение сценария, постановку, редакторскую проверку и идеи заголовков/обложек. Редакторская проверка локальная; создание текста и постановки оплачивается.</p>
+    <p>«Остановить текущую задачу» появляется в меню во время работы. Остановка дожидается завершения текущего сетевого запроса; сохранённые части остаются. «Остановить пробу» действует только на короткий синтез голоса.</p><h3>Если видео не отправилось</h3><p>HTTP 502 с media_submission_unconfirmed означает, что создание задания не подтверждено. Это не доказательство плохого ключа или нехватки денег. «Повторить отправку» разрешает новую платную попытку и может вызвать повторное списание. Для разбора используйте «Отчёт». Неопределённые задания не повторяются автоматически.</p>`;
+    document.body.appendChild(dialog);
+  }
+  dialog.showModal();
+}
+
+let workflowStopping=false;
+async function workflowWatch(){
+  try{
+    const state=await pywebview.api.get_state();const busy=!!(state.running||state.preparing||state.queue_active||state.service_switch);
+    const box=$('wf_activity');if(box){box.hidden=!busy;$('wf_activity_text').textContent=workflowStopping?'Останавливаю задачу; ожидаю завершения текущего запроса…':state.message||'Выполняется задача';}
+    if(!busy)workflowStopping=false;
+  }catch(error){/* Other workflow controls still report bridge failures explicitly. */}
+  setTimeout(workflowWatch,1200);
+}
+async function workflowStopTask(){try{await pywebview.api.cancel();workflowStopping=true;}catch(error){workflowNotice(String(error));}}
+async function workflowStopVoice(){
+  const result=await pywebview.api.cancel_voice_sample();if($('wf_voice_status'))$('wf_voice_status').textContent=result.message||result.error;
 }

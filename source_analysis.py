@@ -167,6 +167,8 @@ def _provider(cfg):
     model = cfg.get("source_analysis_model") or cfg.get(engine + "_model") or DEFAULT_MODELS[engine]
     if engine == "fastgen" and not (model.startswith("google/gemini-") or model.startswith("gemini-")):
         raise SourceAnalysisError("fast-gen принимает изображения только через Gemini с доступом chat.multimodal.")
+    import provider_access
+    provider_access.require_task_model(model,"vision")
     return engine, key, model
 
 

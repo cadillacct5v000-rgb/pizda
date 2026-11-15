@@ -57,6 +57,11 @@ def exhausted(response):
     return response.status_code == 429 and any(v in text for v in ('insufficient_quota', 'credit', 'billing_hard_limit'))
 
 
+class ModelIds(list):
+    def __init__(self,values=(),metadata=None):
+        super().__init__(values);self.metadata=metadata or {}
+
+
 def models(engine, key):
     if engine not in LABELS:
         raise ValueError('Выберите OpenAI, Claude или Gemini.')
@@ -64,7 +69,7 @@ def models(engine, key):
         raise ValueError('Ключ не введён.')
     headers = {'x-goog-api-key': key} if engine == 'gemini' else (
         {'x-api-key': key, 'anthropic-version': '2023-06-01'} if engine == 'anthropic' else {'Authorization': 'Bearer ' + key})
-    result, page = [], None
+    result, page, metadata = [], None, {}
     for _ in range(20):
         params = {'pageSize': 1000} if engine == 'gemini' else {'limit': 100} if engine == 'anthropic' else {}
         if page:
@@ -83,10 +88,11 @@ def models(engine, key):
                 continue
             identifier = item.get('name' if engine == 'gemini' else 'id')
             if isinstance(identifier, str) and identifier:
-                result.append(identifier.removeprefix('models/') if engine == 'gemini' else identifier)
+                identifier=identifier.removeprefix('models/') if engine=='gemini' else identifier
+                result.append(identifier);metadata[identifier]=item
         next_page = data.get('nextPageToken') if engine == 'gemini' else data.get('last_id') if data.get('has_more') else None
         if not next_page:
-            return sorted(set(result))
+            return ModelIds(sorted(set(result)),metadata)
         if next_page == page:
             break
         page = next_page
@@ -113,3 +119,40 @@ def sonnet_model(engine, key, requested=None, *, available=None):
     if not candidates:
         raise ValueError('В каталоге этого ключа нет Claude Sonnet. Настройки не изменены.')
     return max(candidates)[-1]
+
+# Chat endpoints must not receive media-generation, transcription or embedding models.
+_MEDIA_ID=re.compile(r'(?:seedream|kling|hailuo|(?:^|[/_-])wan(?:[./_-]|$)|veo(?:[./_-]|$)|sora(?:[./_-]|$)|imagen|flux|dall-e|ideogram|recraft|stable-diffusion|midjourney|(?:gpt|chatgpt|qwen)[^/]*image|nano[-_]banana|elevenlabs|whisper|embed|moderation|realtime|transcribe|(?:gpt|gemini|qwen)[^/]*audio|text-to-speech|(?:^|[/_-])tts(?:[./_-]|$)|gemini[^/]*(?:image|tts|video)|grok[^/]*(?:image|video))',re.I)
+
+def supports_task_model(identifier, purpose='text',metadata=None):
+    """Local endpoint compatibility, not proof of account access or generation quality."""
+    if purpose not in ('text','vision'):raise ValueError('Неизвестное назначение модели.')
+    name=str(identifier).lower()
+    if _MEDIA_ID.search(name):return False
+    if isinstance(metadata,dict):
+        kind=metadata.get('kind') or metadata.get('type')
+        if kind in ('image','video','audio','embedding','image_generation','video_generation','text-to-speech'):return False
+        inputs=metadata.get('input_modalities')
+        outputs=metadata.get('output_modalities')
+        if isinstance(outputs,list) and outputs and 'text' not in outputs:return False
+        if isinstance(inputs,list) and isinstance(outputs,list) and 'text' in outputs:
+            return 'image' in inputs if purpose=='vision' else True
+        capabilities=metadata.get('capabilities')
+        if isinstance(capabilities,dict):
+            if purpose=='vision' and type(capabilities.get('vision')) is bool:return capabilities['vision']
+            if purpose=='text' and type(capabilities.get('chat')) is bool:return capabilities['chat']
+    if purpose=='text':
+        return True if re.search(r'(?:^|/)(?:claude-|gemini-|gpt-|chatgpt-|o[134](?:-|$)|grok-|qwen|deepseek|llama|mistral|command)',name) else None
+    if re.search(r'(?:^|/)(?:claude-|gemini-|gpt-4o|gpt-4\.1|gpt-5|o[34](?:-|$))',name) or re.search(r'(?:vision|qwen.*vl|llama.*vision)',name):return True
+    if re.search(r'(?:gpt-3\.5|gpt-4(?:-|$)|deepseek.*(?:chat|reasoner)|mistral)',name):return False
+    return None
+
+
+def filter_models(values,purpose='text'):
+    # Unknown capabilities are not advertised as suitable in a task-specific picker.
+    return [name for name in values if supports_task_model(name,purpose,getattr(values,'metadata',{}).get(name)) is True]
+
+
+def require_task_model(identifier,purpose='text'):
+    if supports_task_model(identifier,purpose) is False:
+        task='проверки изображений' if purpose=='vision' else 'работы с текстом'
+        raise ValueError(f'Модель {identifier} не подходит для {task}: нужен чат API'+(' с поддержкой изображений.' if purpose=='vision' else '.')+' Выберите модель через «Модели с сервера» в этом разделе.')

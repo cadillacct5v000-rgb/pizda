@@ -398,6 +398,20 @@
   .board-note { font-size:14px; line-height:1.5; color:var(--ink2); padding:8px 0; }
   @media(max-width:1000px) { .board-row { grid-template-columns:160px 1fr; } }
 
+
+/* Numbered production steps */
+.wf-help-dialog{width:min(900px,94vw);max-height:88vh;overflow:auto;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:12px;padding:24px;line-height:1.65}.wf-help-dialog header{display:flex;align-items:center;justify-content:space-between;gap:15px}.wf-help-dialog li{margin:15px 0}.wf-help-dialog p{color:var(--ink2)}
+
+.wf-pane .lrow{animation:none!important}.wf-pane .lrow .ctl{min-height:48px}.wf-pane .wf-connection .ctl{gap:0}.wf-pane audio{width:100%;margin-top:12px}.wf-pane .wf-heading{order:-1}
+#workflow_menu{position:fixed;left:max(16px,calc((100vw - 1700px)/2));top:110px;bottom:55px;width:210px;overflow:auto;z-index:15;background:var(--bg);padding:14px;border:1px solid var(--line);border-radius:12px}
+#workflow_menu button{display:flex;gap:10px;align-items:center;text-align:left;width:100%;padding:12px 9px;margin:3px 0;border:1px solid transparent;background:transparent;color:var(--ink2);font-size:13px;line-height:1.4;border-radius:7px;cursor:pointer}
+#workflow_menu button span{display:grid;place-items:center;width:24px;height:24px;flex-shrink:0;border:1px solid var(--line);border-radius:50%;font-size:12px}
+#workflow_menu button.wf-current{border-color:var(--acc2);color:var(--ink);background:var(--glass)}
+.wf-brand{font-size:14px;font-weight:650;margin:0 8px 15px}.wf-service-links{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}#workflow_menu p{font-size:11px;line-height:1.6;color:var(--ink2);margin:15px 8px}
+body.workflow-enabled .wrap{max-width:1700px;padding-left:252px;padding-right:24px}
+.wf-pane[hidden],.wf-pane [hidden],#wf_activity[hidden]{display:none!important}.wf-pane{display:flex;flex-direction:column;gap:15px}.wf-heading h2{font-size:27px;margin:7px 0 10px}.wf-heading>span{font-size:12px;color:var(--acc2)}.wf-heading p,.wf-help p,.wf-action p{font-size:14px;line-height:1.6;color:var(--ink2)}.wf-help,.wf-action{padding:18px;border:1px solid var(--line);border-radius:10px;background:var(--glass)}.wf-help button,.wf-action button{margin:8px 9px 0 0}.wf-connection small{display:block;color:var(--ink2);font-size:12px;font-weight:400;line-height:1.5;margin-top:8px}.wf-pane .tiles{display:grid!important;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));width:100%;margin:0}.wf-pane .tile{min-height:110px;height:auto;padding:20px 10px}.wf-pane .tile svg{width:38px;height:38px}.wf-pane .qrow{flex-wrap:wrap}.wf-pane .opt{width:100%;min-height:60px;margin:0}.wf-pane input:not([type=checkbox]):not([type=radio]):not([type=range]),.wf-pane textarea{color:var(--ink)}.wf-pane details{padding:14px;border:1px solid var(--line);border-radius:9px}.wf-pane summary{cursor:pointer;color:var(--ink2)}
+@media(max-width:960px){#workflow_menu{position:static;width:auto;max-height:190px;margin:14px 20px;display:flex;flex-wrap:wrap;gap:4px}#workflow_menu button{width:auto;padding:7px}.wf-brand,#workflow_menu p{display:none}.wf-service-links{display:flex;margin:0;padding:0;border:0}body.workflow-enabled .wrap{padding-left:20px;padding-right:20px}.wf-heading h2{font-size:22px}}
+
 </style>
 <link rel="stylesheet" href="assets/studio.css">
 </head>
@@ -407,7 +421,7 @@
 <div class="topctl">
   <button class="ctl" id="studiobtn" onclick="openStudio()">Студия</button>
   <button class="ctl" id="projectsbtn" onclick="openProjects()">Проекты</button>
-  <div class="ctl help" id="helpbtn" onclick="pywebview.api.open_help()" data-i18n="help"></div>
+  <div class="ctl help" id="helpbtn" onclick="workflowHelp()" data-i18n="help"></div>
   <div class="ctl" id="langbtn" title="Language">EN</div>
   <div class="ctl" id="theme" title="Theme">
     <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></svg>
@@ -562,7 +576,7 @@ const I18N = {
        tip_royal:'Картинки Nano Banana по 2 цента, оживление Veo 3.1 по 2 цента за клип.<br><a data-url="https://t.me/royaltechno_ai_bot">@royaltechno_ai_bot (Telegram)</a>',
        tip_google:'Официальный Gemini API от Google, без посредников. Скорость — Imagen 4 Fast (около 2 центов), качество — Nano Banana 2 (4,5 цента) и Pro (13 центов), оживление — Veo 3.1 Fast (около $1 за клип 8 с). Ключ из Google AI Studio, нужен включённый биллинг.<br><a data-url="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a><a data-url="https://ai.google.dev/pricing">цены</a>',
        tip_slider:'Массовая генерация картинок: до 100 сцен одной задачей. Только картинки. Первые 100 картинок бесплатно, дальше подписка 1960 ₽ ($25) в месяц.<br><a data-url="https://secretslider.com">secretslider.com</a>',
-       tip_quality:'Скорость: Flower у fast-gen по 1 кредиту, у остальных лёгкие модели, без референсов. Качество: Nano Banana 2 / Pro / ChatGPT по 4 кредита, герои одинаковые во всех сценах — программа рисует портрет каждого и использует как референс. Если сервис трижды ошибся, сцену добирает любой другой сервис с ключом.',
+       tip_quality:'Скорость: Flower у fast-gen по 1 кредиту, у остальных лёгкие модели, без референсов. Качество: Nano Banana 2 / Pro / ChatGPT по 4 кредита, используются портреты и референсы для согласованности героев; совпадение не гарантируется. Если сервис трижды ошибся, сцену добирает любой другой сервис с ключом.',
        tip_rw:'Берёт сценарий с ролика YouTube (по ссылке) или ваш текст и переписывает его заново: убирает призывы к подписке, делает цепляющее вступление, задаёт объём в словах и язык. Переписывает ChatGPT, Claude, Gemini или fast-gen по вашему ключу. Новый сценарий сразу озвучивается.',
        tip_tts:'Озвучка из текста сценария. Бесплатно и без ключа — голоса Microsoft Edge (по-русски Дмитрий и Светлана, качество среднее). Дороже и живее — ElevenLabs v3 через VoiceGen, Voicer или Lumean, понадобится их ключ. Без этой галочки нужен готовый mp3.',
        tip_subs:'Текст озвучки накладывается на видео с точными таймингами: строки до 42 символов, без мигания на паузах. Файл .srt сохраняется рядом с видео.',
@@ -621,7 +635,7 @@ const ttsKeys = {};
 for (let i = 0; i < 32; i++) { const b = document.createElement('i'); b.style.animationDelay = (i * 0.07) + 's'; b.style.animationDuration = (1.1 + (i % 5) * 0.15) + 's'; $('wave').appendChild(b); }
 document.addEventListener('click', e => { const a = e.target.closest('[data-url]'); if (!a) return; e.preventDefault(); e.stopPropagation(); pywebview.api.open_url(a.dataset.url); });
 const gtip = $('gtip'); let tipTimer = null;
-function showTip(el) { clearTimeout(tipTimer); gtip.innerHTML = t(el.dataset.tipkey); const r = el.getBoundingClientRect(); gtip.style.left = Math.min(window.innerWidth - 360, Math.max(12, r.left)) + 'px'; gtip.style.top = Math.min(window.innerHeight - 160, r.bottom + 10) + 'px'; gtip.classList.add('show'); }
+function showTip(el) { clearTimeout(tipTimer); gtip.innerHTML = el.dataset.help || t(el.dataset.tipkey); const r = el.getBoundingClientRect(); gtip.style.left = Math.min(window.innerWidth - 360, Math.max(12, r.left)) + 'px'; gtip.style.top = Math.min(window.innerHeight - 160, r.bottom + 10) + 'px'; gtip.classList.add('show'); }
 function hideTip() { tipTimer = setTimeout(() => gtip.classList.remove('show'), 250); }
 document.querySelectorAll('[data-tipkey]').forEach(el => { el.addEventListener('mouseenter', () => showTip(el)); el.addEventListener('mouseleave', hideTip); if (el.classList.contains('q')) el.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); showTip(el); }); });
 gtip.addEventListener('mouseenter', () => clearTimeout(tipTimer)); gtip.addEventListener('mouseleave', hideTip);
@@ -633,6 +647,7 @@ function go(n) {
     from.classList.remove('leaving', 'active'); cur = n;
     for (let i = 1; i <= 6; i++) $('screen' + i).classList.toggle('active', i === n);
     if (n === 4) {renderAccess();$('dropzone').scrollTop=0;}
+    if(window.workflowOnScreen)workflowOnScreen(n);
   }, 240);
 }
 function provs() { return Array.from(document.querySelectorAll('input[name=prov]:checked')).map(x => x.value); }
@@ -700,16 +715,16 @@ async function prepareYouTube() {
   if (!url) { $('s_prep').textContent = 'Вставьте ссылку исходного ролика YouTube.'; return; }
   F.rwUrl = url; rwSrc = 'youtube'; source = 'script';
   $('use_rw').checked = true; $('use_tts').checked = true;
-  analyzeVideo = true; sourceMontage = true; youtubeAutoBoard = true;
+  youtubeAutoBoard = true;
   mark();
   try {
-    await pywebview.api.save_config({rewrite:true,rewrite_source:'youtube',rewrite_url:url,source:'script',youtube_analyze_video:true,source_montage:true,studio:window.studioFields?studioFields():{}});
+    await pywebview.api.save_config({rewrite:true,rewrite_source:'youtube',rewrite_url:url,source:'script',youtube_analyze_video:analyzeVideo,source_montage:sourceMontage,studio:window.studioFields?studioFields():{}});
     renderAccess();
-    await startAll(true);
+    await startAll(true, true);
   } catch(error) { youtubeAutoBoard = false; $('s_prep').textContent = String(error); }
 }
 let queueMode = false;
-async function startAll(singleYouTube = false) {
+async function startAll(singleYouTube = false, recreateScript = false) {
   await saveKeys(); $('s_prep').textContent = ''; $('s_prep2').textContent = '';
   await queueRefresh();
   if (!singleYouTube && (queueItems.some(q => q.status === 'queued') || (queueItems.length && formHasContent()))) {
@@ -717,6 +732,14 @@ async function startAll(singleYouTube = false) {
     queueMode = true; renderReview(null); go(5); return;
   }
   queueMode = false;
+  if (boardState && !recreateScript) {
+    syncBoardPage();
+    F.script = boardState.script;
+    renderReview(boardState.script);
+    showStoryboard();
+    go(5);
+    return;
+  }
   resetStoryboard();
   reviewProfileId = null; reviewSourceProfile = null;
   const o = opts();
@@ -737,6 +760,7 @@ async function pollRewrite() {
   catch (e) { $('scan_sub').textContent = t('error') + String(e); setTimeout(pollRewrite, 1200); return; }
   if (st.preparing) { if (st.message) $('scan_sub').textContent = st.message; return setTimeout(pollRewrite, 1200); }
   $('scan').style.display = 'none'; $('review').classList.remove('busy');
+  if(st.cancelled){if(typeof youtubeAutoBoard!=='undefined')youtubeAutoBoard=false;$('s_prep2').textContent='Подготовка остановлена. Готовую раскадровку можно открыть из сохранённых версий.';$('btn_go').disabled=true;return;}
   if (st.error || !st.script) { if(typeof youtubeAutoBoard !== 'undefined')youtubeAutoBoard = false; $('s_prep2').textContent = t('error') + (st.error || t('err_rw_empty')); return; }
   reviewProfileId = st.source_profile_id || null; reviewSourceProfile = st.source_profile || null;
   renderReview(st.script); $('btn_go').disabled = false;
@@ -922,7 +946,9 @@ async function redoScene(i) {
 }
 function buildFrames(n) { total = n; known = new Set(); const f = $('frames'); f.innerHTML = ''; for (let i = 0; i < n; i++) { const d = document.createElement('div'); d.className = 'frame pending'; d.id = 'fr' + i; d.dataset.n = String(i + 1).padStart(2, '0'); d.innerHTML = '<span class="ph"></span>'; f.appendChild(d); } }
 async function start(o) {
-  const r = await pywebview.api.start(o || opts());
+  const options=o||opts();
+  if(!options.providers?.length){workflowOpen('images');workflowNotice('Выберите хотя бы один сервис картинок в пункте 6.');return;}
+  const r = await pywebview.api.start(options);
   if (!r.ok) { $('s_prep2').textContent = r.error; return; }
   $('result').classList.remove('show'); $('error').textContent = ''; $('btn_again').disabled = true; $('btn_cancel').disabled = false; $('g_title').textContent = t('frames'); shownPct = 0;
   buildStages(mode()); buildFrames(total || 0); go(6); poll();
@@ -1018,7 +1044,7 @@ async function loadConfig(keepScreen) {
   youtubeSampleStart = Number(c.youtube_sample_start)||0;
   youtubeBrowser = c.youtube_browser || ''; youtubeCookieFile = c.youtube_cookie_file || '';
   rwEngine = c.rewrite_engine || 'fastgen'; rwSrc = c.rewrite_source || 'youtube'; $('use_rw').checked = !!c.rewrite;
-  if (!keepScreen) { F.rwUrl = c.rewrite_url || ''; F.rwWords = c.rewrite_words || 1500; F.rwLang = c.rewrite_lang || 'польском'; }
+  if (!keepScreen) { F.rwUrl = c.rewrite_url || ''; F.rwWords = c.rewrite_words || 1500; F.rwLang = c.rewrite_lang || (L==='ru'?'русском':'английском'); }
   document.querySelectorAll('input[name=prov]').forEach(x => x.checked = (c.providers || []).includes(x.value));
   let r = document.querySelector(`input[name=mode][value=${c.mode}]`); if (r) r.checked = true;
   r = document.querySelector(`input[name=fgq][value=${c.quality || 'speed'}]`); if (r) r.checked = true;
@@ -1042,7 +1068,7 @@ async function loadConfig(keepScreen) {
 }
 
 // ===== экран «Доступ»: одна колонка строк =====
-const F = {script:'', rwUrl:'', rwText:'', rwWords:1500, rwLang:'польском', voice:''};
+const F = {script:'', rwUrl:'', rwText:'', rwWords:1500, rwLang:'русском', voice:''};
 // значение — как в промпте («на польском»), подпись — по-человечески («Польский»)
 const LANG_NAMES = {'английском':'Английский','китайском':'Китайский','хинди':'Хинди','испанском':'Испанский','арабском':'Арабский','французском':'Французский','бенгальском':'Бенгальский','португальском':'Португальский','русском':'Русский','урду':'Урду','индонезийском':'Индонезийский','немецком':'Немецкий','японском':'Японский','турецком':'Турецкий','вьетнамском':'Вьетнамский','корейском':'Корейский','итальянском':'Итальянский','персидском':'Персидский','польском':'Польский','украинском':'Украинский','голландском':'Голландский','румынском':'Румынский','греческом':'Греческий','чешском':'Чешский','венгерском':'Венгерский','шведском':'Шведский','казахском':'Казахский','узбекском':'Узбекский','азербайджанском':'Азербайджанский','иврите':'Иврит','финском':'Финский','датском':'Датский','норвежском':'Норвежский'};
 const LANGS = Object.keys(LANG_NAMES);
@@ -1054,6 +1080,7 @@ const MODEL_OPTS = {elysium_model:[['anthropic/claude-sonnet-5.5','Claude Sonnet
   openai_model:[['gpt-4.1-mini','gpt-4.1-mini'],['gpt-5.4-mini','gpt-5.4-mini'],['gpt-5.4','gpt-5.4'],['gpt-5.2','gpt-5.2'],['gpt-5-mini','gpt-5-mini'],['gpt-4.1','gpt-4.1'],['gpt-4o-mini','gpt-4o-mini']],
   anthropic_model:[['claude-sonnet-5-5','claude-sonnet-5.5'],['claude-haiku-5-5','claude-haiku-5.5'],['claude-opus-5-5','claude-opus-5.5'],['claude-sonnet-5','claude-sonnet-5'],['claude-opus-5','claude-opus-5'],['claude-haiku-4-5','claude-haiku-4.5']],
   gemini_model:[['gemini-3.6-flash','gemini-3.6-flash'],['gemini-3.8-flash','gemini-3.8-flash'],['gemini-3.5-flash','gemini-3.5-flash'],['gemini-3.5-flash-lite','gemini-3.5-flash-lite'],['gemini-3.1-pro-preview','gemini-3.1-pro'],['gemini-2.5-flash','gemini-2.5-flash'],['gemini-2.5-pro','gemini-2.5-pro']]};
+const BUILTIN_MODEL_OPTS=Object.fromEntries(Object.entries(MODEL_OPTS).map(([key,value])=>[key,value.slice()]));
 let baseUrls = {}, baseDefaults = {openai:'https://api.openai.com/v1', anthropic:'https://api.anthropic.com/v1', gemini:'https://generativelanguage.googleapis.com/v1beta'};
 const SVC_HUMAN = {elysium:'Elysium',openai:'OpenAI', anthropic:'Claude', gemini:'Gemini'};
 const baseRow = svc => row(t('base_url') + ' · ' + SVC_HUMAN[svc], '', `<input type="text" class="base" data-svc="${svc}" value="${esc(baseUrls[svc] || '')}" placeholder="${esc(baseDefaults[svc])}" spellcheck="false" autocomplete="off"><span class="note">${t('base_note')}</span>`);
@@ -1065,11 +1092,15 @@ const row = (label, link, controls, status) => `<div class="lrow"><div class="la
 const keyIn = (id, k, i, val, ph) => `<input type="password" class="key" id="${id}" data-k="${k}" data-i="${i}" value="${esc(val)}" placeholder="${esc(ph)}" autocomplete="off" spellcheck="false">`;
 const eye = id => `<button class="ghost eye" onclick="toggle('${id}')" title="показать ключ">${EYE}</button>`;
 const chk = (k, i, sid) => `<button class="ghost" onclick="checkRow('${k}', ${i}, '${sid}')">${t('check')}</button>`;
-const modelOptions = (engine, value) => { const opts = (MODEL_OPTS[engine + '_model'] || []).slice(); if (value && !opts.some(([v]) => v === value)) opts.unshift([value, value]); return opts; };
+const TASK_MODEL_OPTS={};
+const mediaModelId = value => /seedream|kling|hailuo|(?:^|[/_-])wan(?:[./_-]|$)|veo(?:[./_-]|$)|sora(?:[./_-]|$)|imagen|flux|dall-e|ideogram|recraft|stable-diffusion|midjourney|(?:gpt|chatgpt|qwen)[^/]*image|nano[-_]banana|elevenlabs|whisper|embed|moderation|realtime|transcribe|(?:gpt|gemini|qwen)[^/]*audio|text-to-speech|(?:^|[/_-])tts(?:[./_-]|$)|gemini[^/]*(?:image|tts|video)|grok[^/]*(?:image|video)/i.test(value);
+const visionModelId = value => !mediaModelId(value)&&(/(?:^|\/)(?:claude-|gemini-|gpt-4o|gpt-4\.1|gpt-5|o[34](?:-|$))/i.test(value)||/vision|qwen.*vl|llama.*vision/i.test(value));
+const modelOptions = (engine, value, purpose='text') => { const scoped=TASK_MODEL_OPTS[engine+':'+purpose];const approved=new Set((scoped||[]).map(([id])=>id));const suitable=id=>!mediaModelId(id)&&(purpose!=='vision'||approved.has(id)||visionModelId(id));const opts = (scoped || (purpose==='vision'?BUILTIN_MODEL_OPTS:MODEL_OPTS)[engine + '_model'] || []).filter(([id])=>suitable(id)); if (value && !opts.some(([v]) => v === value)) opts.unshift([value,!suitable(value)?'Не подходит для этой задачи: '+value:value,!suitable(value)]); return opts; };
 const modelButton = (engine, target, status) => `<button class="ghost" onclick="loadProviderModels('${engine}','${target}','${status}')">${L === 'ru' ? 'Модели с сервера' : 'Server models'}</button>`;
-const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n]) => `<option value="${esc(v)}"${v === val ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n, disabled]) => `<option value="${esc(v)}"${v === val ? ' selected' : ''}${disabled?' disabled':''}>${esc(n)}</option>`).join('')}</select>`;
 
 function renderAccess() {
+  if(rwOn())source='script';
   const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value) || !!window.elysiumReplacement?.elysium_replace_fastgen, H = [];
   H.push(row(L === 'ru' ? 'Исходный ролик YouTube' : 'Source YouTube video', '',
     `<input type="text" inputmode="url" id="youtube_source_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"><button class="primary" id="youtube_prepare" onclick="prepareYouTube()">${L === 'ru' ? 'Подготовить весь ролик' : 'Prepare full video'}</button>`));
@@ -1096,9 +1127,10 @@ function renderAccess() {
     const sk = stt === 'assemblyai' ? 'assemblyai' : 'openai';
     const sttKey = stt === 'fastgen' ? `<span class="note">${t('same_key')}</span>` : keyIn('k_stt', sk, 0, single[sk] || '', t('ph_key')) + eye('k_stt') + chk(sk, 0, 's_stt');
     H.push(row(t('stt'), LINKS[stt] || '', sel('stt_sel', fgOpt.concat([['whisper','Whisper (OpenAI)'],['assemblyai','AssemblyAI']]), stt) + sttKey, 's_stt'));
-    const mk = llm === 'fastgen' ? 'llm_model' : llm + '_model';
+    const effectiveText=llm==='fastgen'&&window.elysiumReplacement?.elysium_replace_fastgen?'elysium':llm;
+    const mk = effectiveText === 'fastgen' ? 'llm_model' : effectiveText + '_model';
     const llmKey = llm === 'fastgen' ? `<span class="note">${t('same_key')}</span>` : keyIn('k_llm', llm, 0, single[llm] || '', t('ph_key')) + eye('k_llm') + chk(llm, 0, 's_llm');
-    H.push(row(t('llm'), LINKS[llm] || '', sel('llm_sel', fgOpt.concat([['elysium','Elysium'],['openai','OpenAI'],['anthropic','Claude'],['gemini','Gemini']]), llm) + sel(mk, llm === 'fastgen' ? MODEL_OPTS[mk] : modelOptions(llm, models[mk]), models[mk]) + llmKey + (llm === 'fastgen' ? '' : modelButton(llm, mk, 's_llm')), 's_llm'));
+    H.push(row(t('llm'), LINKS[llm] || '', sel('llm_sel', fgOpt.concat([['elysium','Elysium'],['openai','OpenAI'],['anthropic','Claude'],['gemini','Gemini']]), llm) + sel(mk, effectiveText === 'fastgen' ? MODEL_OPTS[mk] : modelOptions(effectiveText, models[mk]), models[mk]) + llmKey + (effectiveText === 'fastgen' ? '' : modelButton(effectiveText, mk, 's_llm')), 's_llm'));
     // свой адрес API (прокси/зеркало) — для выбранной модели текстов и для OpenAI, если через него идёт распознавание
     const bases = []; if (llm !== 'fastgen') bases.push(llm); if (stt === 'whisper' && llm !== 'openai') bases.push('openai');
     // Provider URLs are rendered once below, including vision-only providers.
@@ -1107,8 +1139,8 @@ function renderAccess() {
   H.push(row(L==='ru'?'Единые локации':'Consistent locations', '', sel('location_continuity', [['off', L==='ru'?'Выключено':'Off'],['on', L==='ru'?'Общий интерьер для одной комнаты':'Share each room between shots']], locationContinuity?'on':'off')));
   if (locationContinuity) H.push('<div class="note">'+(L==='ru'?'Группировка комнат текстовой моделью, общий опорный кадр и сравнение при включённом автоотборе. Ракурс и действие могут меняться. Сцены одной комнаты создаются последовательно; перерисовка опорного кадра обновляет её остальные планы. Включение создаёт новые картинки для выбранного отрезка; текстовый анализ и перерисовки оплачиваются сервисами.':'Groups locations using the text model and shares an anchor frame. When image QA is enabled, it compares rooms. Camera and action can change. Shots of one room generate sequentially; redrawing the anchor updates other shots of that room. Enabling this creates new images for the selected range; analysis and redraws are billed by providers.')+'</div>');
   H.push(row(L==='ru'?'Оживление картинок':'Image animation', LINKS.elysium,
-    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers'],['elysium','Kling / Gemini / Grok · Elysium']], videoEngine)));
-  if (videoEngine === 'elysium') {
+    sel('video_engine', [['providers', L==='ru'?'Выбранные сервисы изображений':'Selected image providers',!!window.elysiumReplacement?.elysium_replace_fastgen],['elysium','Kling / Gemini / Grok · Elysium']], window.elysiumReplacement?.elysium_replace_fastgen?'elysium':videoEngine)));
+  if (videoEngine === 'elysium' || window.elysiumReplacement?.elysium_replace_fastgen) {
     H.push(row('Video · Elysium', LINKS.elysium,
       sel('elysium_video_model',[['kling-3.0/video','Kling 3.0'],['google/gemini-omni-flash-1.2','Gemini Omni Flash 1.2'],['x-ai/grok-imagine-video','Grok Imagine · x-ai/grok-imagine-video']].concat(elysiumVideoModel==='hailuo/2-3-image-to-video-standard-provider-4' ? [['hailuo/2-3-image-to-video-standard-provider-4','Hailuo · предыдущая настройка']] : []),elysiumVideoModel)
       + (elysiumVideoModel==='hailuo/2-3-image-to-video-standard-provider-4' ? '<span class="note">768p · 6 s</span>' : elysiumVideoModel==='kling-3.0/video' ? sel('elysium_kling_mode',[['std','Standard'],['pro','Pro']],elysiumKlingMode) : sel('elysium_video_resolution',(elysiumVideoModel==='x-ai/grok-imagine-video' ? [['480p','480p'],['720p','720p'],['1080p','1080p']] : [['720p','720p'],['1080p','1080p']]),elysiumVideoResolution))
@@ -1123,7 +1155,7 @@ function renderAccess() {
   if ($('use_qa').checked) {
     const qdef = QA_DEFAULT[qaEngine]; let qctl;
     if (qaEngine === 'openrouter') qctl = `<input type="text" id="qa_model" value="${esc(qaModel || qdef)}" placeholder="${esc(qdef)}" title="${esc(t('qa_or_model'))}" spellcheck="false" autocomplete="off" style="flex:1 1 240px; max-width:340px">`;
-    else { const qopts = modelOptions(qaEngine, qaModel); if (!qopts.some(([v]) => v === qdef)) qopts.unshift([qdef, qdef]); qctl = sel('qa_model', qopts, qaModel && qopts.some(([v]) => v === qaModel) ? qaModel : qdef); }
+    else { const qopts = modelOptions(qaEngine, qaModel, 'vision'); if (!qopts.some(([v]) => v === qdef)) qopts.unshift([qdef, qdef]); qctl = sel('qa_model', qopts, qaModel && qopts.some(([v]) => v === qaModel) ? qaModel : qdef); }
     H.push(row(t('qa_row'), LINKS[qaEngine], sel('qa_eng', QA_ENGINES, qaEngine) + qctl
       + keyIn('k_qa', qaEngine, 0, single[qaEngine] || '', RW_PH[qaEngine]) + eye('k_qa') + chk('qa', 0, 's_qa') + (qaEngine === 'openrouter' ? '' : modelButton(qaEngine, 'qa_model', 's_qa')), 's_qa'));
   }
@@ -1142,7 +1174,7 @@ function renderAccess() {
         + `<span class="note">${esc(youtubeCookieFile || (L === 'ru' ? 'Если YouTube требует вход, выберите браузер, где вы вошли в аккаунт. Данные входа используются локально для YouTube.' : 'If YouTube requires sign-in, choose your signed-in browser. Login data is used locally for YouTube.'))}</span>`));
     }
     if (rwSrc === 'youtube' && analyzeVideo) {
-      H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['elysium','Elysium'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<button class="ghost" id="analysis_access_check" onclick="checkSourceAnalysisAccess()">${L === 'ru' ? 'Проверить доступ к кадрам' : 'Check image access'}</button>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis') + sel('analysis_model', modelOptions(analysisEngine, analysisModel || models[analysisEngine + '_model']), analysisModel || models[analysisEngine + '_model']) + chk('analysis', 0, 's_analysis') + modelButton(analysisEngine, 'analysis_model', 's_analysis')), 's_analysis'));
+      H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['elysium','Elysium'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<button class="ghost" id="analysis_access_check" onclick="checkSourceAnalysisAccess()">${L === 'ru' ? 'Проверить доступ к кадрам' : 'Check image access'}</button>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis') + sel('analysis_model', modelOptions(analysisEngine, analysisModel || models[analysisEngine + '_model'], 'vision'), analysisModel || models[analysisEngine + '_model']) + chk('analysis', 0, 's_analysis') + modelButton(analysisEngine, 'analysis_model', 's_analysis')), 's_analysis'));
       H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника. Картинки или клипы — по выбранному режиму. Найденный ритм склеек подстраивается под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
     }
     H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
@@ -1155,7 +1187,7 @@ function renderAccess() {
     const ttsCtl = tts === 'edge' ? `<span class="note">${t('tts_edge_note')}</span>` : tts === 'fastgen' ? `<span class="note">${fg ? t('tts_fg_note') : t('tts_fg_nokey')}</span>` : tts === 'royal' ? keyIn('k_tts_royal', 'royal', 0, (keyRows.royal[0] || {}).value || '', 'RoyalTechno API key · rt_live_...') + eye('k_tts_royal') + `<span class="note">${t('tts_royal_note')}</span>` : keyIn('k_tts', tts, 0, ttsKeys[tts] || '', TTS_PH[tts]) + eye('k_tts');
     H.push(row(t('ttskey'), LINKS[tts] || SVC_LINKS[tts] || '', ttsSel + ttsCtl + chk(tts, 0, 's_tts'), 's_tts'));
     if (tts === 'elevenlabs') H.push(`<div class="note">${L === 'ru' ? 'Ваш API-ключ ElevenLabs. Модель Multilingual v2. Нажмите «Список» и выберите голос.' : 'Your ElevenLabs API key. Multilingual v2. Use List to choose a voice.'}</div>`);
-    if (rwOn() && analyzeVideo && ['fastgen','elevenlabs'].includes(tts)) H.push(`<div class="note">${L==='ru'?'Подача — по звуку исходника: темп, паузы и интонация определяются автоматически при новой подготовке. Анализ звука оплачивается через Elysium или Gemini.':'Delivery follows source audio: pace, pauses and intonation are analysed automatically on a new source preparation. Audio analysis is billed by Elysium or Gemini.'}</div>`);
+    if (rwOn() && analyzeVideo && ['fastgen','elevenlabs'].includes(tts)) H.push(`<div class="note">${L==='ru'?'Анализ исходника даёт ориентир по подаче. В ElevenLabs применяются общие параметры, а не точный перенос интонации и акцентов. Проверьте русское произношение и манеру чтения на короткой пробе.':'Delivery follows source audio: pace, pauses and intonation are analysed automatically on a new source preparation. Audio analysis is billed by Elysium or Gemini.'}</div>`);
     H.push(row(t('voiceid'), 'https://elevenlabs.io/voice-library', `<input type="text" id="tts_voice" list="voice_list" value="${esc(F.voice)}" placeholder="${esc(t('ph_voice'))}" spellcheck="false" autocomplete="off"><button class="ghost" onclick="loadVoices()">${t('list')}</button>`, 's_voice'));
     if (!rwOn()) H.push(row(t('script'), '', `<textarea id="script" spellcheck="false" placeholder="${esc(t('ph_script'))}">${esc(F.script)}</textarea>`));
   } else {
@@ -1166,6 +1198,7 @@ function renderAccess() {
   if (direct.has('elysium')) H.push(row('Elysium API', LINKS.elysium, '<span class="note">https://elysiumai.garden/v1 · OpenAI-совместимый API. Выберите модель с поддержкой изображений для анализа и автоотбора. Проверка ключа использует каталог моделей; анализ и генерация оплачиваются сервисом.</span>'));
   H.push(queueHtml());
   $('dropzone').innerHTML = `<div class="alist-in">${H.join('')}</div>`;
+  if(window.workflowOrganizeAccess)workflowOrganizeAccess();
   bindAccess();if(window.bindReplacement)bindReplacement(); renderVoiceList(); bindQueue();
 }
 // ===== очередь заданий: несколько сценариев/файлов подряд, у каждого свой голос =====
@@ -1231,7 +1264,7 @@ function bindAccess() {
   on('stt_sel', 'change', () => { syncAll(); stt = $('stt_sel').value; pywebview.api.save_config({stt_engine: stt}); renderAccess(); });
   on('llm_sel', 'change', () => { syncAll(); llm = $('llm_sel').value; pywebview.api.save_config({llm_engine: llm}); renderAccess(); });
   document.querySelectorAll('input.base').forEach(el => el.addEventListener('change', () => { const s = el.dataset.svc, v = el.value.trim(); baseUrls[s] = v; pywebview.api.save_config({[s + '_base_url']: v}); }));
-  on('tts_sel', 'change', async () => { syncAll(); await saveKeys(); tts = $('tts_sel').value; F.voice = (recent.find(v => v.service === tts) || {}).id || ''; await pywebview.api.save_config({tts_service: tts, tts_voice: F.voice}); renderAccess(); });
+  on('tts_sel', 'change', async event => { const chosen=event.target.value;syncAll();tts=chosen;F.voice=(recent.find(v=>v.service===chosen)||{}).id||'';if($('tts_voice'))$('tts_voice').value=F.voice;await saveKeys();await pywebview.api.save_config({tts_service:chosen,tts_voice:F.voice});renderAccess(); });
   on('qa_eng', 'change', () => { syncAll(); qaEngine = $('qa_eng').value; qaModel = ''; pywebview.api.save_config({qa_engine: qaEngine, qa_model: ''}); renderAccess(); });
   on('analysis_model', 'change', () => { analysisModel = $('analysis_model').value; pywebview.api.save_config({source_analysis_model: analysisModel}); });
   on('rw_model', 'change', () => { setTextModel(rwEngine, $('rw_model').value); pywebview.api.save_config({[rwEngine + '_model']: models[rwEngine + '_model']}); });
@@ -1284,15 +1317,19 @@ async function loadProviderModels(engine, targetId, statusId) {
   const put = (text, error = false) => { const e = $(statusId); if (e) { e.textContent = text; e.className = 'status st ' + (error ? 'err' : ''); } };
   try {
     await saveKeys(); put('Загружаю список моделей без генерации…');
-    const result = await pywebview.api.available_models(engine);
+    const purpose=['qa_model','analysis_model'].includes(targetId)?'vision':'text';
+    const result = await pywebview.api.available_models(engine,purpose);
     if (!result.ok) throw new Error(result.error);
     if (!result.models.length) throw new Error('Сервер вернул пустой список моделей.');
-    MODEL_OPTS[engine + '_model'] = result.models.map(id => [id, id]);
+    TASK_MODEL_OPTS[engine+':'+purpose] = result.models.map(id=>[id,id]);
+    if(purpose==='text')MODEL_OPTS[engine + '_model'] = result.models.map(id => [id, id]);
+    const selectedEngine=targetId==='qa_model'?qaEngine:targetId==='analysis_model'?analysisEngine:targetId==='rw_model'?rwEngine:engine;
+    if(selectedEngine!==engine)return;
     const target = $(targetId);
     if (target) {
       const current = target.value;
       const options = result.models.includes(current) ? result.models : [current, ...result.models].filter(Boolean);
-      target.innerHTML = options.map(id => `<option value="${esc(id)}">${esc(id)}${!result.models.includes(id) ? ' (не в списке сервера)' : ''}</option>`).join('');
+      target.innerHTML = options.map(id => `<option value="${esc(id)}"${!result.models.includes(id)?' disabled':''}>${esc(id)}${!result.models.includes(id) ? ' (не подходит или отсутствует в списке)' : ''}</option>`).join('');
       target.value = current;
     }
     put(result.server + ': моделей ' + result.models.length + '. Выберите модель и нажмите «Проверить». Список сам по себе не подтверждает доступ к генерации/изображениям.');
@@ -1347,9 +1384,10 @@ async function saveKeys() {
   syncAll();
   const p = provs(), fg = p.includes('fastgen');
   const data = {...models, ...(window.replacementFields?replacementFields():{}),location_continuity:locationContinuity, video_engine:videoEngine, elysium_video_model:elysiumVideoModel, elysium_kling_mode:elysiumKlingMode, elysium_video_resolution:elysiumVideoResolution, keys: {}};
-  for (const k of IMG) if (p.includes(k) || (source === 'script' && tts === k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
+  for (const k of IMG) if (p.includes(k) || document.querySelector('[data-key-provider="'+k+'"]') || (source === 'script' && tts === k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
   if (rwOn() && analyzeVideo && analysisEngine !== 'fastgen' && single[analysisEngine] && !single[analysisEngine].includes('•')) data[analysisEngine] = single[analysisEngine];
   for (const k of ['elysium','openai','anthropic','gemini','assemblyai','openrouter']) if (typeof single[k] === 'string' && !single[k].includes('•')) data[k] = single[k];
+  for(const k of TTS_SVCS)if(typeof ttsKeys[k]==='string'&&!ttsKeys[k].includes('•'))data[k]=ttsKeys[k];
   if (source === 'script') { if (TTS_SVCS.includes(tts) && !(ttsKeys[tts] || '').includes('•')) data[tts] = ttsKeys[tts] || ''; data.tts_voice = F.voice; }
   if (rwOn()) { const v = rwKeys[rwEngine] || ''; if (v && !v.includes('•')) data[rwEngine] = v; Object.assign(data, {rewrite_engine: rwEngine, rewrite_source: rwSrc, rewrite_url: F.rwUrl, rewrite_words: F.rwWords, rewrite_lang: F.rwLang}); }
   await pywebview.api.save_config(data);
@@ -1462,7 +1500,7 @@ function resetStoryboard() {
   if ($('review')) $('review').classList.remove('board-hidden');
 }
 function storyboardControls() {
-  const available = !!(reviewSourceProfile && reviewSourceProfile.montage) && !queueMode;
+  const available = !!($('rv_script').value.trim()) && !queueMode;
   $('board_controls').hidden = queueMode;
   $('board_create').disabled = !available || boardBusy;
   $('board_restore').disabled = boardBusy;

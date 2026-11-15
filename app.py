@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.22-dev"
+VERSION = "2.0.23-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -90,6 +90,7 @@ def continue_with_elysium(saved,patch,queue_id=None):
             if len(args)>8 and args[8]:args[8]={**args[8],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[8].get('engine')}
         elif name=='run_youtube_sample':args[0]=update(args[0]);args[1]=update(args[1])
         elif name=='run_storyboard':args[2]=update(args[2])
+        elif name=='run_voice_sample':args[1]=update(args[1])
         elif name=='run_studio':args[5]=update(args[5])
         elif name=='run_rewrite':args[0]={**args[0],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[0].get('engine')}
         elif name=='run_prepare' and len(args)>5 and args[5]:args[5]={**args[5],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[5].get('engine')}
@@ -751,6 +752,32 @@ def run_prepare(audio, provider, mode, use_refs, script=None, rewrite=None):
             STATE["preparing"] = False
 
 
+_VOICE_SAMPLE=None
+_VOICE_SAMPLE_ACTIVE=False
+
+def run_voice_sample(text,cfg,service,voice):
+    global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE
+    with LOCK:_VOICE_SAMPLE_ACTIVE=True
+    try:
+        effective=replacement.effective(cfg)
+        actual=replacement.service(effective,service)
+        identity=json.dumps([text,actual,effective['elysium_tts_voice'] if actual=='elysium' else voice,effective['elysium_tts_model'] if actual=='elysium' else None,cfg.get('_source_delivery')],sort_keys=True,ensure_ascii=False)
+        import hashlib
+        folder=Path(data_dir())/'jobs'/'voice_samples'/hashlib.sha256(identity.encode()).hexdigest()[:24]
+        folder.mkdir(parents=True,exist_ok=True)
+        output=pipeline.make_voiceover(cfg,text,service,voice,str(folder),pipeline.Progress(progress_cb))
+        with LOCK:
+            _VOICE_SAMPLE=output
+            STATE.update(stage='voice_sample_done',message='Проба голоса готова. Прослушайте произношение и подачу.',error=None)
+    except pipeline.Cancelled:
+        with LOCK:STATE.update(cancelled=True,message='Проба озвучки остановлена',error=None)
+    except (Exception,SystemExit) as error:
+        with LOCK:STATE.update(error=key_error(error),message='Не удалось подготовить пробу озвучки')
+    finally:
+        with LOCK:
+            STATE['preparing']=False;_VOICE_SAMPLE_ACTIVE=False
+
+
 def keep_awake(on):
     """Keep the system awake while a video is being produced."""
     try:
@@ -1047,7 +1074,7 @@ class Api:
             if not isinstance(model,str) or not model.startswith(prefix) or not re.fullmatch(r'[A-Za-z0-9./_-]{1,160}',model):raise ValueError('Выберите модель Claude Sonnet.')
             cfg.update(llm_engine=provider,rewrite_engine=provider)
             cfg[provider+'_model']=model;save_cfg(cfg)
-            return {'ok':True,'provider':provider,'model':model,'models':available}
+            return {'ok':True,'provider':provider,'model':model,'models':provider_access.filter_models(available,'text')}
         except Exception as error:return {'ok':False,'error':key_error(error)}
 
     def switch_to_elysium(self,options=None):
@@ -1248,6 +1275,7 @@ class Api:
             return {'ok': False, 'error': str(error)}
 
     def youtube_sample(self, opts):
+        if opts.get('providers')==[]:return {'ok':False,'error':'Выберите сервис картинок в пункте 6 перед генерацией медиа.'}
         import source_analysis
         import youtube_source
         try:
@@ -1291,13 +1319,75 @@ class Api:
             return {'ok':True}
         except (Exception,SystemExit) as error:return {'ok':False,'error':str(error)}
 
-    def available_models(self, engine):
+    def voice_sample(self, opts):
+        """Explicit paid short speech preview; no ASR, images or video generation."""
+        global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE
+        try:
+            text=(opts.get('text') or '').strip()
+            if not text or len(text)>600:raise ValueError('Для пробы введите от 1 до 600 символов.')
+            cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
+            service=opts.get('tts') or cfg.get('tts_service') or 'edge'
+            if service!='fastgen':cfg['elysium_replace_fastgen']=False
+            replacement.effective(cfg)
+            logical=replacement.service(cfg,service)
+            from tts_api import make_tts
+            if logical not in ('edge','elysium') and service not in ('fastgen','elevenlabs','royal','voicegen','voicer','lumean'):
+                raise ValueError('Выберите сервис озвучки.')
+            keyfield=pipeline.SINGLE_KEY.get(logical,logical+'_api_key')
+            if logical!='edge' and not cfg.get(keyfield):raise ValueError('Введите ключ '+logical+' в «Подключениях».')
+            import source_narration
+            cfg['_source_delivery']=source_narration.delivery_of(opts.get('source_profile'))
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                    raise ValueError('Дождитесь текущей задачи или остановите её.')
+                _VOICE_SAMPLE=None;_VOICE_SAMPLE_ACTIVE=True;pipeline.CANCEL.clear();pipeline.clear_wait()
+                STATE.update(preparing=True,cancelled=False,error=None,stage='voice_sample',message='Готовлю короткую пробу выбранного голоса')
+                threading.Thread(target=run_voice_sample,args=(text,copy.deepcopy(cfg),service,opts.get('voice') or ''),daemon=True).start()
+            return {'ok':True}
+        except (Exception,SystemExit) as error:return {'ok':False,'error':key_error(error)}
+
+    def cancel_voice_sample(self):
+        with LOCK:
+            if not _VOICE_SAMPLE_ACTIVE:return {'ok':False,'error':'Сейчас проба голоса не выполняется.'}
+            pipeline.CANCEL.set()
+            return {'ok':True,'message':'Останавливаю пробу после завершения текущего запроса.'}
+
+    def voice_sample_result(self):
+        try:
+            if not _VOICE_SAMPLE:return {'ok':False,'error':'Проба ещё не готова.'}
+            p=Path(_VOICE_SAMPLE)
+            if not p.is_file() or p.stat().st_size>4*1024*1024:raise ValueError('Не удалось открыть короткую пробу голоса.')
+            import base64
+            return {'ok':True,'audio':'data:audio/mpeg;base64,'+base64.b64encode(p.read_bytes()).decode()}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+
+    def check_connection(self, provider, index=0):
+        """Check credentials without starting paid text, image or video generation."""
+        self._reset_idle_cancel()
+        import provider_access
+        cfg=load_cfg()
+        try:
+            if provider in provider_access.LABELS:
+                values=provider_access.models(provider,cfg.get(provider+'_api_key',''))
+                return {'ok':True,'message':f'Ключ принят; моделей в каталоге: {len(values)}. Генерация не запускалась.'}
+            if provider=='fastgen':
+                keys=pipeline.provider_keys(cfg,provider)
+                FastGen(keys[int(index)]).usage()
+                return {'ok':True,'message':'FastGen: ключ принят. Генерация не запускалась.'}
+            if provider in ('voicegen','voicer','lumean','elevenlabs'):
+                return self.check_tts(provider)
+            result=self.check_keys([provider]);value=result.get(provider)
+            if isinstance(value,list):value=value[int(index)]
+            return {'ok':bool(str(value).startswith('OK')),'message':value}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+
+    def available_models(self, engine, purpose="text"):
         """GET only: no generation, no API key in returned diagnostics."""
         import provider_access
         cfg = load_cfg()
         try:
             values = provider_access.models(engine, cfg.get(engine + "_api_key", ""))
-            return {"ok": True, "models": values, "server": provider_access.location(engine)}
+            return {"ok": True, "models": provider_access.filter_models(values,purpose), "server": provider_access.location(engine), "purpose":purpose, "omitted":len(values)-len(provider_access.filter_models(values,purpose))}
         except Exception as error:
             return {"ok": False, "error": key_error(error)}
 
@@ -1903,12 +1993,12 @@ class Api:
         return path
 
     def _rewrite_opts(self, opts):
-        selected=replacement.settings(load_cfg(),opts)
+        cfg=load_cfg();selected=replacement.settings(cfg,opts)
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "_replacement_options":selected, "montage": bool(rw.get("montage", load_cfg().get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
-                "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or "польском").strip()}
+        return {"on": True, "_replacement_options":selected, "montage": bool(rw.get("montage", cfg.get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", cfg.get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+                "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or cfg.get("rewrite_lang") or ("русском" if cfg.get("lang","ru")=="ru" else "английском")).strip()}
 
     def _validate(self, opts, providers):
         return self._validate_source(opts) or self._validate_common(providers,opts)
@@ -1954,6 +2044,14 @@ class Api:
             eng = cfg.get("qa_engine") or "gemini"
             if not cfg.get(f"{eng}_api_key"):
                 return f"Включён автоотбор картинок, введите ключ {pipeline.QA_ENGINES.get(eng, ('', '', None))[0]} в строке «Автоотбор» или выключите опцию."
+        try:
+            import provider_access
+            if cfg.get('qa_images'):
+                engine=cfg.get('qa_engine') or 'gemini'
+                provider_access.require_task_model(cfg.get('qa_model') or pipeline.QA_ENGINES.get(engine,('',None,None))[1],'vision')
+            engine=cfg.get('llm_engine') or 'fastgen'
+            provider_access.require_task_model(cfg.get('llm_model') if engine=='fastgen' else cfg.get(engine+'_model'),'text')
+        except ValueError as error:return str(error)
         try:design=selected_channel_design(opts or {},cfg)
         except (ValueError,OSError) as error:return str(error)
         import animation_selection
@@ -2048,6 +2146,15 @@ class Api:
             return {"ok": False, "error": "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."}
         try:rw['_channel_design']=selected_channel_design(opts,cfg)
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+        try:
+            import provider_access
+            effective=replacement.effective(cfg)
+            engine=replacement.service(effective,rw['engine'])
+            provider_access.require_task_model(effective.get('llm_model') if engine=='fastgen' else effective.get(engine+'_model'),'text')
+            if rw['source']=='youtube' and rw.get('analyze_video') and not rw['_channel_design']:
+                analysis_engine=effective.get('source_analysis_engine') or engine
+                provider_access.require_task_model(effective.get('source_analysis_model') or effective.get(analysis_engine+'_model'),'vision')
+        except ValueError as error:return {'ok':False,'error':str(error)}
         cfg.update({"rewrite": True, "rewrite_engine": rw["engine"], "rewrite_source": rw["source"], "rewrite_url": rw["url"],
                     "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
         save_cfg(cfg)
@@ -2065,6 +2172,7 @@ class Api:
         return {"ok": True}
 
     def start(self, opts):
+        if opts.get('providers')==[]:return {'ok':False,'error':'Выберите сервис картинок в пункте 6 перед генерацией медиа.'}
         with LOCK:
             if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
@@ -2149,23 +2257,43 @@ class Api:
         return {"ok": True}
 
     def prepare_storyboard(self, opts):
-        script = (opts.get("script") or "").strip()
+        script=(opts.get('script') or '').strip()
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
-                return {"ok": False, "error": "Программа уже занята."}
-            if not script:
-                return {"ok": False, "error": "Сначала подготовьте сценарий."}
-            if opts.get("source_profile_id") != STATE.get("source_profile_id") or not (STATE.get("source_profile") or {}).get("montage"):
-                return {"ok": False, "error": "Сначала выполните анализ YouTube в режиме редизайна видео."}
-            profile = copy.deepcopy(STATE["source_profile"])
-            pipeline.CANCEL.clear()
-            STATE.update(preparing=True, stage="prepare", error=None, cancelled=False, storyboard_id=None,
-                         started_at=time.time(), ended_at=None, message="Сопоставляю фразы с исходными планами")
-        cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
-        if opts.get('enhance'):
-            profile=studio.with_direction(profile,{**cfg,**(opts.get('studio') or {})})
-        threading.Thread(target=run_storyboard, args=(script, profile, cfg), daemon=True).start()
-        return {"ok": True}
+            if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                return {'ok':False,'error':'Программа уже занята.'}
+            if not script:return {'ok':False,'error':'Сначала подготовьте сценарий.'}
+            source_id=STATE.get('source_profile_id');profile=copy.deepcopy(STATE.get('source_profile'))
+        try:
+            cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
+            requested=opts.get('source_profile_id')
+            if requested and requested!=source_id:raise ValueError('Анализ исходника устарел. Откройте сохранённую раскадровку.')
+            if requested!=source_id:profile=None
+            if not profile:
+                import channel_design
+                design=selected_channel_design(opts,cfg)
+                if design:profile=channel_design.content_profile(design)
+                else:
+                    rw=opts.get('rewrite') or {}
+                    if rw.get('on') and rw.get('source')=='youtube' and rw.get('analyze_video',True):
+                        raise ValueError('Для стиля исходника сначала подготовьте сценарий и анализ в пункте 3. Для своего оформления выберите «Только содержание → мой стиль».')
+                    style=opts.get('style') or cfg.get('style') or pipeline.DEFAULT_STYLE
+                    custom=opts.get('custom_style',cfg.get('custom_style',''))
+                    if style==pipeline.CUSTOM_STYLE and not str(custom).strip():raise ValueError('Опишите свой стиль в пункте 2 или выберите готовый.')
+                    _,_,description=pipeline.resolve_style(style,{**cfg,'custom_style':custom})
+                    profile={'content_only':True,'visual_style':{'description':description,'palette':[],'shot_types':['wide','medium','detail']},
+                             'narrative_style':'','montage':{'shots':[]},'sampling':{'method':'own_script','duration':0.,'frame_count':0}}
+            elif not ((profile.get('montage') or {}).get('shots')):
+                profile['content_only']=True;profile['montage']={'shots':[]}
+            if opts.get('enhance'):profile=studio.with_direction(profile,{**cfg,**(opts.get('studio') or {})})
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                    return {'ok':False,'error':'Программа уже занята.'}
+                pipeline.CANCEL.clear()
+                STATE.update(preparing=True,stage='prepare',error=None,cancelled=False,storyboard_id=None,
+                             started_at=time.time(),ended_at=None,message='Готовлю фразы и планы раскадровки')
+            threading.Thread(target=run_storyboard,args=(script,profile,cfg),daemon=True).start()
+            return {'ok':True}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
 
     def get_storyboard(self, board_id=None):
         try:
@@ -2292,6 +2420,7 @@ class Api:
 
     def queue_start(self, opts):
         """Общие настройки — как у обычного запуска; текст/файл и голос у каждого задания свои."""
+        if opts.get('providers')==[]:return {'ok':False,'error':'Выберите сервис картинок в пункте 6 перед генерацией медиа.'}
         global QUEUE_STOP
         provider = pipeline.normalize_providers(opts.get("providers"))
         err = self._validate_common(provider, opts)
@@ -2713,7 +2842,7 @@ def main():
 
 
 # Record only worker entry points, never API calls or public state containing secrets.
-for _worker in ('run_job','run_prepare','run_rewrite','run_storyboard','run_studio','run_youtube_sample','run_queue'):
+for _worker in ('run_job','run_prepare','run_rewrite','run_storyboard','run_studio','run_youtube_sample','run_queue','run_voice_sample'):
     globals()[_worker]=resumable_service_task(globals()[_worker])
 
 if __name__ == "__main__":

@@ -311,6 +311,8 @@ def make_text_engine(cfg):
         stt = "whisper"
     if llm == "fastgen" and not has_fg:
         llm = "openai"
+    import provider_access
+    provider_access.require_task_model(cfg.get("llm_model") if llm=="fastgen" else cfg.get(llm+"_model"),"text")
     fg = FastGen(cfg["fastgen_api_key"]) if has_fg else None
     if stt == "elysium":
         from elysium_media import ElysiumTranscriber
@@ -3205,6 +3207,8 @@ def make_qa_client(cfg):
         return None
     _, default_model, base = QA_ENGINES[eng]
     model = cfg.get("qa_model") or default_model
+    import provider_access
+    provider_access.require_task_model(model,"vision")
     if eng == "gemini":
         return GeminiClient(key, model)
     if eng == "anthropic":
@@ -3404,7 +3408,9 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
         job_dir, base = script_job_dir(script_text)
         service = tts_service or cfg.get("tts_service") or "voicegen"
         voice = tts_voice if tts_voice is not None else cfg.get("tts_voice", "")
-        identity = json.dumps({"service": service, "voice": voice, "source_profile": None if (source_profile or {}).get('content_only') else source_profile}, sort_keys=True, ensure_ascii=False)
+        delivery=source_narration.delivery_of(source_profile)
+        profile_identity=({'narration':delivery} if delivery else None) if (source_profile or {}).get('content_only') else source_profile
+        identity = json.dumps({"service": service, "voice": voice, "source_profile": profile_identity}, sort_keys=True, ensure_ascii=False)
         base += "_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
         job_dir = os.path.join(data_dir(), "jobs", base)
         if cfg.get('elysium_replace_fastgen') and service=='fastgen' and not os.path.isfile(os.path.join(job_dir,'voiceover.mp3')):

@@ -67,18 +67,30 @@ with sync_playwright() as p:
  errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
  page.expose_function('callApi',call)
  page.add_init_script('window.pywebview={api:new Proxy({}, {get:(_,name)=>(...args)=>window.callApi(name,args)})};')
+ def at(selector):
+  locator=page.locator(selector)
+  if locator.count():
+   pane=locator.first.evaluate("e=>e.closest('[data-workflow-pane]')?.dataset.workflowPane||null")
+   if pane:
+    page.locator('[data-workflow="'+pane+'"]').click()
+    page.wait_for_selector('#screen4.active')
+   elif locator.first.evaluate("e=>!!e.closest('#board_panel')"):
+    page.locator('[data-workflow=board]').click()
+    page.wait_for_selector('#screen5.active')
+  return locator
  page.goto((ROOT/'ui.html').as_uri())
  page.evaluate("window.dispatchEvent(new Event('pywebviewready'))")
  page.wait_for_function('typeof STYLES !== "undefined" && STYLES.length > 0')
+ page.wait_for_selector('#screen4.active')
  page.evaluate('(data)=>{reviewSourceProfile=data.profile;reviewProfileId="test-profile";source="script";$("use_rw").checked=false;styleKey="custom";$("custom_style").value="";document.querySelector("input[name=mode][value=images]").checked=true;cur=5; document.querySelectorAll(".screen").forEach(e=>e.classList.remove("active"));document.getElementById("screen5").classList.add("active");renderReview(data.script);}',{'profile':profile,'script':script})
- assert page.locator('#rv_mode').input_value()=='images'
- assert page.locator('#rv_style').is_disabled()
- assert 'Стиль исходного ролика' in page.locator('#rv_style').text_content()
+ assert at('#rv_mode').input_value()=='images'
+ assert at('#rv_style').is_disabled()
+ assert 'Стиль исходного ролика' in at('#rv_style').text_content()
  assert page.evaluate('opts().source_profile_id')=='test-profile'
- page.locator('#board_create').click()
+ at('#board_create').click()
  page.wait_for_selector('.board-row',timeout=20000)
- assert page.locator('.board-row').count()==2
- first=page.locator('.board-row').first
+ assert at('.board-row').count()==2
+ first=at('.board-row').first
  assert first.locator('[data-field=source_shot]').input_value()=='1'
  page.wait_for_function('document.querySelector("[data-reference]").src.startsWith("data:image")')
  first.locator('[data-field=narration]').fill('A redesigned spaceship reaches this blue planet.')
@@ -91,13 +103,13 @@ with sync_playwright() as p:
  source_board_id=page.evaluate('boardState.id')
  (ROOT/'test-results').mkdir(exist_ok=True)
  page.screenshot(path=str(ROOT/'test-results/storyboard-editor.png'),full_page=True)
- page.locator('#preview_start').fill('-1')
- page.locator('#board_preview').click()
+ at('#preview_start').fill('-1')
+ at('#board_preview').click()
  page.wait_for_function('document.getElementById("s_prep2").textContent.includes("Предпросмотр")')
  assert len(launched)==0
- page.locator('#preview_start').fill('2')
- page.locator('#preview_seconds').select_option('20')
- page.locator('#board_preview').click()
+ at('#preview_start').fill('2')
+ at('#preview_seconds').select_option('20')
+ at('#board_preview').click()
  page.wait_for_selector('#screen6.active')
  page.wait_for_selector('#btn_board_return:not([hidden])')
  assert len(launched)==1
@@ -105,46 +117,46 @@ with sync_playwright() as p:
  assert launched[-1][15]=={'start':2.,'seconds':20.}
  assert launched[-1][14]['script'].startswith('A redesigned')
  assert launched[-1][16] in (25,30,60)
- page.locator('#btn_board_return').click()
+ at('#btn_board_return').click()
  page.wait_for_selector('#screen5.active #board_panel:not([hidden])')
- page.locator('#btn_go').click()
+ at('#btn_go').click()
  page.wait_for_selector('#screen6.active')
  page.wait_for_function('document.getElementById("btn_again").disabled === false')
  assert len(launched)==2 and launched[-1][15] is None
  assert launched[-1][2]=='images'
- page.locator('#btn_board_return').click()
+ at('#btn_board_return').click()
  page.wait_for_selector('#screen5.active')
  page.evaluate('hideStoryboard()')
- page.locator('#rv_script').fill('A completely edited global narration.')
+ at('#rv_script').fill('A completely edited global narration.')
  assert page.evaluate('boardState') is None
- page.locator('#projectsbtn').click()
+ at('#projectsbtn').click()
  page.get_by_role('button',name='Импорт DOCX',exact=True).click()
  page.wait_for_function('boardState && boardState.rows[0].prompt === "Original cinematic forest."')
- assert page.locator('.board-row').count()==1
- page.locator('#projectsbtn').click()
- page.locator('#project_title').fill('Unified native project')
- page.locator('#project_save').click()
+ assert at('.board-row').count()==1
+ at('#projectsbtn').click()
+ at('#project_title').fill('Unified native project')
+ at('#project_save').click()
  page.wait_for_function('desktopProject && desktopProject.title === "Unified native project"')
  assert (root/'projects.sqlite').exists()
- page.locator('[data-open-project]').click()
+ at('[data-open-project]').click()
  page.wait_for_selector('#screen5.active')
  assert page.evaluate('boardState.script')=='Imported narration for the forest scene.'
  page.evaluate('async () => {reviewSourceProfile=null;reviewProfileId=null;resetStoryboard();await restoreStoryboard();}')
- assert page.locator('#rv_style').is_disabled()
- assert 'Стиль исходного ролика' in page.locator('#rv_style').text_content()
- assert page.locator('#rv_mode').input_value()=='images'
+ assert at('#rv_style').is_disabled()
+ assert 'Стиль исходного ролика' in at('#rv_style').text_content()
+ assert at('#rv_mode').input_value()=='images'
 
- assert page.locator('input[name=prov][value=syntx]').count()==1
+ assert at('input[name=prov][value=syntx]').count()==1
  page.evaluate("() => { $('use_rw').checked=true; rwSrc='youtube'; analyzeVideo=true; analysisEngine='fastgen'; go(4); }")
- page.wait_for_selector('#screen4.active #analysis_access_check')
- page.locator('#analysis_access_check').click()
+ page.wait_for_selector('#analysis_access_check',state='attached');at('#analysis_access_check')
+ at('#analysis_access_check').click()
  try:
   page.wait_for_function('document.getElementById("s_analysis").textContent.includes("chat.multimodal=false")', timeout=10000)
  except Exception:
-  print('Diagnostic UI:',page.locator('#s_analysis').text_content(),'GET requests:',access_requests,'JS errors:',errors)
+  print('Diagnostic UI:',at('#s_analysis').text_content(),'GET requests:',access_requests,'JS errors:',errors)
   raise
  vision_access_response['capabilities']={}
- page.locator('#analysis_access_check').click()
+ at('#analysis_access_check').click()
  page.wait_for_function('document.getElementById("s_analysis").textContent.includes("не сообщил")')
  assert access_requests==['GET','GET']
  # Gateway settings: a single Elysium key stays synchronized across all four tasks.
@@ -156,13 +168,13 @@ with sync_playwright() as p:
   return ['gemini-vision-fixture','claude-text-fixture']
  provider_access.models=gateway_models
  page.evaluate("async () => { await pywebview.api.save_config({llm_engine:'elysium', qa_engine:'elysium', qa:true, rewrite_engine:'elysium', source_analysis_engine:'elysium'}); llm='elysium';qaEngine='elysium';qaModel='';rwEngine='elysium';analysisEngine='elysium';analysisModel='';$('use_qa').checked=true;renderAccess(); }")
- page.locator('#k_qa').fill('gateway-browser-fixture')
- assert page.locator('#k_llm').input_value()=='gateway-browser-fixture'
- assert page.locator('#k_analysis').input_value()=='gateway-browser-fixture'
- assert page.locator('#k_rw').input_value()=='gateway-browser-fixture'
- page.locator('#qa_eng').locator('..').get_by_role('button',name='Модели с сервера',exact=True).click()
+ at('[data-key-provider=elysium] input.key').fill('gateway-browser-fixture')
+ assert at('[data-key-provider=elysium] input.key').input_value()=='gateway-browser-fixture'
+ assert at('[data-key-provider=elysium] input.key').input_value()=='gateway-browser-fixture'
+ assert at('[data-key-provider=elysium] input.key').input_value()=='gateway-browser-fixture'
+ at('#qa_eng').locator('..').get_by_role('button',name='Модели с сервера',exact=True).click()
  page.wait_for_function("document.querySelector('#qa_model option[value=gemini-vision-fixture]') !== null")
- page.locator('#qa_model').select_option('gemini-vision-fixture')
+ at('#qa_model').select_option('gemini-vision-fixture')
  page.evaluate('saveKeys()')
  cfg=app.load_cfg()
  assert cfg['elysium_api_key']=='gateway-browser-fixture'
@@ -170,50 +182,50 @@ with sync_playwright() as p:
  assert cfg['llm_engine']=='elysium' and cfg['source_analysis_engine']=='elysium'
  assert len(catalog_calls)==1
  page.evaluate('renderAccess()')
- assert page.locator('#qa_model').input_value()=='gemini-vision-fixture'
+ assert at('#qa_model').input_value()=='gemini-vision-fixture'
  # Custom API URL must be visible even if OpenAI is used only for image selection.
  page.evaluate("() => {qaEngine='openai';llm='fastgen';rwEngine='fastgen';analysisEngine='fastgen';renderAccess();}")
- assert page.locator('input.base[data-svc=openai]').count()==1
+ assert at('input.base[data-svc=openai]').count()==1
  # Studio settings and measured checks run through the real native bridge.
  page.evaluate('openStudio()')
  page.wait_for_selector('#studio_dialog[open]')
- assert page.locator('audio').count()==0
+ assert at('audio').count()==0
  assert page.get_by_text('СДЕЛАНО ГРИШЕЙ ЮТУБЕРОМ',exact=False).count()==0
- page.locator('#studio_captions').select_option('focus')
- page.locator('#studio_pace').select_option('dynamic')
- page.locator('#studio_apply').click()
+ at('#studio_captions').select_option('focus')
+ at('#studio_pace').select_option('dynamic')
+ at('#studio_apply').click()
  page.wait_for_function('document.getElementById("studio_status").textContent.includes("сохранены")')
  assert app.load_cfg()['caption_style']=='focus'
  assert page.evaluate('opts().studio.editing_pace')=='dynamic'
- page.locator('#studio_report_btn').click()
+ at('#studio_report_btn').click()
  page.wait_for_selector('#studio_output ul')
- assert 'не прогноз' in page.locator('#studio_output').text_content()
+ assert 'не прогноз' in at('#studio_output').text_content()
  page.set_viewport_size({'width':1366,'height':768})
  page.screenshot(path=str(ROOT/'test-results/studio-interface.png'),full_page=True)
  assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
  page.evaluate('async id => {const value=await pywebview.api.get_storyboard(id);boardState=value.board;boardDirty=false;F.script=boardState.script;renderReview(F.script);}',source_board_id)
  # Use fixture model responses to exercise async native workers, no paid calls.
  page.evaluate("async () => {await pywebview.api.save_config({llm_engine:'fastgen'});llm='fastgen';}")
- page.locator('#studio_package_btn').click()
+ at('#studio_package_btn').click()
  page.wait_for_function('document.getElementById("studio_status").textContent.includes("Упаковка готова")',timeout=15000)
- assert page.locator('#studio_output textarea').count()==3
- page.locator('#studio_board_btn').click()
+ assert at('#studio_output textarea').count()==3
+ at('#studio_board_btn').click()
  try:
   page.wait_for_function('document.getElementById("studio_status").textContent.includes("отдельной версией")',timeout=15000)
  except Exception:
-  print('Studio diagnostic:',page.locator('#studio_status').text_content(),app.STATE.get('studio_task'),errors)
+  print('Studio diagnostic:',at('#studio_status').text_content(),app.STATE.get('studio_task'),errors)
   raise
  assert page.evaluate('boardState.rows[0].shot_size')=='detail'
  assert page.evaluate('boardState.creative_direction.editing_pace')=='dynamic'
- page.locator('#studio_script_btn').click()
+ at('#studio_script_btn').click()
  page.wait_for_function('document.getElementById("studio_status").textContent.includes("Новая версия сценария")',timeout=15000)
  assert page.evaluate('boardState') is None
  page.evaluate('closeStudio()')
- page.locator('#projectsbtn').click()
- page.locator('#project_save').click()
+ at('#projectsbtn').click()
+ at('#project_save').click()
  page.wait_for_function('document.getElementById("project_status").textContent.includes("сохранён")')
  page.evaluate("document.getElementById('studio_pace').value='calm'")
- page.locator('[data-open-project]').click()
+ at('[data-open-project]').click()
  page.wait_for_function("document.getElementById('studio_pace').value==='dynamic'")
  assert app.load_cfg()['caption_style']=='focus'
  # The persistent YouTube entry works even when the rewrite option is currently off.
@@ -224,15 +236,15 @@ with sync_playwright() as p:
    app.STATE.update(preparing=False,error=None,cancelled=False,script=script,source_profile=profile,source_profile_id='fresh-youtube-fixture')
  app.run_rewrite=fixture_rewrite
  page.evaluate("() => {rwEngine='fastgen';source='script';F.script='';$('use_rw').checked=false;go(4);}")
- page.wait_for_selector('#screen4.active #youtube_source_url')
- assert page.locator('#youtube_source_url').is_visible()
- assert page.locator('#script').input_value()==''
- page.locator('#youtube_source_url').fill('https://www.youtube.com/watch?v=fixture_new')
- page.locator('#youtube_prepare').click()
+ page.wait_for_selector('#wf_source_kind',state='attached');at('#wf_source_kind').select_option('youtube');at('#youtube_source_url')
+ assert at('#youtube_source_url').is_visible()
+ assert page.evaluate('F.script')==''
+ at('#youtube_source_url').fill('https://www.youtube.com/watch?v=fixture_new')
+ at('#youtube_prepare').click()
  page.wait_for_function('boardState && boardState.creative_direction.enhancement_level === "enhanced"',timeout=15000)
  assert len(rewritten)==1 and rewritten[0]['url'].endswith('fixture_new')
  assert rewritten[0]['source']=='youtube' and rewritten[0]['montage']
- assert 'Улучшенная' in page.locator('#board_count').text_content()
+ assert 'Улучшенная' in at('#board_count').text_content()
  # A failed Studio upgrade must not silently render the previously open storyboard.
  previous=page.evaluate('boardState.id');before=len(launched)
  def broken_chat(self,system,user,**kwargs):
@@ -240,15 +252,15 @@ with sync_playwright() as p:
   return {'plans':[{'index':u['index'],'source_shot':0,'prompt':'Original ink illustration'} for u in units]}
  pipeline.LLM.chat_json=broken_chat
  page.evaluate('openStudio()')
- page.locator('#studio_level').select_option('director')
- page.locator('#studio_board_btn').click()
+ at('#studio_level').select_option('director')
+ at('#studio_board_btn').click()
  page.wait_for_function('document.getElementById("studio_status").textContent.includes("Не приняты планы")',timeout=15000)
  page.evaluate('closeStudio()')
  assert page.evaluate('boardState.id')==previous
- assert page.locator('#btn_go').is_disabled()
+ assert at('#btn_go').is_disabled()
  page.evaluate('startFromReview()')
  assert len(launched)==before
- assert 'прежняя версия' in page.locator('#s_prep2').text_content()
+ assert 'прежняя версия' in at('#s_prep2').text_content()
  # Choosing a saved version explicitly restores that version's controls.
  page.evaluate('restoreStoryboard()')
  page.wait_for_function('document.getElementById("btn_go").disabled === false')
@@ -265,100 +277,100 @@ with sync_playwright() as p:
    app.STATE.update(running=False,result=str(root/'sample.mp4'),script=script,active_board_id=result['id'],sample_board_id=result['id'],sample_info=limited['sample'],stage='done',ended_at=time.time())
  app.run_youtube_sample=fixture_sample
  page.evaluate("async () => {await pywebview.api.save_config({qa:false});$('use_qa').checked=false;$('render_fps').value='60';go(4);}")
- page.wait_for_selector('#screen4.active #youtube_sample')
- page.locator('#youtube_source_url').fill('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
- page.locator('#youtube_sample_start').fill('-1')
- page.locator('#youtube_sample').click()
+ page.wait_for_selector('#youtube_sample',state='attached');at('#youtube_sample')
+ at('#youtube_source_url').fill('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+ at('#youtube_sample_start').fill('-1')
+ at('#youtube_sample').click()
  assert len(sample_requests)==0
- page.locator('#youtube_sample_start').fill('0')
+ at('#youtube_sample_start').fill('0')
  page.evaluate("document.getElementById('dropzone').scrollTop=0")
  page.screenshot(path=str(ROOT/'test-results/youtube-sample-entry.png'),full_page=True)
- page.locator('#youtube_sample').click()
+ at('#youtube_sample').click()
  page.wait_for_selector('#screen6.active')
  page.wait_for_selector('#btn_board_return:not([hidden])')
  assert len(sample_requests)==1 and sample_requests[0][1:]==(0.,30.)
  assert sample_requests[0][0]['render_fps']==60
  assert len(rewritten)==1, 'The trial must not run the full-source rewrite worker'
- page.locator('#btn_board_return').click()
+ at('#btn_board_return').click()
  page.wait_for_selector('#screen5.active')
  assert page.evaluate('boardState.sample.source_seconds')==30
- assert 'Проба' in page.locator('#board_count').text_content()
+ assert 'Проба' in at('#board_count').text_content()
  # Video provider has independent settings and must preserve image/TTS selections.
  page.evaluate('go(4)')
- page.wait_for_selector('#video_engine')
- page.locator('#video_engine').select_option('elysium')
- page.wait_for_selector('#elysium_video_resolution')
- page.locator('#elysium_video_resolution').select_option('1080p')
+ page.wait_for_selector('#video_engine',state='attached');at('#video_engine')
+ at('#video_engine').select_option('elysium')
+ page.wait_for_selector('#elysium_video_resolution',state='attached');at('#elysium_video_resolution')
+ at('#elysium_video_resolution').select_option('1080p')
  page.wait_for_function("elysiumVideoResolution === '1080p'")
  page.wait_for_timeout(300)
  assert app.load_cfg()['video_engine']=='elysium'
  assert app.load_cfg()['elysium_video_resolution']=='1080p'
  assert app.load_cfg()['image_providers']==['fastgen']
  page.evaluate('loadConfig(true)')
- page.wait_for_selector('#k_video_elysium')
- assert page.locator('#video_engine').input_value()=='elysium'
- assert page.locator('#elysium_video_model').input_value()=='google/gemini-omni-flash-1.2'
- page.locator('#elysium_video_model').select_option('kling-3.0/video')
- page.wait_for_selector('#elysium_kling_mode')
- assert page.locator('#elysium_video_resolution').count()==0
- page.locator('#elysium_kling_mode').select_option('pro')
+ at('[data-key-provider=elysium] input.key')
+ assert at('#video_engine').input_value()=='elysium'
+ assert at('#elysium_video_model').input_value()=='google/gemini-omni-flash-1.2'
+ at('#elysium_video_model').select_option('kling-3.0/video')
+ page.wait_for_selector('#elysium_kling_mode',state='attached');at('#elysium_kling_mode')
+ assert at('#elysium_video_resolution').count()==0
+ at('#elysium_kling_mode').select_option('pro')
  page.wait_for_function("elysiumKlingMode === 'pro'")
  page.wait_for_timeout(300)
  page.evaluate('loadConfig(true)')
- page.wait_for_selector('#elysium_kling_mode')
- assert page.locator('#elysium_video_model').input_value()=='kling-3.0/video'
- assert page.locator('#elysium_kling_mode').input_value()=='pro'
+ page.wait_for_selector('#elysium_kling_mode',state='attached');at('#elysium_kling_mode')
+ assert at('#elysium_video_model').input_value()=='kling-3.0/video'
+ assert at('#elysium_kling_mode').input_value()=='pro'
  assert app.load_cfg()['elysium_video_model']=='kling-3.0/video'
- page.locator('#elysium_video_model').select_option('x-ai/grok-imagine-video')
+ at('#elysium_video_model').select_option('x-ai/grok-imagine-video')
  page.wait_for_function("elysiumVideoModel === 'x-ai/grok-imagine-video'")
  page.wait_for_timeout(300)
  page.evaluate('loadConfig(true)')
- page.wait_for_selector('#elysium_video_model')
- assert page.locator('#elysium_video_model').input_value()=='x-ai/grok-imagine-video'
- page.locator('#elysium_video_resolution').select_option('480p')
+ page.wait_for_selector('#elysium_video_model',state='attached');at('#elysium_video_model')
+ assert at('#elysium_video_model').input_value()=='x-ai/grok-imagine-video'
+ at('#elysium_video_resolution').select_option('480p')
  page.wait_for_function("elysiumVideoResolution === '480p'")
  page.wait_for_timeout(300)
  assert app.load_cfg()['elysium_video_resolution']=='480p'
- assert page.locator('#elysium_kling_mode').count()==0
- assert 'Uguu' in page.locator('#dropzone').text_content()
- page.locator('#location_continuity').select_option('on')
+ assert at('#elysium_kling_mode').count()==0
+ assert 'Uguu' in at('#dropzone').text_content()
+ at('#location_continuity').select_option('on')
  page.wait_for_function('locationContinuity === true')
  page.wait_for_timeout(300)
  page.evaluate('loadConfig(true)')
- page.wait_for_selector('#location_continuity')
- assert page.locator('#location_continuity').input_value()=='on'
+ page.wait_for_selector('#location_continuity',state='attached');at('#location_continuity')
+ assert at('#location_continuity').input_value()=='on'
  assert app.load_cfg()['location_continuity'] is True
- assert 'data URI' not in page.locator('#dropzone').text_content()
+ assert 'data URI' not in at('#dropzone').text_content()
  assert app.load_cfg()['elysium_video_model']=='x-ai/grok-imagine-video'
- page.locator('#elysium_video_model').select_option('google/gemini-omni-flash-1.2')
+ at('#elysium_video_model').select_option('google/gemini-omni-flash-1.2')
  page.wait_for_function("elysiumVideoModel === 'google/gemini-omni-flash-1.2'")
  page.wait_for_timeout(300)
- assert page.locator('#elysium_video_resolution').input_value()=='720p'
+ assert at('#elysium_video_resolution').input_value()=='720p'
  assert app.load_cfg()['elysium_video_resolution']=='720p'
 
  assert app.load_cfg()['image_providers']==['fastgen']
  page.evaluate('openStudio()')
- page.locator('#studio_dialog button').filter(has_text='Дизайн канала').click()
+ at('#studio_dialog button').filter(has_text='Дизайн канала').click()
  page.wait_for_selector('#channel_design_dialog[open]')
- page.locator('#cd_name').fill('Channel browser fixture')
- page.locator('#cd_description').fill('Flat drawing, white background, stable character design.')
- page.locator('#cd_faces').select_option('blank')
- page.locator('#cd_palette').fill('#FFFFFF, #BB1111')
- page.locator('#cd_layout').select_option('minimal')
- page.locator('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
+ at('#cd_name').fill('Channel browser fixture')
+ at('#cd_description').fill('Flat drawing, white background, stable character design.')
+ at('#cd_faces').select_option('blank')
+ at('#cd_palette').fill('#FFFFFF, #BB1111')
+ at('#cd_layout').select_option('minimal')
+ at('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
  page.wait_for_function('channelDesignActive && !!channelDesignActive.id')
  saved_design=page.evaluate('channelDesignChoice()')
  assert saved_design['channel_design_revision']==1
  assert api.channel_design_get(saved_design['channel_design_id'],1)['profile']['faces']=='blank'
- page.locator('#cd_font').select_option('Intro Demo Black CAPS')
- page.locator('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
+ at('#cd_font').select_option('Intro Demo Black CAPS')
+ at('#channel_design_dialog button').filter(has_text='Сохранить и использовать').click()
  page.wait_for_function('channelDesignActive.revision === 2')
  page.evaluate('loadConfig(true)')
  page.wait_for_function('channelDesignActive.revision === 2')
  assert page.evaluate('opts().channel_design_id')==saved_design['channel_design_id']
  assert app.load_cfg()['channel_design_revision']==2
  assert api.channel_design_get(saved_design['channel_design_id'],1)['profile']['font']=='Arial'
- page.locator('#channel_design_dialog button').filter(has_text='Дизайн текущего исходника').click()
+ at('#channel_design_dialog button').filter(has_text='Дизайн текущего исходника').click()
  page.wait_for_function('channelDesignActive.id === ""')
  assert app.load_cfg()['channel_design_id']==''
  page.evaluate("document.getElementById('channel_design_dialog').close();closeStudio();go(5);showStoryboard()")
@@ -368,8 +380,8 @@ with sync_playwright() as p:
  page.wait_for_function('animationPreview && animationPreview.ok && animationPreview.limit===1')
  assert page.evaluate('animationPreview.count')<=1
  assert page.evaluate('opts().animation.strategy')=='key'
- assert page.locator('#vf_row').evaluate("e=>getComputedStyle(e).display")=='none'
- box=page.locator('[data-animate]').first
+ assert at('#vf_row').evaluate("e=>getComputedStyle(e).display")=='none'
+ box=at('[data-animate]').first
  box.uncheck() if box.is_checked() else box.check()
  page.wait_for_function("document.getElementById('animation_strategy').value==='manual' && boardDirty")
  assert page.evaluate('typeof boardState.rows[0].animate')=='boolean'
@@ -382,10 +394,10 @@ with sync_playwright() as p:
  # Invalid clip budgets stay in the UI; editing a visual updates the recommendation.
  saved_limit=app.load_cfg()['animation']['limit']
  page.evaluate("async()=>{$('animation_limit').value='151';await animationChanged()}")
- assert '0 до 150' in page.locator('#animation_hint').text_content()
+ assert '0 до 150' in at('#animation_hint').text_content()
  assert app.load_cfg()['animation']['limit']==saved_limit
  page.evaluate("async()=>{$('animation_limit').value='1';$('animation_strategy').value='key';await animationChanged()}")
- first=page.locator('.board-row').first
+ first=at('.board-row').first
  first.locator('[data-field=prompt]').fill('A whiteboard diagram of a wheel.')
  page.wait_for_function('animationPreview.ok && !!animationPreview.rows[0].risk')
  assert not first.locator('[data-animate]').is_checked()
@@ -397,7 +409,7 @@ with sync_playwright() as p:
  app.STATE.update(source_profile=content,source_profile_id='channel-content-fixture',script=script,sample_info=None,sample_board_id=None)
  page.evaluate("""async ({profile,text})=>{resetStoryboard();reviewSourceProfile=profile;reviewProfileId='channel-content-fixture';F.script=text;source='script';$('use_rw').checked=false;await loadConfig(true);$('animation_strategy').value='local';await animationChanged();renderReview(text);go(5);openStudio();}""",{'profile':content,'text':script})
  page.wait_for_selector('#studio_dialog[open]')
- page.locator('#studio_board_btn').click()
+ at('#studio_board_btn').click()
  page.wait_for_function('boardState && boardState.channel_design_ref && boardState.rows.every(r=>r.source_shot===null)',timeout=15000)
  page.evaluate('closeStudio();showStoryboard()')
  before=len(launched)
@@ -406,28 +418,53 @@ with sync_playwright() as p:
  assert len(launched)==before+1 and launched[-1][13]['content_only']
  # Full replacement mode keeps the real FastGen credential on disk and uses one Elysium key.
  page.evaluate('go(4)')
- page.wait_for_selector('#replace_mode')
+ page.wait_for_selector('#replace_mode',state='attached');at('#replace_mode')
  previous_fastgen=app.load_cfg()['fastgen_api_key']
- page.locator('#replace_key').fill('browser-elysium-replacement-fixture')
- page.locator('#replace_mode').select_option('on')
+ at('#replace_key').fill('browser-elysium-replacement-fixture')
+ at('#replace_mode').select_option('on')
  page.wait_for_function('elysiumReplacement.elysium_replace_fastgen === true')
  page.wait_for_timeout(250)
  assert app.load_cfg()['elysium_api_key']=='browser-elysium-replacement-fixture'
  assert app.load_cfg()['fastgen_api_key']==previous_fastgen
  provider_access.models=lambda engine,key: ['anthropic/claude-sonnet-4.6','anthropic/claude-sonnet-5','anthropic/claude-sonnet-5.5']
- page.locator('#replace_sonnet').click()
+ at('#replace_sonnet').click()
  page.wait_for_function("models.elysium_model === 'anthropic/claude-sonnet-5.5' && llm === 'elysium' && rwEngine === 'elysium'")
  assert app.load_cfg()['llm_engine']==app.load_cfg()['rewrite_engine']=='elysium'
  assert page.evaluate('opts().elysium_replace_fastgen') is True
  assert page.evaluate('opts().elysium_model')=='anthropic/claude-sonnet-5.5'
  assert 'browser-elysium-replacement-fixture' not in json.dumps(api.get_state())
  # All three text selectors share one value; saving cannot restore a stale model.
- for selector,value in [('#rw_model','anthropic/claude-sonnet-4.6'),('#elysium_model','anthropic/claude-sonnet-5'),('#replace_text_model','anthropic/claude-sonnet-5.5')]:
-  page.locator(selector).select_option(value)
+ for selector,value in [('#rw_model','anthropic/claude-sonnet-4.6'),('#elysium_model','anthropic/claude-sonnet-5.5')]:
+  at(selector).select_option(value)
   page.wait_for_function("value => models.elysium_model === value",arg=value)
   page.evaluate('async()=>{syncAll();await saveKeys()}')
   assert app.load_cfg()['elysium_model']==value
-  for other in ['#rw_model','#elysium_model','#replace_text_model']:assert page.locator(other).input_value()==value
+  for other in ['#rw_model','#elysium_model']:assert at(other).input_value()==value
+
+ # Returning through the generic Start action cannot erase or rewrite an existing board.
+ saved_board=page.evaluate('boardState.id');saved_script=page.evaluate('boardState.script');rewrite_count=len(rewritten)
+ page.evaluate('startAll()')
+ page.wait_for_selector('#screen5.active')
+ assert page.evaluate('boardState.id')==saved_board and page.evaluate('boardState.script')==saved_script
+ assert len(rewritten)==rewrite_count
+
+ # A picture-only trial uses the current board without rewriting or charging a video model.
+ before_launch=len(launched);before_rewrite=len(rewritten);current_board=page.evaluate('boardState.id');previous_mode=page.evaluate('mode()')
+ page.evaluate('workflowImageTrial()')
+ page.wait_for_selector('#screen6.active')
+ page.wait_for_function('document.getElementById("btn_again").disabled===false')
+ assert len(launched)==before_launch+1 and launched[-1][2]=='images' and launched[-1][8] is None
+ assert launched[-1][18]['strategy']=='local' and launched[-1][18]['limit']==0
+ assert launched[-1][14]['id']==current_board and len(rewritten)==before_rewrite
+ page.wait_for_function('async mode=>(await pywebview.api.get_state()).config.mode===mode',arg=previous_mode)
+ # Changing only the video model resumes the saved board; it does not regenerate its script.
+ at('#elysium_video_model').select_option('google/gemini-omni-flash-1.2')
+ page.evaluate("workflowOpen('board')")
+ page.wait_for_selector('#screen5.active')
+ at('#board_preview').click()
+ page.wait_for_selector('#screen6.active')
+ page.wait_for_function('document.getElementById("btn_again").disabled===false')
+ assert launched[-1][14]['id']==current_board and launched[-1][8] is None and len(rewritten)==before_rewrite
 
  # Native handover waits for the old worker to stop; the frontend resumes polling the same job.
  import threading
@@ -447,9 +484,9 @@ with sync_playwright() as p:
  pipeline.set_wait('llm',time.time()+3600)
  page.evaluate("shownPct=0;buildStages('images');go(6);poll()")
  page.wait_for_selector('#p_wait.on #w_switch')
- page.locator('#w_switch').click()
+ at('#w_switch').click()
  page.wait_for_function("async()=>{const s=await pywebview.api.get_state();return !s.running && !s.service_switch && s.stage==='done' && (s.message||'').includes('Продолжаю через Elysium')}",timeout=15000)
- assert resumed.is_set()
+ assert resumed.wait(1), {'error':app.STATE.get('error'),'captured':len(replacement_snapshots),'resume_name':app._SERVICE_RESUME[0].__name__ if app._SERVICE_RESUME else None}
  old.join(timeout=2)
  assert not old.is_alive() and replacement_snapshots[0]['marker']=='same stopped project'
  assert replacement_snapshots[0]['elysium_model']=='anthropic/claude-sonnet-5.5'
