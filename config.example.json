@@ -40,5 +40,12 @@
   "youtube_cookie_file": "",
   "youtube_analyze_video": true,
   "source_montage": true,
-  "source_analysis_engine": "fastgen"
+  "source_analysis_engine": "fastgen",
+  "elysium_api_key": "",
+  "elysium_replace_fastgen": false,
+  "elysium_model": "gpt-4.1-mini",
+  "elysium_image_model": "google/gemini-3.1-flash-image-preview",
+  "elysium_stt_model": "google/gemini-3.6-flash",
+  "elysium_tts_model": "google/gemini-3-8-flash-tts",
+  "elysium_tts_voice": "Charon"
 }

@@ -270,3 +270,86 @@ async function animationToggle(input){
   const row=boardState.rows.find(r=>r.id===id);if(row)row.animate=checked;
   markBoardDirty();await animationChanged();
 }
+
+// Replace only FastGen stages; direct providers and saved assets remain selected.
+let elysiumKeyEdit=null;
+window.elysiumReplacement={elysium_replace_fastgen:false,elysium_model:'gpt-4.1-mini',elysium_image_model:'google/gemini-3.1-flash-image-preview',elysium_stt_model:'google/gemini-3.6-flash',elysium_tts_model:'google/gemini-3-8-flash-tts',elysium_tts_voice:'Charon'};
+function replacementLoad(value){
+  if(Object.hasOwn(value,'elysium_replace_fastgen'))for(const key of Object.keys(elysiumReplacement))if(Object.hasOwn(value,key))elysiumReplacement[key]=value[key];
+  if(value.elysium_model)models.elysium_model=value.elysium_model;replacementBadge();
+}
+function replacementBadge(){
+  const title=elysiumReplacement.elysium_replace_fastgen?'Elysium · вместо FastGen':'fast-gen';
+  SVC_TITLES.fastgen=title;const tile=document.querySelector('#providers input[value=fastgen]')||document.querySelector('input[name=prov][value=fastgen]');
+  if(tile)tile.closest('label').querySelector('.t').textContent=title;
+}
+function replacementFields(){return {...elysiumReplacement,elysium_model:models.elysium_model}}
+function syncReplacement(){
+  if(elysiumKeyEdit!==null)single.elysium=elysiumKeyEdit;
+  for(const key of ['elysium_image_model','elysium_stt_model','elysium_tts_model','elysium_tts_voice'])if($('replace_'+key))elysiumReplacement[key]=$('replace_'+key).value;
+  if($('replace_text_model'))models.elysium_model=$('replace_text_model').value;
+}
+function replacementPanel(){
+  replacementBadge();const c=elysiumReplacement;
+  let html=row('Вместо FastGen','',sel('replace_mode',[['off','Обычный режим'],['on','Всё, что делал FastGen → Elysium']],c.elysium_replace_fastgen?'on':'off'));
+  html+=row('Ключ Elysium',LINKS.elysium,keyIn('replace_key','elysium',0,single.elysium||'','Ключ Elysium')+eye('replace_key')+chk('elysium',0,'s_replace_key'),'s_replace_key');
+  html+='<button class="ghost" id="replace_sonnet" onclick="useSonnetText(\'elysium\')">Claude Sonnet для всех текстов · Elysium</button><button class="ghost" onclick="useSonnetText(\'anthropic\')">Claude Sonnet · напрямую</button>';
+  html+=row('Тексты через Elysium','',sel('replace_text_model',modelOptions('elysium',models.elysium_model),models.elysium_model)+modelButton('elysium','replace_text_model','s_replace_models'),'s_replace_models');
+  if(c.elysium_replace_fastgen){
+    html+=row('Картинки через Elysium','',sel('replace_elysium_image_model',[
+      ['google/gemini-3.1-flash-image-preview','Nano Banana 2 · Gemini Flash Image'],['google/gemini-3-pro-image','Nano Banana Pro · Gemini Pro Image']],c.elysium_image_model));
+    html+=row('Распознавание и анализ','',`<input id="replace_elysium_stt_model" value="${esc(c.elysium_stt_model)}" placeholder="google/gemini-3.6-flash">`);
+    html+=row('Озвучка вместо FastGen','',sel('replace_elysium_tts_model',[
+      ['google/gemini-3-8-flash-tts','Gemini 3.8 Flash TTS'],['google/gemini-3-1-flash-tts','Gemini 3.1 Flash TTS'],['google/gemini-2-5-pro-tts','Gemini 2.5 Pro TTS'],
+      ['elevenlabs/text-to-speech-v3-provider-4','ElevenLabs v3 · Elysium'],['elevenlabs/text-to-speech-multilingual-v2-provider-4','ElevenLabs Multilingual v2 · Elysium']],c.elysium_tts_model));
+    html+=row('Голос модели Elysium','',`<input id="replace_elysium_tts_voice" value="${esc(c.elysium_tts_voice)}" placeholder="Charon"><button class="ghost" onclick="replacementVoices()">Список голосов</button><select id="replace_voices" hidden></select>`,'s_replace_voices');
+    html+='<p class="note">Только этапы FastGen переключаются на Elysium: тексты, анализ, распознавание, картинки, озвучка и оживление. Другие выбранные сервисы сохраняются. Готовые картинки, транскрипция и озвучка переиспользуются; новые запросы оплачиваются с баланса Elysium. Для видео используются настройки Elysium ниже.</p>';
+  }
+  html+='<button class="ghost" onclick="checkReplacementModels()">Каталог картинок и озвучки</button><button class="ghost" id="replace_apply" onclick="switchToElysium()">Применить Elysium / продолжить текущую работу</button><div id="s_replace" class="status" role="status"></div>';
+  return html;
+}
+function bindReplacement(){
+  elysiumKeyEdit=null;document.querySelectorAll('#dropzone input.key[data-k=elysium]').forEach(input=>input.addEventListener('input',()=>{elysiumKeyEdit=input.value.trim()}));
+  $('replace_mode')?.addEventListener('change',async()=>{
+    syncAll();elysiumReplacement.elysium_replace_fastgen=$('replace_mode').value==='on';
+    await saveKeys();renderAccess();
+  });
+  for(const key of ['elysium_image_model','elysium_stt_model','elysium_tts_model','elysium_tts_voice'])$('replace_'+key)?.addEventListener('change',async()=>{syncReplacement();await saveKeys()});
+  $('replace_text_model')?.addEventListener('change',async()=>{syncReplacement();await saveKeys()});
+}
+async function replacementVoices(){
+  try{syncAll();await saveKeys();const result=await pywebview.api.tts_voices('elysium');if(!result.ok)throw new Error(result.error);
+    const box=$('replace_voices');box.hidden=false;box.innerHTML=result.voices.map(v=>`<option value="${esc(v.id)}">${esc(v.name)}</option>`).join('');
+    box.value=elysiumReplacement.elysium_tts_voice;box.onchange=async()=>{$('replace_elysium_tts_voice').value=box.value;syncReplacement();await saveKeys()};
+  }catch(error){$('s_replace_voices').textContent=String(error)}
+}
+async function switchToElysium(){
+  const button=$('w_switch'),status=$('s_replace');if(button)button.disabled=true;
+  try{
+    syncAll();elysiumReplacement.elysium_replace_fastgen=true;await saveKeys();
+    const result=await pywebview.api.switch_to_elysium(replacementFields());if(!result.ok)throw new Error(result.error);
+    if(status)status.textContent=result.resuming?'Останавливаю текущие запросы; затем продолжу через Elysium.':'Elysium включён. Следующий запуск использует выбранные модели.';
+    if(result.resuming){
+      let state;do{await new Promise(resolve=>setTimeout(resolve,300));state=await pywebview.api.get_state();$('p_message').textContent=state.message||'Переключаю на Elysium…';}while(state.service_switch);
+      if(result.worker==='run_studio'){studioTaskId=state.studio_task?.id;studioBusy=true;pollStudio();}
+      else if(result.worker==='run_storyboard')pollStoryboard();
+      else if(result.worker==='run_rewrite'||result.worker==='run_prepare')pollRewrite();
+      else {if(cur!==6)go(6);poll();}
+    }else renderAccess();
+  }catch(error){if(status)status.textContent=String(error);$('p_err').textContent=String(error);}
+  finally{if(button)button.disabled=false;}
+}
+
+async function useSonnetText(provider){
+  try{
+    syncAll();await saveKeys();const r=await pywebview.api.use_sonnet(provider);if(!r.ok)throw new Error(r.error);
+    llm=provider;rwEngine=provider;models[provider+'_model']=r.model;elysiumReplacement.elysium_model=models.elysium_model;
+    renderAccess();$('s_replace').textContent='Claude Sonnet выбран для сценариев, рерайта, раскадровки и промптов. Генерация не запускалась.';
+  }catch(error){if($('s_replace'))$('s_replace').textContent=String(error);}
+}
+
+async function checkReplacementModels(){
+  try{syncAll();await saveKeys();const r=await pywebview.api.elysium_replacement_models();if(!r.ok)throw new Error(r.error);
+    const c=replacementFields();$('s_replace').textContent=(r.images.includes(c.elysium_image_model)&&r.tts.includes(c.elysium_tts_model))?'Выбранные модели есть в каталоге. Генерация и списание не запускались.':'Одна из выбранных моделей отсутствует в каталоге; выберите другую.';
+  }catch(error){$('s_replace').textContent=String(error)}
+}

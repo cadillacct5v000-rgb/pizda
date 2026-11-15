@@ -404,6 +404,48 @@ with sync_playwright() as p:
  page.evaluate('startFromReview()')
  page.wait_for_selector('#screen6.active')
  assert len(launched)==before+1 and launched[-1][13]['content_only']
+ # Full replacement mode keeps the real FastGen credential on disk and uses one Elysium key.
+ page.evaluate('go(4)')
+ page.wait_for_selector('#replace_mode')
+ previous_fastgen=app.load_cfg()['fastgen_api_key']
+ page.locator('#replace_key').fill('browser-elysium-replacement-fixture')
+ page.locator('#replace_mode').select_option('on')
+ page.wait_for_function('elysiumReplacement.elysium_replace_fastgen === true')
+ page.wait_for_timeout(250)
+ assert app.load_cfg()['elysium_api_key']=='browser-elysium-replacement-fixture'
+ assert app.load_cfg()['fastgen_api_key']==previous_fastgen
+ page.locator('#replace_sonnet').click()
+ page.wait_for_function("models.elysium_model === 'anthropic/claude-sonnet-5.5-provider-4' && llm === 'elysium' && rwEngine === 'elysium'")
+ assert app.load_cfg()['llm_engine']==app.load_cfg()['rewrite_engine']=='elysium'
+ assert page.evaluate('opts().elysium_replace_fastgen') is True
+ assert page.evaluate('opts().elysium_model')=='anthropic/claude-sonnet-5.5-provider-4'
+ assert 'browser-elysium-replacement-fixture' not in json.dumps(api.get_state())
+ # Native handover waits for the old worker to stop; the frontend resumes polling the same job.
+ import threading
+ entered=threading.Event();resumed=threading.Event();replacement_snapshots=[]
+ @app.resumable_service_task
+ def run_job(config_snapshot=None):
+  if config_snapshot.get('elysium_replace_fastgen'):
+   replacement_snapshots.append(config_snapshot)
+   with app.LOCK:app.STATE.update(running=False,stage='done',done=1,total=1,result=str(root/'fixture.mp4'),ended_at=time.time())
+   resumed.set();return
+  entered.set();pipeline.CANCEL.wait(30)
+  with app.LOCK:app.STATE.update(running=False)
+ pipeline.CANCEL.clear()
+ with app.LOCK:app.STATE.update(running=True,preparing=False,queue_active=False,cancelled=False,error=None,service_switch=None,result=None)
+ old=threading.Thread(target=run_job,kwargs={'config_snapshot':{'elysium_replace_fastgen':False,'marker':'same stopped project'}})
+ old.start();assert entered.wait(2)
+ pipeline.set_wait('llm',time.time()+3600)
+ page.evaluate("shownPct=0;buildStages('images');go(6);poll()")
+ page.wait_for_selector('#p_wait.on #w_switch')
+ page.locator('#w_switch').click()
+ page.wait_for_function("async()=>{const s=await pywebview.api.get_state();return !s.running && !s.service_switch && s.stage==='done' && (s.message||'').includes('Продолжаю через Elysium')}",timeout=15000)
+ assert resumed.is_set()
+ old.join(timeout=2)
+ assert not old.is_alive() and replacement_snapshots[0]['marker']=='same stopped project'
+ assert replacement_snapshots[0]['elysium_model']=='anthropic/claude-sonnet-5.5-provider-4'
+ page.wait_for_function('document.getElementById("btn_again").disabled === false')
+ assert not app.STATE.get('service_switch') and not app.STATE['running']
  assert not errors,errors
  b.close()
 print('Browser E2E passed: source-aware preview/full render, Studio workers, durable settings, always-visible YouTube URL to automatic enhanced storyboard, failed upgrade blocks implicit old-board render, explicit saved-version recovery, bounded 30-second source trial and marked result-board navigation.')

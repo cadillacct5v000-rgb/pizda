@@ -7,7 +7,7 @@ import sqlite3
 import uuid
 
 OPTION_FIELDS = {'audio', 'source', 'script', 'tts', 'voice', 'providers', 'mode', 'use_refs', 'subtitles',
-                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id', 'studio', 'channel_design_id', 'channel_design_revision', 'animation'}
+                 'motion', 'hd', 'qa', 'speed', 'video_first', 'style', 'custom_style', 'render_fps', 'rewrite', 'storyboard_id', 'studio', 'channel_design_id', 'channel_design_revision', 'animation', 'elysium_replace_fastgen', 'elysium_image_model','elysium_stt_model','elysium_tts_model','elysium_tts_voice','elysium_model'}
 REWRITE_FIELDS = {'on', 'montage', 'analyze_video', 'source', 'url', 'text', 'engine', 'words', 'language'}
 
 
@@ -19,6 +19,8 @@ def safe_options(options):
     if not isinstance(options, dict):
         raise ValueError('Некорректные настройки проекта')
     result = {key: value for key, value in options.items() if key in OPTION_FIELDS}
+    import elysium_replacement
+    if any(k in result for k in elysium_replacement.DEFAULTS):result.update(elysium_replacement.settings(result))
     if result.get('channel_design_id'):
         from channel_design import checked_id
         checked_id(result['channel_design_id'])
@@ -128,7 +130,7 @@ class ProjectStore:
 
     def authorize_video_retry(self, key):
         """Explicit one-shot authorization; keep the ambiguous attempt for support."""
-        if not isinstance(key, str) or not key.startswith('elysium-video:'):
+        if not isinstance(key, str) or not key.startswith(('elysium-video:','elysium-media:')):
             raise ValueError('Некорректное видеозадание.')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')

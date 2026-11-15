@@ -525,7 +525,7 @@
         <ul class="stages" id="stages"></ul>
         <div class="bar"><i id="stage_bar"></i></div>
         <div class="time" id="p_time"></div><div id="p_message" class="studio-note" role="status"></div><div id="p_err"></div>
-        <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small></div>
+        <div class="wait" id="p_wait"><div class="wr"><svg viewBox="0 0 24 24"><path d="M6 2h12M6 22h12M7 2v4l5 6 5-6V2M7 22v-4l5-6 5 6v4"/></svg><span class="wt" id="w_title"></span><span class="cd" id="w_cd"></span></div><small id="w_sub"></small><button class="ghost" id="w_switch" onclick="switchToElysium()">Продолжить через Elysium</button></div>
         <div style="margin-top:auto; padding-top:16px; display:flex; gap:8px; flex-wrap:wrap"><button id="btn_cancel" class="danger" onclick="cancelJob()" data-i18n="stop"></button><button id="btn_again" class="ghost" onclick="go(4)" disabled data-i18n="again"></button><button id="btn_board_return" class="ghost" onclick="renderReview(boardState?.script || F.script);go(5); showStoryboard()" hidden>К раскадровке</button><button id="btn_video_retry" class="ghost" onclick="retryUncertainVideo()" hidden>Повторить отправку видео</button><button id="btn_report" class="ghost" onclick="sendReport()" data-i18n="report"></button></div>
       </div>
       <div class="panel"><h3 id="g_title"></h3><div class="frames" id="frames"></div>
@@ -983,10 +983,11 @@ async function poll() {
   if (st.queue && !st.queue_active) { $('result').classList.add('show'); $('r_path').innerHTML = queueSummary(st); $('g_title').textContent = t('frames_done'); queueItems = st.queue_items || queueItems; }
   else if (st.result && !st.queue_active) { $('result').classList.add('show'); $('r_path').textContent = st.result; $('g_title').textContent = t('frames_done'); }
   if (st.error) { $('error').textContent = t('error') + st.error; $('p_err').textContent = st.error; $('btn_again').textContent = t('to_settings'); } else { $('p_err').textContent = ''; $('btn_again').textContent = t('again'); }
+  if ($('btn_video_retry')) $('btn_video_retry').textContent=st.video_retry?.kind?({image:'Повторить отправку картинки',audio:'Повторить отправку озвучки',stt:'Повторить распознавание'})[st.video_retry.kind]||'Повторить отправку':'Повторить отправку видео';
   if ($('btn_video_retry')) $('btn_video_retry').hidden = !st.video_retry || !!st.running || !!st.preparing || !!st.queue_active || !!st.queue;
   if (st.cancelled) $('error').textContent = t('stopped');
   if ($('btn_board_return')) $('btn_board_return').hidden = !st.active_board_id || !!st.running;
-  if (st.running || st.queue_active) setTimeout(poll, 1400); else { $('btn_again').disabled = false; $('btn_cancel').disabled = true; }
+  if (st.running || st.queue_active || st.service_switch) setTimeout(poll, 1400); else { $('btn_again').disabled = false; $('btn_cancel').disabled = true; }
 }
 async function retryUncertainVideo() {
   const button = $('btn_video_retry'); button.disabled = true;
@@ -994,7 +995,8 @@ async function retryUncertainVideo() {
     const st = await pywebview.api.get_state();
     if (!st.video_retry) throw new Error('Обновите экран: задача уже изменилась.');
     const plan = st.video_retry.plan ? ' для плана ' + st.video_retry.plan : '';
-    if (!confirm('Отправить видео заново' + plan + '? Первая задача могла создаться и списать деньги. Это разрешит одну новую платную отправку и продолжит сборку.')) return;
+    const subject=({image:'картинку',audio:'озвучку',stt:'аудио на распознавание'})[st.video_retry.kind]||'видео';
+    if (!confirm('Отправить '+subject+' заново' + plan + '? Первая задача могла создаться и списать деньги. Это разрешит одну новую платную отправку и продолжит сборку.')) return;
     const r = await pywebview.api.retry_uncertain_video(st.video_retry.operation, true);
     if (!r.ok) throw new Error(r.error);
     $('btn_again').disabled = true; $('btn_cancel').disabled = false;
@@ -1025,6 +1027,7 @@ async function loadConfig(keepScreen) {
   $('render_fps').value = c.render_fps || 25;
   STYLES = st.styles || c.styles || STYLES; styleKey = c.style || 'ultrareal'; queueStyles = !!c.queue_styles; if (!keepScreen) $('custom_style').value = c.custom_style || ''; fillStyles();
   models.elysium_model = c.elysium_model || 'gpt-4.1-mini'; models.llm_model = c.llm_model || models.llm_model; models.openai_model = c.openai_model || models.openai_model; models.anthropic_model = c.anthropic_model || 'claude-sonnet-5-5'; models.gemini_model = c.gemini_model || 'gemini-3.6-flash'; baseUrls = c.base_urls || {}; baseDefaults = c.base_defaults || baseDefaults;
+  if(window.replacementLoad)replacementLoad(c);
   stt = c.stt_engine || (c.has_fastgen ? 'fastgen' : 'whisper'); llm = c.llm_engine || (c.has_fastgen ? 'fastgen' : 'openai'); tts = c.tts_service || 'voicegen';
   recent = c.tts_recent || [];
   if (!keepScreen) { source = c.source || 'mp3'; F.voice = c.tts_voice || ''; }
@@ -1047,7 +1050,7 @@ const langName = v => LANG_NAMES[v] || v;
 let locationContinuity=false;
 let videoEngine = 'providers', elysiumVideoResolution = '720p', elysiumVideoModel='google/gemini-omni-flash-1.2', elysiumKlingMode='std';
 const single = {}, models = {elysium_model:'gpt-4.1-mini',llm_model:'openai/gpt-5-2', openai_model:'gpt-4.1-mini', anthropic_model:'claude-sonnet-5-5', gemini_model:'gemini-3.6-flash'};
-const MODEL_OPTS = {elysium_model:[['gpt-4.1-mini','gpt-4.1-mini']],llm_model:[['openai/gpt-5-2','gpt-5-2'],['openai/gpt-5-1','gpt-5-1'],['openai/gpt-4.1-mini','gpt-4.1-mini'],['openai/gpt-4o-mini','gpt-4o-mini'],['google/gemini-3.6-flash','gemini-3.6-flash'],['google/gemini-3.5-flash-lite','gemini-3.5-flash-lite'],['google/gemini-3.1-pro','gemini-3.1-pro'],['openai/gpt-4.1','gpt-4.1']],
+const MODEL_OPTS = {elysium_model:[['anthropic/claude-sonnet-5.5-provider-4','Claude Sonnet 5.5 · Elysium'],['anthropic/claude-sonnet-5.5-cc','Claude Sonnet 5.5 · Claude Code route'],['gpt-4.1-mini','GPT-4.1 mini · Elysium']],llm_model:[['openai/gpt-5-2','gpt-5-2'],['openai/gpt-5-1','gpt-5-1'],['openai/gpt-4.1-mini','gpt-4.1-mini'],['openai/gpt-4o-mini','gpt-4o-mini'],['google/gemini-3.6-flash','gemini-3.6-flash'],['google/gemini-3.5-flash-lite','gemini-3.5-flash-lite'],['google/gemini-3.1-pro','gemini-3.1-pro'],['openai/gpt-4.1','gpt-4.1']],
   openai_model:[['gpt-4.1-mini','gpt-4.1-mini'],['gpt-5.4-mini','gpt-5.4-mini'],['gpt-5.4','gpt-5.4'],['gpt-5.2','gpt-5.2'],['gpt-5-mini','gpt-5-mini'],['gpt-4.1','gpt-4.1'],['gpt-4o-mini','gpt-4o-mini']],
   anthropic_model:[['claude-sonnet-5-5','claude-sonnet-5.5'],['claude-haiku-5-5','claude-haiku-5.5'],['claude-opus-5-5','claude-opus-5.5'],['claude-sonnet-5','claude-sonnet-5'],['claude-opus-5','claude-opus-5'],['claude-haiku-4-5','claude-haiku-4.5']],
   gemini_model:[['gemini-3.6-flash','gemini-3.6-flash'],['gemini-3.8-flash','gemini-3.8-flash'],['gemini-3.5-flash','gemini-3.5-flash'],['gemini-3.5-flash-lite','gemini-3.5-flash-lite'],['gemini-3.1-pro-preview','gemini-3.1-pro'],['gemini-2.5-flash','gemini-2.5-flash'],['gemini-2.5-pro','gemini-2.5-pro']]};
@@ -1067,14 +1070,16 @@ const modelButton = (engine, target, status) => `<button class="ghost" onclick="
 const sel = (id, opts, val) => `<select class="sel" id="${id}">${opts.map(([v, n]) => `<option value="${esc(v)}"${v === val ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
 
 function renderAccess() {
-  const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value), H = [];
+  const p = provs(), fg = p.includes('fastgen') || keyRows.fastgen.some(r => r.value) || !!window.elysiumReplacement?.elysium_replace_fastgen, H = [];
   H.push(row(L === 'ru' ? 'Исходный ролик YouTube' : 'Source YouTube video', '',
     `<input type="text" inputmode="url" id="youtube_source_url" value="${esc(F.rwUrl)}" placeholder="https://www.youtube.com/watch?v=..." spellcheck="false"><button class="primary" id="youtube_prepare" onclick="prepareYouTube()">${L === 'ru' ? 'Подготовить весь ролик' : 'Prepare full video'}</button>`));
   H.push(row(L === 'ru' ? 'Предпросмотр 30 секунд' : '30-second trial', '',
     `<label class="sample-start">${L==='ru'?'Начало в исходнике, с':'Source start, s'} <input type="number" id="youtube_sample_start" min="0" step="1" value="${esc(youtubeSampleStart)}"></label><button id="youtube_sample" class="ghost" onclick="startYouTubeSample().catch(e => $('s_prep').textContent=String(e))">${L==='ru'?'Сделать предпросмотр 30 с':'Create 30 s trial'}</button>`));
   H.push(`<div class="note">${L==='ru'?'Проба готовит сценарий, анализирует кадры и озвучивает только выбранный отрезок. Картинки/видео, HD, FPS, голос и субтитры — по вашим настройкам. Запросы оплачиваются сервисами. При конце исходника раньше 30 с проба короче.':'Only the selected window is analysed, rewritten and narrated, with your media, quality, voice and caption settings. Provider charges apply.'}</div>`);
   H.push(`<div class="note youtube-entry-note">${L === 'ru' ? 'Вставьте ссылку: программа подготовит сценарий, проанализирует стиль и создаст постановку. Писать сценарий вручную не нужно. Анализ и текстовые запросы оплачиваются выбранными сервисами; перед генерацией видео можно проверить планы.' : 'Paste a link to prepare narration, source style and a storyboard. Analysis and text requests use your selected services. Review plans before rendering.'}</div>`);
+  if(window.replacementPanel)H.push(replacementPanel());
   for (const k of p) {
+    if(k==='fastgen' && window.elysiumReplacement?.elysium_replace_fastgen)continue;
     if (!keyRows[k].length) keyRows[k].push({idx:-1, value:''});
     const many = keyRows[k].length > 1;
     keyRows[k].forEach((r, i) => H.push(row(`${t('key')} ${SVC_TITLES[k]}${many ? ' ' + (i + 1) : ''}`, i === 0 ? SVC_LINKS[k] : '',
@@ -1161,7 +1166,7 @@ function renderAccess() {
   if (direct.has('elysium')) H.push(row('Elysium API', LINKS.elysium, '<span class="note">https://elysiumai.garden/v1 · OpenAI-совместимый API. Выберите модель с поддержкой изображений для анализа и автоотбора. Проверка ключа использует каталог моделей; анализ и генерация оплачиваются сервисом.</span>'));
   H.push(queueHtml());
   $('dropzone').innerHTML = `<div class="alist-in">${H.join('')}</div>`;
-  bindAccess(); renderVoiceList(); bindQueue();
+  bindAccess();if(window.bindReplacement)bindReplacement(); renderVoiceList(); bindQueue();
 }
 // ===== очередь заданий: несколько сценариев/файлов подряд, у каждого свой голос =====
 let queueItems = [], APP_VERSION = '';
@@ -1252,7 +1257,7 @@ function syncRows() {
   document.querySelectorAll('#dropzone input.key').forEach(inp => { const k = inp.dataset.k, v = inp.value.trim();
     if (IMG.includes(k)) keyRows[k][+inp.dataset.i].value = v; else if (TTS_SVCS.includes(k)) ttsKeys[k] = v; else if (inp.id === 'k_rw') rwKeys[k] = v; else single[k] = v; });
 }
-function syncAll() { syncRows(); syncF(); }
+function syncAll() { syncRows();syncF();if(window.syncReplacement)syncReplacement(); }
 function addKey(p) { syncAll(); keyRows[p].push({idx:-1, value:''}); renderAccess(); const e = $(`k_${p}_${keyRows[p].length - 1}`); if (e) e.focus(); }
 function rmKey(p, i) { syncAll(); keyRows[p].splice(i, 1); renderAccess(); saveKeys(); }
 function setKeysFromConfig(c) { for (const p of IMG) { const blank = keyRows[p].some(r => !r.value); keyRows[p] = (c.keys && c.keys[p] || []).map((v, i) => ({idx: i, value: v})); if (blank || !keyRows[p].length) keyRows[p].push({idx:-1, value:''}); } }
@@ -1341,7 +1346,7 @@ function applyLang() {
 async function saveKeys() {
   syncAll();
   const p = provs(), fg = p.includes('fastgen');
-  const data = {...models, location_continuity:locationContinuity, video_engine:videoEngine, elysium_video_model:elysiumVideoModel, elysium_kling_mode:elysiumKlingMode, elysium_video_resolution:elysiumVideoResolution, keys: {}};
+  const data = {...models, ...(window.replacementFields?replacementFields():{}),location_continuity:locationContinuity, video_engine:videoEngine, elysium_video_model:elysiumVideoModel, elysium_kling_mode:elysiumKlingMode, elysium_video_resolution:elysiumVideoResolution, keys: {}};
   for (const k of IMG) if (p.includes(k) || (source === 'script' && tts === k)) data.keys[k] = keyRows[k].map(r => ({idx: r.idx, value: r.value}));
   if (rwOn() && analyzeVideo && analysisEngine !== 'fastgen' && single[analysisEngine] && !single[analysisEngine].includes('•')) data[analysisEngine] = single[analysisEngine];
   for (const k of ['elysium','openai','anthropic','gemini','assemblyai','openrouter']) if (typeof single[k] === 'string' && !single[k].includes('•')) data[k] = single[k];
@@ -1415,6 +1420,7 @@ async function loadDesktopProject(id) {
   if(window.studioBoardReady)studioBoardReady();
   const o = r.project.options;
   if(window.channelDesignLoad)channelDesignLoad({channel_design_id:o.channel_design_id||'',channel_design_revision:o.channel_design_revision||null},true);
+  if(window.replacementLoad)replacementLoad(o);
   F.script = o.script || ''; F.voice = o.voice || ''; audioPath = o.audio || ''; source = o.source || 'script';
   tts = o.tts || tts; styleKey = o.style || styleKey;
   document.querySelectorAll('input[name=fgq]').forEach(el => el.checked = el.value === (o.use_refs ? 'quality' : 'speed'));
@@ -1439,7 +1445,7 @@ async function importDesktopDocx(withPrompts) {
   if (result.warnings.length) $('board_status').textContent = result.warnings.join(' · ');
 }
 
-function opts() { syncAll(); return {...(window.channelDesignChoice?channelDesignChoice():{}),audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), animation: animationOptions(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
+function opts() { syncAll(); return {...(window.channelDesignChoice?channelDesignChoice():{}),...(window.replacementFields?replacementFields():{}),audio: audioPath, source, script: F.script, tts, voice: F.voice, providers: provs(), animation: animationOptions(), mode: mode(), use_refs: fgq() === 'quality', subtitles: $('use_subs').checked, motion: $('use_motion').checked, hd: $('use_hd').checked, qa: $('use_qa').checked, speed: $('use_speed').checked, video_first: vf(), style: styleKey, custom_style: customStyle(),
   render_fps: +$('render_fps').value,
   studio: window.studioFields ? studioFields() : undefined,
   storyboard_id: boardState ? boardState.id : null,

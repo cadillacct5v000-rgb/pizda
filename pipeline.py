@@ -25,6 +25,8 @@ import endpoints
 import netutil
 import model_reply
 import channel_design as channel_designs
+import elysium_replacement as replacement
+from elysium_media import ElysiumMediaError
 from media_tools import ffmpeg_bin, run_media, valid_video
 
 from fastgen_api import BASE_URL, FastGen, app_dir, data_dir, file_to_data_uri
@@ -79,7 +81,7 @@ def video_chain_for(scene):
 YOUGEN_CHAIN = [("nano-banana-2", 2), ("nano-banana-pro", 1), ("nano-banana-2-lite", 1)]
 ROYAL_CHAIN = [("nano-banana-2", 2), ("nano-banana-pro", 1)]
 PROVIDERS = ("fastgen", "nonstop", "yougen", "royal", "slider", "google", "syntx")
-PROVIDER_NAMES = {"fastgen": "fast-gen", "nonstop": "veononstop", "yougen": "yougen", "royal": "royaltechno", "slider": "secretslider", "google": "Google", "syntx": "SYNTX"}
+PROVIDER_NAMES = {"elysium":"Elysium", "fastgen": "fast-gen", "nonstop": "veononstop", "yougen": "yougen", "royal": "royaltechno", "slider": "secretslider", "google": "Google", "syntx": "SYNTX"}
 SINGLE_KEY = {"fastgen": "fastgen_api_key", "nonstop": "veononstop_api_key", "yougen": "yougen_api_key", "royal": "royaltechno_api_key",
               "slider": "secretslider_api_key", "google": "google_api_key", "syntx": "syntx_api_key"}
 # Google напрямую: скорость — Imagen 4 Fast (референсы не принимает), качество — Nano Banana 2 → Pro с портретами героев
@@ -301,6 +303,7 @@ def load_config():
 def make_text_engine(cfg):
     """Возвращает (stt_name, stt_api, llm_name, llm_api).
     С ключом fast-gen всё идёт через него; без него — распознавание Whisper/AssemblyAI, тексты OpenAI/Claude/Gemini."""
+    cfg = replacement.effective(cfg)
     has_fg = bool(cfg.get("fastgen_api_key"))
     stt = (cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper")).lower()
     llm = (cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")).lower()
@@ -309,7 +312,10 @@ def make_text_engine(cfg):
     if llm == "fastgen" and not has_fg:
         llm = "openai"
     fg = FastGen(cfg["fastgen_api_key"]) if has_fg else None
-    if stt == "fastgen":
+    if stt == "elysium":
+        from elysium_media import ElysiumTranscriber
+        stt_api=ElysiumTranscriber(cfg.get("elysium_api_key"),cfg["elysium_stt_model"],cfg.get("elysium_base_url"))
+    elif stt == "fastgen":
         stt_api = fg
     elif stt == "assemblyai":
         if not cfg.get("assemblyai_api_key"):
@@ -385,7 +391,8 @@ def clean_words(words):
 
 def stt_fallbacks(engine):
     """Запасные распознаватели по ключам из настроек (кроме того, что уже выбран)."""
-    cfg = load_config()
+    if engine=="elysium":return []
+    cfg = replacement.effective(load_config())
     out = []
     if engine != "fastgen" and cfg.get("fastgen_api_key"):
         out.append(("fastgen", FastGen(cfg["fastgen_api_key"])))
@@ -441,8 +448,8 @@ def _transcribe_raw(engine, api, audio_path, job_dir, progress, duration=None):
         write_json(out, data)
         progress("transcribe", 1, 1, f"распознано слов: {len(data['words'])}")
         return data
-    if engine in ("openai", "whisper"):
-        progress("transcribe", 0, 1, "распознаю речь (OpenAI Whisper)")
+    if engine in ("openai", "whisper", "elysium"):
+        progress("transcribe", 0, 1, "распознаю речь (Elysium)" if engine=="elysium" else "распознаю речь (OpenAI Whisper)")
         data = api.transcribe(audio_path, ffmpeg_bin(), ffmpeg_bin("ffprobe"), duration or audio_duration(audio_path), progress=progress)
         if not data["words"]:
             raise RuntimeError("Распознавание вернулось без таймкодов слов")
@@ -2084,7 +2091,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     log(f"сцена {s['index'] + 1}: выбранные сервисы не справились, пробую {unit_name(prov)}")
                 try:
                     model = ctx["image_gen"][prov](s, path, progress, scene_refs)
-                except (Cancelled, SceneRejected):
+                except (Cancelled, SceneRejected, ElysiumMediaError):
                     raise
                 except Exception as e:
                     log(f"сцена {s['index'] + 1}: {prov} упал: {str(e)[:200]}")
@@ -2269,7 +2276,10 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
     def work_group(group):
         for item in group:
             check_cancel()
-            work(item)
+            try:work(item)
+            except ElysiumMediaError:
+                CANCEL.set()  # Stop scheduling new paid images after a provider rejection/uncertain POST.
+                raise
     with cf.ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
         list(ex.map(work_group, scene_continuity.grouped(todo)))
     check_cancel()
@@ -2907,14 +2917,23 @@ import source_narration
 
 def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
     """Озвучить сценарий выбранным сервисом; результат кэшируется в job_dir/voiceover.mp3."""
+    logical_tts=tts_service
+    cfg={**cfg,"_legacy_tts_voice":voice_id or ""}
+    cfg=replacement.effective(cfg)
+    tts_service=replacement.service(cfg,tts_service)
+    if tts_service=="elysium":voice_id=cfg["elysium_tts_voice"]
     out = os.path.join(job_dir, "voiceover.mp3")
     signature = {"text_sha256": hashlib.sha256(script_text.encode("utf-8")).hexdigest(),
                  "service": tts_service, "voice": voice_id or ""}
-    source_delivery = cfg.get("_source_delivery") if tts_service in ("fastgen", "elevenlabs") else None
+    if tts_service=="elysium":signature["model"]=cfg["elysium_tts_model"]
+    source_delivery = cfg.get("_source_delivery") if tts_service in ("fastgen", "elevenlabs", "elysium") else None
     if source_delivery:
         signature["source_delivery"] = source_delivery
     try:
-        cached = read_json(out + ".json") == signature
+        previous=read_json(out+'.json')
+        legacy={"text_sha256":signature['text_sha256'],"service":logical_tts,"voice":(cfg.get('_legacy_tts_voice') or '')}
+        if source_delivery:legacy['source_delivery']=source_delivery
+        cached = previous == signature or bool(cfg.get('elysium_replace_fastgen') and logical_tts=='fastgen' and previous==legacy)
     except (OSError, ValueError):
         cached = False
     if cached and os.path.exists(out) and os.path.getsize(out) > 1000:
@@ -2930,7 +2949,10 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
         f.write(script_text)
     lang = detect_language(script_text)
     progress("tts", 0, 1, f"озвучиваю сценарий ({tts_service}, язык {lang})")
-    client = make_tts(tts_service, key)
+    if tts_service=='elysium':
+        from elysium_media import ElysiumTTS
+        client=ElysiumTTS(key,cfg['elysium_tts_model'],cfg.get('elysium_base_url'),default_voice=cfg['elysium_tts_voice'])
+    else:client = make_tts(tts_service, key)
     if source_delivery:
         client.source_delivery = source_delivery
     try:
@@ -3220,18 +3242,27 @@ def gen_syntx(api, gate, scene, out_path, refs=None, image=None):
 def make_context(cfg, providers):
     """providers — выбранные сервисы. Каждый ключ сервиса — отдельный «юнит» (fastgen, fastgen#2, …) со своими лимитами;
     сцены делятся между юнитами по кругу. Сервисы с ключом, но без галочки, — подстраховка."""
+    cfg=replacement.effective(cfg)
     keys = {p: provider_keys(cfg, p) for p in PROVIDERS}
+    if cfg.get("elysium_replace_fastgen"):keys["fastgen"]=[cfg["elysium_api_key"]] if "fastgen" in providers else []
     for p in providers:
         if not keys[p]:
             raise SystemExit(f"Отмечен {PROVIDER_NAMES[p]}, но его ключ не введён")
-    api = FastGen(keys["fastgen"][0]) if keys["fastgen"] else None
+    api = FastGen(keys["fastgen"][0]) if keys["fastgen"] and not cfg.get("elysium_replace_fastgen") else None
     ctx = {"api": api, "providers": [], "bases": list(providers), "gates": {}, "image_gen": {},
            "nonstop": None, "yougen": None, "royal": None, "slider": None, "google": None, "syntx": None, "sliders": [], "fallback": []}
 
     def add(p, n, key, selected):
         unit = p if n == 0 else f"{p}#{n + 1}"
         try:
-            if p == "fastgen":
+            if p=="fastgen" and cfg.get('elysium_replace_fastgen'):
+                from elysium_media import MediaClient
+                unit='elysium';c=MediaClient(key,cfg.get('elysium_base_url'))
+                class Gate:
+                    threads=1  # No parallel billable submissions after an uncertain response.
+                g=Gate()
+                fn=lambda sc,out,pr,refs,c=c:c.image(sc,out,pr,refs,cfg['elysium_image_model'],HD_IMAGES)
+            elif p == "fastgen":
                 c = api if n == 0 else FastGen(key)
                 g = RateGate(c, "image")
                 fn = lambda sc, out, pr, refs, c=c, g=g: gen_fastgen_image(c, g, sc, out, pr, refs)
@@ -3271,6 +3302,8 @@ def make_context(cfg, providers):
         if p not in providers:
             for n, k in enumerate(keys[p]):
                 add(p, n, k, False)
+    if cfg.get("elysium_replace_fastgen"):ctx["bases"]=["elysium" if p=="fastgen" else p for p in ctx["bases"]]
+    ctx["cfg"]=cfg
     ctx["video_engine"] = cfg.get("video_engine", "providers")
     ctx["video_config"] = dict(cfg)
     if ctx["video_engine"] == "elysium":
@@ -3288,6 +3321,8 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
     """Источник (ссылка YouTube или текст) → переписанный сценарий выбранной моделью."""
     import rewrite as rwmod
     say = lambda m: progress("rewrite", 0, 1, m)
+    cfg=replacement.effective(cfg,rw.get("_replacement_options"))
+    rw={**rw,"engine":replacement.service(cfg,rw.get("engine") or cfg.get("rewrite_engine") or "fastgen")}
     profile = None
     design = rw['_channel_design'] if '_channel_design' in rw else channel_designs.selected(data_dir(),cfg)
     if (rw.get("source") or "text") == "youtube":
@@ -3372,6 +3407,9 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
         identity = json.dumps({"service": service, "voice": voice, "source_profile": None if (source_profile or {}).get('content_only') else source_profile}, sort_keys=True, ensure_ascii=False)
         base += "_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
         job_dir = os.path.join(data_dir(), "jobs", base)
+        if cfg.get('elysium_replace_fastgen') and service=='fastgen' and not os.path.isfile(os.path.join(job_dir,'voiceover.mp3')):
+            base+='_elytts_'+hashlib.sha256(json.dumps([cfg['elysium_tts_model'],cfg['elysium_tts_voice']]).encode()).hexdigest()[:12]
+            job_dir=os.path.join(data_dir(),'jobs',base)
         os.makedirs(job_dir, exist_ok=True)
         if source_profile:
             write_json(os.path.join(job_dir, "source_profile.json"), source_profile)
@@ -3392,7 +3430,7 @@ def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use
     progress = Progress(progress_cb)
     if reset_cancel:
         CANCEL.clear()
-    cfg = load_config()
+    cfg = replacement.effective(load_config())
     providers = normalize_providers(provider or cfg.get("image_providers") or cfg.get("image_provider"))
     audio_path, job_dir, base = resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite)
     duration = audio_duration(audio_path)
@@ -3414,7 +3452,7 @@ def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use
     est = {
         "scenes": n, "duration": round(duration), "have_images": have_images,
         "providers": providers, "text_engine": engine,
-        "fastgen_credits_images": share.get("fastgen", 0) * (4 if use_refs else 1) + (8 if use_refs and "fastgen" in providers else 0),
+        "fastgen_credits_images": (share.get("fastgen", 0) * (4 if use_refs else 1) + (8 if use_refs and "fastgen" in providers else 0)) if not cfg.get("elysium_replace_fastgen") else 0,
         "nonstop_images": share.get("nonstop", 0),
         "yougen_images": share.get("yougen", 0),
         "royal_images": share.get("royal", 0),
@@ -3470,7 +3508,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         CANCEL.clear()
     clear_wait()
     take_redo()
-    cfg = dict(config_snapshot) if config_snapshot is not None else load_config()
+    cfg = replacement.effective(dict(config_snapshot) if config_snapshot is not None else load_config())
     endpoints.configure(cfg)
     if channel_design is channel_designs.DEFAULT:channel_design=channel_designs.selected(data_dir(),cfg)
     cfg={**cfg,'_channel_design':channel_design}
@@ -3510,7 +3548,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
     duration = audio_duration(audio_path)
-    progress("start", 0, 0, f"аудио {duration:.0f} с · картинки: {' + '.join(PROVIDER_NAMES[p] for p in providers)} · режим: {mode} · стиль: {style_name}")
+    progress("start", 0, 0, f"аудио {duration:.0f} с · картинки: {' + '.join('Elysium' if p=='fastgen' and cfg.get('elysium_replace_fastgen') else PROVIDER_NAMES[p] for p in providers)} · режим: {mode} · стиль: {style_name}")
     ctx = make_context(cfg, providers)
     ctx["qa"] = make_qa_client(cfg)
     for k in QA_STATS:

@@ -33,12 +33,12 @@ jobs:
         run: python scripts/ci_test_report.py
       - uses: actions/upload-artifact@v4
         with:
-          name: KadroGen-2.0.20-Windows-x64
+          name: KadroGen-2.0.21-Windows-x64
           path: dist/KadroGen/
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: KadroGen-2.0.20-update-from-2.0.19
+          name: KadroGen-2.0.21-update-from-2.0.20
           path: |
             dist/KadroGen/KadroGen.exe
             dist/KadroGen/_internal/ui.html

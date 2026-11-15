@@ -18,6 +18,7 @@ import threading
 import time
 import traceback
 import studio
+import elysium_replacement as replacement
 from pathlib import Path
 import uuid
 import zipfile
@@ -34,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.20-dev"
+VERSION = "2.0.21-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -58,10 +59,60 @@ QUEUE = []          # задания на ночь: [{id, title, source, script,
 QUEUE_STOP = False  # «Стоп» во время очереди: текущее задание прерывается, следующие не стартуют
 _VIDEO_RESUME = None  # Original arguments stay private; never expose scripts/profiles through recovery metadata.
 
+_SERVICE_RESUME=None
+
+def resumable_service_task(function):
+    @functools.wraps(function)
+    def wrapped(*args,**kwargs):
+        global _SERVICE_RESUME
+        with LOCK:
+            if not (STATE.get('queue_active') and function.__name__!='run_queue'):
+                _SERVICE_RESUME=(wrapped,copy.deepcopy(args),copy.deepcopy(kwargs))
+        return function(*args,**kwargs)
+    return wrapped
+
+
+def continue_with_elysium(saved,patch,queue_id=None):
+    global QUEUE_STOP
+    try:
+        while True:
+            with LOCK:
+                if (STATE.get('service_switch') or {}).get('state')=='cancelled':
+                    STATE['service_switch']=None;return
+                busy=STATE['running'] or STATE['preparing'] or STATE.get('queue_active')
+            if not busy:break
+            time.sleep(.1)
+        target,args,kwargs=copy.deepcopy(saved);args=list(args);name=target.__name__
+        def update(cfg):return {**(cfg or {}),**patch}
+        if name=='run_job':
+            if len(args)>19:args[19]=update(args[19])
+            else:kwargs['config_snapshot']=update(kwargs.get('config_snapshot'))
+            if len(args)>8 and args[8]:args[8]={**args[8],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[8].get('engine')}
+        elif name=='run_youtube_sample':args[0]=update(args[0]);args[1]=update(args[1])
+        elif name=='run_storyboard':args[2]=update(args[2])
+        elif name=='run_studio':args[5]=update(args[5])
+        elif name=='run_rewrite':args[0]={**args[0],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[0].get('engine')}
+        elif name=='run_prepare' and len(args)>5 and args[5]:args[5]={**args[5],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[5].get('engine')}
+        elif name=='run_queue':
+            args[0]={**args[0],'config_snapshot':update(args[0].get('config_snapshot'))}
+            with LOCK:
+                for item in QUEUE:
+                    if item.get('id')==queue_id and item.get('status')=='stopped':item['status']='queued'
+        with LOCK:
+            STATE.update(cancelled=False,error=None,video_retry=None,service_switch=None,
+                         running=name in ('run_job','run_youtube_sample','run_queue'),
+                         preparing=name not in ('run_job','run_youtube_sample','run_queue'),
+                         queue_active=name=='run_queue',message='Продолжаю через Elysium; готовые части сохранены')
+            if name=='run_studio':STATE['studio_task']={'id':args[0],'action':args[1],'state':'running'}
+            pipeline.CANCEL.clear();pipeline.clear_wait();QUEUE_STOP=False
+        target(*args,**kwargs)
+    except Exception as error:
+        with LOCK:STATE.update(service_switch=None,running=False,preparing=False,queue_active=False,error=str(error))
+
 
 def video_retry_error(error):
     operation = getattr(error, 'retry_operation', None)
-    STATE['video_retry'] = ({'operation': operation, 'plan': getattr(error, 'retry_plan', None)}
+    STATE['video_retry'] = ({'operation': operation, 'plan': getattr(error, 'retry_plan', None), **({'kind':error.media_kind} if hasattr(error,'media_kind') else {})}
                             if operation and _VIDEO_RESUME else None)
 
 
@@ -115,6 +166,7 @@ def run_queue(common):
                               "queue": {"id": item["id"], "pos": pos, "total": len(QUEUE), "title": item.get("title", "")}})
             queue_save()
             rw = item.get("rewrite") if item.get("source") == "rewrite" else None
+            if rw:rw={**rw,"_replacement_options":replacement.settings(common.get("config_snapshot") or load_cfg())}
             script = item.get("script") if item.get("source") == "script" else None
             audio = item.get("audio") if item.get("source") == "mp3" else None
             # стиль у задания свой, если включён «Разный стиль» и выбран; иначе общий
@@ -167,7 +219,7 @@ def fg_limits(key):
 def estimate_plan(opts, *, limits=True):
     """Прогноз до запуска: сколько сцен, кредитов и времени, с учётом часового лимита fast-gen.
     Сцены считаются по длительности (в среднем 5,7 с на сцену по реальным роликам), точное число даст распознавание."""
-    cfg = load_cfg()
+    cfg = replacement.effective(load_cfg(),opts)
     providers = pipeline.normalize_providers(opts.get("providers"))
     mode = opts.get("mode", "images")
     quality = ("quality" if opts.get("use_refs") else "speed") if "use_refs" in opts else cfg.get("quality", "speed")
@@ -194,7 +246,7 @@ def estimate_plan(opts, *, limits=True):
         board = load_storyboard(opts["storyboard_id"])
         scene_durations = [row["duration"] or max(.5, len(row["narration"].split()) / 2.4) for row in board["rows"]]
         scenes = sum(max(1, math.ceil(d / 10)) for d in scene_durations)
-    fg = "fastgen" in providers
+    fg = "fastgen" in providers and not cfg.get("elysium_replace_fastgen")
     limit, threads, vlimit = fg_limits(cfg.get("fastgen_api_key", "")) if limits and fg and cfg.get("fastgen_api_key") else (0, 0, 0)
     vf = _vf(opts.get("video_first", cfg.get("video_first", 0)))
     clips = scenes if mode == "video" else len({i for i in range(scenes) if i < vf or (mode == "mixed" and i % 2 == 0)})
@@ -626,6 +678,7 @@ def progress_cb(stage, done, total, message):
 def apply_engine(providers):
     """Есть ключ fast-gen — речь и тексты по умолчанию через него; иначе — выбранные движки."""
     cfg = load_cfg()
+    if cfg.get("elysium_replace_fastgen"):return
     if cfg.get("fastgen_api_key"):
         # с ключом fast-gen по умолчанию всё через него, но свой выбор (Claude/OpenAI/Gemini) уважаем
         cfg.setdefault("stt_engine", "fastgen"); cfg.setdefault("llm_engine", "fastgen")
@@ -804,6 +857,7 @@ def store_storyboard(board):
 
 def run_storyboard(script, profile, cfg):
     try:
+        cfg=replacement.effective(cfg)
         import storyboard as sb
         phase = ['Подготовка раскадровки']
         def say(message):
@@ -862,7 +916,7 @@ def studio_context(opts):
 
 
 def production_check(opts):
-    cfg=load_cfg();blockers=[];warnings=[]
+    cfg=replacement.effective(load_cfg(),opts);blockers=[];warnings=[]
     try:
         estimate=estimate_plan(opts,limits=False)
     except Exception as error:
@@ -980,6 +1034,53 @@ def selected_channel_design(opts, cfg=None):
 
 
 class Api:
+    @config_transaction
+    def use_sonnet(self,provider='elysium',model=None):
+        try:
+            cfg=load_cfg()
+            if provider not in ('elysium','anthropic'):raise ValueError('Выберите Elysium или Anthropic.')
+            if not cfg.get(provider+'_api_key'):raise ValueError('Сначала введите ключ '+provider+'.')
+            model=model or ('anthropic/claude-sonnet-5.5-provider-4' if provider=='elysium' else 'claude-sonnet-5-5')
+            prefix='anthropic/claude-sonnet-' if provider=='elysium' else 'claude-sonnet-'
+            if not isinstance(model,str) or not model.startswith(prefix) or not re.fullmatch(r'[A-Za-z0-9./_-]{1,160}',model):raise ValueError('Выберите модель Claude Sonnet.')
+            cfg.update(llm_engine=provider,rewrite_engine=provider)
+            cfg[provider+'_model']=model;save_cfg(cfg)
+            return {'ok':True,'provider':provider,'model':model}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+
+    def switch_to_elysium(self,options=None):
+        global QUEUE_STOP
+        try:
+            options=options or {};cfg=load_cfg()
+            cfg.update(replacement.settings(cfg,{**options,'elysium_replace_fastgen':True}))
+            replacement.effective(cfg)  # Validate key and model choices before interrupting work.
+            with LOCK:
+                if STATE.get('service_switch'):raise ValueError('Переключение уже выполняется.')
+                busy=STATE['running'] or STATE['preparing'] or STATE.get('queue_active')
+                resume=bool(busy or STATE.get('cancelled') or STATE.get('error')) and _SERVICE_RESUME is not None
+                saved=copy.deepcopy(_SERVICE_RESUME) if resume else None
+                if busy and not saved:raise ValueError('Сначала остановите текущую работу, затем выберите Elysium.')
+                save_cfg(cfg)
+                patch={**replacement.settings(cfg),**{k:cfg.get(k,'') for k in ('elysium_api_key','elysium_model','elysium_base_url','llm_engine','rewrite_engine','anthropic_model','anthropic_api_key')}}
+                worker=saved[0].__name__ if saved else None
+                if saved:
+                    queue_id=(STATE.get('queue') or {}).get('id')
+                    STATE['service_switch']={'state':'stopping','worker':worker}
+                    QUEUE_STOP=True;pipeline.CANCEL.set()
+                    STATE['message']='Переключаю на Elysium: дожидаюсь остановки текущих запросов'
+                    threading.Thread(target=continue_with_elysium,args=(saved,patch,queue_id),daemon=True).start()
+            return {'ok':True,'resuming':bool(saved),'worker':worker}
+        except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
+
+    def elysium_replacement_models(self):
+        try:
+            from elysium_media import MediaClient
+            cfg=load_cfg();client=MediaClient(cfg.get('elysium_api_key'),cfg.get('elysium_base_url'))
+            catalog=client.catalog();ids={row.get('id') for row in catalog}
+            return {'ok':True,'images':[m for m in replacement.IMAGE_MODELS if m in ids],
+                    'tts':[m for m in replacement.TTS_MODELS if m in ids]}
+        except Exception as error:return {'ok':False,'error':str(error)}
+
     def animation_preview(self, rows, opts=None):
         try:
             import animation_selection
@@ -1018,7 +1119,7 @@ class Api:
     def channel_design_capture(self, name='Мой канал', board_id=None):
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 source=copy.deepcopy(STATE.get('source_profile') or {})
                 if board_id:source=load_storyboard(board_id)['profile']
                 else:board_id=STATE.get('active_board_id') or STATE.get('storyboard_id')
@@ -1048,7 +1149,7 @@ class Api:
             validate({'name':name,'description':'pending'})
             youtube_source.video_id(url)
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 pipeline.CANCEL.clear();STATE.update(preparing=True,message='Однократно изучаю дизайн образца')
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
         keep_awake(True)
@@ -1080,7 +1181,7 @@ class Api:
     def channel_design_save(self, value, key=None, revision=None):
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 from channel_design import DesignStore
                 store=DesignStore(data_dir());profile=store.save(value,key,revision)
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
@@ -1090,7 +1191,7 @@ class Api:
     def channel_design_select(self, key, revision=None):
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 profile=selected_channel_design({'channel_design_id':key,'channel_design_revision':revision}) if key else None
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'] if profile else '',channel_design_revision=profile['revision'] if profile else None);save_cfg(cfg)
             return {'ok': True, 'profile': profile}
@@ -1099,11 +1200,11 @@ class Api:
     def channel_design_import(self, key, revision, role='reference'):
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
             selected=WINDOW.create_file_dialog(webview.OPEN_DIALOG,allow_multiple=False,file_types=('Изображения (*.png;*.jpg;*.jpeg;*.webp)',))
             if not selected:return {'ok':False,'cancelled':True}
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Программа уже занята.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Программа уже занята.')
                 from channel_design import DesignStore
                 profile=DesignStore(data_dir()).import_asset(key,revision,selected[0],role)
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
@@ -1113,7 +1214,7 @@ class Api:
     def channel_design_remove(self,key,revision,index):
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Сначала завершите текущую работу.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 from channel_design import DesignStore
                 profile=DesignStore(data_dir()).remove_asset(key,revision,index)
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
@@ -1124,7 +1225,7 @@ class Api:
         """Authorize one replacement submission, then resume the exact stopped run."""
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
                     raise ValueError('Программа уже занята.')
                 pending = STATE.get('video_retry') or {}
                 if confirmed is not True or not operation or operation != pending.get('operation') or not _VIDEO_RESUME:
@@ -1138,7 +1239,7 @@ class Api:
                 pipeline.clear_wait()
                 STATE.update(running=True, error=None, cancelled=False, result=None, video_retry=None,
                              ended_at=None, started_at=time.time(), message='Продолжаю сборку; новая отправка разрешена вручную')
-                STATE['log'].append('Разрешена одна новая отправка проблемного видеоплана. Возможно повторное списание.')
+                STATE['log'].append('Разрешена одна новая отправка текущего задания Elysium. Возможно повторное списание.')
                 threading.Thread(target=target, args=copy.deepcopy(args), daemon=True).start()
             return {'ok': True}
         except (ValueError, OSError) as error:
@@ -1149,9 +1250,9 @@ class Api:
         import youtube_source
         try:
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
                     raise ValueError('Программа уже занята.')
-            cfg=load_cfg()
+            cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
             rw=dict(opts.get('rewrite') or {})
             rw.update(on=True,source='youtube',analyze_video=True,montage=True)
             youtube_source.video_id(rw.get('url',''))
@@ -1179,7 +1280,7 @@ class Api:
                        subtitles=bool(options.get('subtitles')),render_fps=options['render_fps'],studio_configured=True,youtube_sample_start=start,
                        rewrite_url=rw['url'])
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):raise ValueError('Программа уже занята.')
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Программа уже занята.')
                 save_cfg(cfg);pipeline.CANCEL.clear();pipeline.clear_wait();pipeline.LAST_JOB_DIR=None
                 STATE.update(running=True,preparing=False,stage='prepare',done=0,total=1,message='Готовлю только отрезок YouTube',
                              error=None,result=None,log=[],cancelled=False,started_at=time.time(),ended_at=None,job_dir=None,
@@ -1238,9 +1339,9 @@ class Api:
             if not script.strip():raise ValueError('Сначала подготовьте сценарий.')
             if action=='board' and not (profile or {}).get('content_only') and not ((profile or {}).get('montage') or {}).get('shots'):
                 raise ValueError('Для улучшения постановки нужен анализ исходника или сохранённая раскадровка.')
-            cfg=load_cfg();cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
+            cfg=load_cfg();cfg.update(replacement.settings(cfg,opts));cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
             with LOCK:
-                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active'):
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
                     return {'ok':False,'error':'Программа уже занята.'}
                 task_id=uuid.uuid4().hex
                 pipeline.CANCEL.clear()
@@ -1268,7 +1369,8 @@ class Api:
         return {'ok':True,'versions':values}
 
     def production_check(self, opts):
-        return production_check(opts)
+        try:return production_check(opts)
+        except ValueError as error:return {'ok':False,'blockers':[str(error)],'warnings':[],'estimate':{'ok':False}}
 
     def export_studio(self, opts):
         import zipfile
@@ -1400,6 +1502,7 @@ class Api:
             "rewrite_url": cfg.get("rewrite_url", ""), "rewrite_words": cfg.get("rewrite_words", 1500), "rewrite_lang": cfg.get("rewrite_lang", "польском"),
             "elysium_video_model": cfg.get("elysium_video_model", "google/gemini-omni-flash-1.2"), "elysium_kling_mode": cfg.get("elysium_kling_mode", "std"),
             "location_continuity": bool(cfg.get("location_continuity", False)),
+            **replacement.settings(cfg),
             "channel_design_id": cfg.get("channel_design_id", ""), "channel_design_revision": cfg.get("channel_design_revision"),
             "video_engine": cfg.get("video_engine", "providers"), "elysium_video_resolution": cfg.get("elysium_video_resolution", "720p"),
             "elysium": mask(cfg.get("elysium_api_key", "")), "has_elysium": bool(cfg.get("elysium_api_key")), "elysium_model": cfg.get("elysium_model", "gpt-4.1-mini"),
@@ -1431,6 +1534,7 @@ class Api:
     @config_transaction
     def save_config(self, data):
         cfg = load_cfg()
+        if any(k in data for k in replacement.DEFAULTS):cfg.update(replacement.settings(cfg,data))
         for field, key in (("fastgen", "fastgen_api_key"), ("nonstop", "veononstop_api_key"), ("yougen", "yougen_api_key"),
                            ("elysium", "elysium_api_key"), ("openai", "openai_api_key"), ("royal", "royaltechno_api_key"), ("slider", "secretslider_api_key"), ("google", "google_api_key"),
                            ("anthropic", "anthropic_api_key"), ("gemini", "gemini_api_key"), ("assemblyai", "assemblyai_api_key"), ("openrouter", "openrouter_api_key"),
@@ -1579,7 +1683,7 @@ class Api:
     @staticmethod
     def _reset_idle_cancel():
         with LOCK:
-            if not (STATE["running"] or STATE["preparing"] or STATE.get("queue_active")):
+            if not (STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch")):
                 pipeline.CANCEL.clear()
 
     def check_elysium_video(self):
@@ -1594,12 +1698,18 @@ class Api:
     def check_tts(self, service):
         self._reset_idle_cancel()
         cfg = load_cfg()
+        service=replacement.service(cfg,service)
         key = cfg.get(pipeline.SINGLE_KEY.get(service, f"{service}_api_key"))
         if not key and service != "edge":
             return {"ok": False, "error": self._tts_key_error(service)}
         try:
             from tts_api import make_tts
-            return {"ok": True, "message": make_tts(service, key).check()}
+            if service=='elysium':
+                from elysium_media import ElysiumTTS
+                cfg={**cfg,**replacement.settings(cfg)}
+                message=ElysiumTTS(key,cfg['elysium_tts_model'],cfg.get('elysium_base_url')).check()
+            else:message=make_tts(service,key).check()
+            return {'ok':True,'message':message}
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:500]}
 
@@ -1609,6 +1719,10 @@ class Api:
         out = {}
 
         def ck_fastgen(key):
+            if cfg.get('elysium_replace_fastgen'):
+                from elysium_media import MediaClient
+                MediaClient(cfg.get('elysium_api_key'),cfg.get('elysium_base_url')).get('/models')
+                return 'OK · вместо FastGen используется Elysium; генерация не запускалась'
             u = FastGen(key).usage()
             lim = u.get("account_limits", {})
             caps = u.get("capabilities") or {}
@@ -1686,8 +1800,8 @@ class Api:
         for p, fn in checkers.items():
             if p not in which:
                 continue
-            keys = pipeline.provider_keys(cfg, p)
-            if not keys:
+            keys = [cfg.get("elysium_api_key")] if p=="fastgen" and cfg.get("elysium_replace_fastgen") else pipeline.provider_keys(cfg, p)
+            if not keys or not keys[0]:
                 out[p] = ["Ключ не введён"]
                 continue
             res = []
@@ -1787,10 +1901,11 @@ class Api:
         return path
 
     def _rewrite_opts(self, opts):
+        selected=replacement.settings(load_cfg(),opts)
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "montage": bool(rw.get("montage", load_cfg().get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+        return {"on": True, "_replacement_options":selected, "montage": bool(rw.get("montage", load_cfg().get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", load_cfg().get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or "польском").strip()}
 
     def _validate(self, opts, providers):
@@ -1804,22 +1919,24 @@ class Api:
         return f"Для озвучки выбран {service}, но его ключ не введён."
 
     def _validate_source(self, opts):
-        cfg = load_cfg()
+        try:cfg = replacement.effective(load_cfg(),opts)
+        except ValueError as error:return str(error)
         rw = self._rewrite_opts(opts)
         if rw:
             if rw["source"] == "youtube" and not rw["url"]:
                 return "Вставьте ссылку на ролик YouTube."
             if rw["source"] == "text" and not rw["text"]:
                 return "Вставьте текст сценария для рерайта."
+            rw["engine"]=replacement.service(cfg,rw["engine"])
             if not cfg.get(pipeline.REWRITE_KEYS[rw["engine"]]):
                 return "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."
-            tts = opts.get("tts") or cfg.get("tts_service")
+            tts = replacement.service(cfg,opts.get("tts") or cfg.get("tts_service"))
             if not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
                 return self._tts_key_error(tts)
         elif opts.get("source") == "script":
             if not (opts.get("script") or "").strip():
                 return "Вставьте текст сценария."
-            tts = opts.get("tts") or cfg.get("tts_service")
+            tts = replacement.service(cfg,opts.get("tts") or cfg.get("tts_service"))
             if not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
                 return self._tts_key_error(tts)
         elif not os.path.isfile(opts.get("audio") or ""):
@@ -1827,8 +1944,9 @@ class Api:
         return None
 
     def _validate_common(self, providers, opts=None):
-        cfg = load_cfg()
-        if "fastgen" in providers and not cfg.get("fastgen_api_key"):
+        try:cfg = replacement.effective(load_cfg(),opts)
+        except ValueError as error:return str(error)
+        if "fastgen" in providers and not cfg.get("elysium_replace_fastgen") and not cfg.get("fastgen_api_key"):
             return "Введите ключ fast-gen."
         if cfg.get("qa_images"):
             eng = cfg.get("qa_engine") or "gemini"
@@ -1870,7 +1988,7 @@ class Api:
     def prepare(self, opts):
         """Озвучка (если сценарий), транскрипция и расчёт: сколько сцен, кредитов, минут."""
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
         audio = (opts.get("audio") or "").strip().strip('"')
         provider = pipeline.normalize_providers(opts.get("providers"))
@@ -1879,7 +1997,7 @@ class Api:
         err = self._validate(opts, provider)
         if err:
             return {"ok": False, "error": err}
-        cfg = load_cfg()
+        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
         cfg.update({"source": opts.get("source", "mp3"), "tts_service": opts.get("tts") or cfg.get("tts_service"),
                     "tts_voice": opts.get("voice") or ""})
         v = (opts.get("voice") or "").strip()
@@ -1899,7 +2017,7 @@ class Api:
                         "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
             save_cfg(cfg)
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
             pipeline.CANCEL.clear()
             pipeline.LAST_JOB_DIR = None
@@ -1914,17 +2032,17 @@ class Api:
     def rewrite(self, opts):
         """Переписать сценарий (YouTube или текст) и вернуть его на экран проверки."""
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
         rw = self._rewrite_opts(opts)
         if not rw:
             return {"ok": False, "error": "Рерайт не включён."}
-        cfg = load_cfg()
+        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
         if rw["source"] == "youtube" and not rw["url"]:
             return {"ok": False, "error": "Вставьте ссылку на ролик YouTube."}
         if rw["source"] == "text" and not rw["text"]:
             return {"ok": False, "error": "Вставьте текст сценария для рерайта."}
-        if not cfg.get(pipeline.REWRITE_KEYS[rw["engine"]]):
+        if not cfg.get(pipeline.REWRITE_KEYS[replacement.service(cfg,rw["engine"])]):
             return {"ok": False, "error": "Для рерайта выбран " + {"elysium": "Elysium", "openai": "ChatGPT", "anthropic": "Claude", "gemini": "Gemini", "fastgen": "fast-gen"}[rw["engine"]] + ", введите его ключ."}
         try:rw['_channel_design']=selected_channel_design(opts,cfg)
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
@@ -1932,7 +2050,7 @@ class Api:
                     "rewrite_words": int(rw["words"]), "rewrite_lang": rw["language"]})
         save_cfg(cfg)
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
             pipeline.CANCEL.clear()
             pipeline.LAST_JOB_DIR = None
@@ -1946,7 +2064,7 @@ class Api:
 
     def start(self, opts):
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
         board, preview_range = None, opts.get("preview")
         if opts.get("storyboard_id"):
@@ -2003,7 +2121,7 @@ class Api:
         if check.get('blockers'):
             return {'ok':False,'error':' '.join(check['blockers'])}
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Уже идёт создание видео."}
             pipeline.CANCEL.clear()
             pipeline.LAST_JOB_DIR = None
@@ -2014,7 +2132,7 @@ class Api:
                           "log": [], "result": None, "error": None, "video_retry": None, "cancelled": False, "started_at": time.time()})
         with LOCK:
             STATE.update(active_board_id=board["id"] if board else None, is_preview=preview_range is not None,sample_board_id=None,sample_info=None)
-        cfg = load_cfg()
+        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
         tts = opts.get("tts") or cfg.get("tts_service") or "voicegen"
         voice = (opts.get("voice") or "").strip()
         cfg.update({"image_providers": provider, "mode": mode, "style": style, "custom_style": custom_style, "use_refs": use_refs, "subtitles": subtitles, "motion": motion, "hd_images": hd,
@@ -2031,7 +2149,7 @@ class Api:
     def prepare_storyboard(self, opts):
         script = (opts.get("script") or "").strip()
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Программа уже занята."}
             if not script:
                 return {"ok": False, "error": "Сначала подготовьте сценарий."}
@@ -2041,7 +2159,7 @@ class Api:
             pipeline.CANCEL.clear()
             STATE.update(preparing=True, stage="prepare", error=None, cancelled=False, storyboard_id=None,
                          started_at=time.time(), ended_at=None, message="Сопоставляю фразы с исходными планами")
-        cfg=load_cfg()
+        cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
         if opts.get('enhance'):
             profile=studio.with_direction(profile,{**cfg,**(opts.get('studio') or {})})
         threading.Thread(target=run_storyboard, args=(script, profile, cfg), daemon=True).start()
@@ -2076,7 +2194,7 @@ class Api:
         try:
             import storyboard as sb
             with LOCK:
-                if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+                if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                     return {"ok": False, "error": "Сначала дождитесь завершения текущей задачи."}
                 updated = sb.edit(load_storyboard(board_id), rows)
                 store_storyboard(updated)
@@ -2088,7 +2206,7 @@ class Api:
         try:
             import storyboard as sb
             with LOCK:
-                if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+                if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                     return {"ok": False, "error": "Сначала дождитесь завершения текущей задачи."}
                 updated = sb.regenerate(load_storyboard(board_id), row_id)
                 store_storyboard(updated)
@@ -2177,7 +2295,7 @@ class Api:
         err = self._validate_common(provider, opts)
         if err:
             return {"ok": False, "error": err}
-        cfg = load_cfg()
+        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
         import animation_selection
         try:
             selection=animation_selection.settings(opts.get('animation',cfg.get('animation')))
@@ -2194,12 +2312,12 @@ class Api:
             todo = [x for x in QUEUE if x.get("status") == "queued"]
             if not todo:
                 return {"ok": False, "error": "Очередь пуста — добавьте хотя бы одно задание."}
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Уже идёт создание видео."}
-            if any(x.get("source") in ("script", "rewrite") for x in todo) and not cfg.get(pipeline.SINGLE_KEY.get(tts, f"{tts}_api_key")) and tts != "edge":
-                return {"ok": False, "error": self._tts_key_error(tts)}
+            if any(x.get("source") in ("script", "rewrite") for x in todo) and not cfg.get(pipeline.SINGLE_KEY.get(replacement.service(cfg,tts), f"{replacement.service(cfg,tts)}_api_key")) and tts != "edge":
+                return {"ok": False, "error": self._tts_key_error(replacement.service(cfg,tts))}
             for x in todo:
-                if x.get("source") == "rewrite" and not cfg.get(pipeline.REWRITE_KEYS.get((x.get("rewrite") or {}).get("engine", "fastgen"), "fastgen_api_key")):
+                if x.get("source") == "rewrite" and not cfg.get(pipeline.REWRITE_KEYS.get(replacement.service(cfg,(x.get("rewrite") or {}).get("engine", "fastgen")), "fastgen_api_key")):
                     return {"ok": False, "error": "Для рерайта не введён ключ выбранной модели."}
             style = style_key(opts.get("style"), pipeline.DEFAULT_STYLE)
             custom_style = " ".join(str(opts.get("custom_style") or "").split())
@@ -2314,6 +2432,7 @@ class Api:
     def tts_voices(self, service):
         self._reset_idle_cancel()
         cfg = load_cfg()
+        service=replacement.service(cfg,service)
         key = cfg.get(f"{service}_api_key")
         if service in ("fastgen", "royal") and not key:
             key = (pipeline.provider_keys(cfg, service) or [""])[0]
@@ -2321,7 +2440,11 @@ class Api:
             return {"ok": False, "error": "Сначала введите ключ."}
         try:
             from tts_api import make_tts
-            vs = make_tts(service, key).voices()
+            if service=='elysium':
+                from elysium_media import ElysiumTTS
+                cfg={**cfg,**replacement.settings(cfg)}
+                vs=ElysiumTTS(key,cfg['elysium_tts_model'],cfg.get('elysium_base_url')).voices()
+            else:vs = make_tts(service, key).voices()
             return {"ok": True, "voices": vs[:200]}
         except Exception as e:
             return {"ok": False, "error": str(e)[:200]}
@@ -2331,6 +2454,7 @@ class Api:
         QUEUE_STOP = True
         pipeline.CANCEL.set()
         with LOCK:
+            if STATE.get("service_switch"):STATE["service_switch"]["state"]="cancelled"
             STATE["message"] = "останавливаю… (дожидаюсь текущих запросов)"
         return True
 
@@ -2378,7 +2502,7 @@ class Api:
     def clear_jobs(self):
         """Удалить заготовки (картинки, озвучку, клипы) всех заданий. Готовые видео в output не трогаем."""
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "Сначала дождитесь окончания или нажмите «Стоп»."}
         jobs = os.path.join(data_dir(), "jobs")
         before = pipeline.dir_size(jobs) if os.path.isdir(jobs) else 0
@@ -2396,7 +2520,7 @@ class Api:
         if data_dir() != app_dir():
             return {"ok": False, "error": "noport"}
         with LOCK:
-            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active"):
+            if STATE["running"] or STATE["preparing"] or STATE.get("queue_active") or STATE.get("service_switch"):
                 return {"ok": False, "error": "busy"}
             STATE["update"] = {"phase": "download", "done": 0, "total": 0, "version": version, "error": None}
         threading.Thread(target=run_update, args=(url, version), daemon=True).start()
@@ -2585,6 +2709,10 @@ def main():
     WINDOW.events.closing += on_closing
     webview.start(debug="--debug" in sys.argv)
 
+
+# Record only worker entry points, never API calls or public state containing secrets.
+for _worker in ('run_job','run_prepare','run_rewrite','run_storyboard','run_studio','run_youtube_sample','run_queue'):
+    globals()[_worker]=resumable_service_task(globals()[_worker])
 
 if __name__ == "__main__":
     main()

@@ -154,6 +154,8 @@ def _contact_sheet(frames, timestamps, path):
 
 
 def _provider(cfg):
+    import elysium_replacement
+    cfg=elysium_replacement.effective(cfg)
     engine = cfg.get("source_analysis_engine") or cfg.get("rewrite_engine") or "fastgen"
     if engine not in DEFAULT_MODELS:
         raise SourceAnalysisError("Для анализа видео выберите Elysium, fast-gen, OpenAI, Claude или Gemini.")

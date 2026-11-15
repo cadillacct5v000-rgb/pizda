@@ -68,6 +68,8 @@ def brief(cfg=None, *, plan_fields=True):
 
 
 def text_client(cfg, progress=None):
+    import elysium_replacement
+    cfg=elysium_replacement.effective(cfg)
     import pipeline
     from fastgen_api import FastGen
     from openai_api import OpenAIClient
