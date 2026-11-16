@@ -24,7 +24,14 @@ from types import SimpleNamespace
 from PIL import Image
 character_file=root/'Willy.png';Image.new('RGB',(64,32),'#126B70').save(character_file)
 app.webview=SimpleNamespace(OPEN_DIALOG='open');app.WINDOW=SimpleNamespace(create_file_dialog=lambda *a,**k:[str(character_file)])
-provider_access.models=lambda engine,key:['google/gemini-3.6-flash','anthropic/claude-sonnet-5.5','deepseek/deepseek-chat','seedream/4.5','kling-2.6'] if engine=='elysium' else ['claude-sonnet-5-5']
+import reference_animation
+import youtube_source
+motion_requests=[]
+youtube_source.video=lambda *a,**k:'fixture-source.mp4'
+def motion_fixture(*a,**k):
+ motion_requests.append(a);return reference_animation.validate({'camera_styles':['static','push-in'],'subject_motion_share':0,'strength':.06,'instructions':'Restrained camera movement with static pauses.','confidence':'high'})
+reference_animation.analyse=motion_fixture
+provider_access.models=lambda engine,key:['google/gemini-3.6-flash','anthropic/claude-sonnet-5.5','anthropic/claude-opus-5.5','deepseek/deepseek-chat','seedream/4.5','kling-2.6'] if engine=='elysium' else ['claude-sonnet-5-5']
 tone=root/'fixture.mp3'
 subprocess.run([pipeline.ffmpeg_bin(),'-y','-v','error','-f','lavfi','-i','sine=frequency=440:duration=1','-c:a','libmp3lame','-b:a','128k',str(tone)],check=True)
 class Speaker:
@@ -60,6 +67,19 @@ with sync_playwright() as p:
  page.locator('#replace_mode').select_option('on');page.wait_for_function('elysiumReplacement.elysium_replace_fastgen')
  assert app.load_cfg()['fastgen_api_key']=='workflow-old-fastgen'
  assert page.locator('[data-key-provider=fastgen]').count()==0
+ # Opus is available in the source-analysis preset and stays independent of the writer model.
+ section('style');page.select_option('#analysis_engine','elysium')
+ page.wait_for_function("analysisEngine==='elysium' && document.getElementById('analysis_model')")
+ assert page.locator('#analysis_model option[value="anthropic/claude-opus-5.5"]').count()==1
+ writer_model=page.evaluate('models.elysium_model')
+ page.select_option('#analysis_model','anthropic/claude-opus-5.5')
+ page.wait_for_function("async()=>(await pywebview.api.get_state()).config.source_analysis_model==='anthropic/claude-opus-5.5'")
+ import source_analysis
+ engine,key,model=source_analysis._provider(app.load_cfg())
+ assert engine=='elysium' and model=='anthropic/claude-opus-5.5' and key=='workflow-elysium-fixture'
+ section('source');section('style')
+ assert page.locator('#analysis_model').input_value()=='anthropic/claude-opus-5.5'
+ assert page.evaluate('models.elysium_model')==writer_model
  # Show the effective video provider even when the saved legacy selection was 'providers'.
  section('video')
  assert page.locator('#video_engine').input_value()=='elysium'
@@ -156,5 +176,21 @@ with sync_playwright() as p:
  page.click('#wf_voice_preview');page.wait_for_function("document.getElementById('wf_voice_status').textContent.includes('Прослушайте')")
  assert len(speech)==2 and speech[-1][1:] == ('native-en-fixture','en'),speech
  assert not errors,errors
+ # Learning only motion neither rewrites nor generates media, and the saved channel reuses it.
+ section('style');page.get_by_role('button',name='Выбрать или сохранить дизайн канала',exact=True).click()
+ page.wait_for_selector('#channel_design_dialog[open]');page.fill('#cd_source_url','https://www.youtube.com/watch?v=Cs9lG-Meo1s')
+ previous_revision=page.evaluate('channelDesignEditing.revision');before=len(calls)
+ page.get_by_role('button',name='Изучить только оживление по ссылке · платно',exact=True).click()
+ page.wait_for_function("channelDesignMotion?.confidence==='high'")
+ assert len(motion_requests)==1 and page.evaluate('channelDesignEditing.revision')==previous_revision
+ assert not any(name in ('rewrite','start','voice_sample','prepare_storyboard') for name in calls[before:])
+ page.get_by_role('button',name='Сохранить и использовать',exact=True).click()
+ page.wait_for_function("channelDesignEditing?.reference_animation?.confidence==='high'")
+ page.locator('#channel_design_dialog').get_by_role('button',name='Закрыть',exact=True).click()
+ section('video');page.select_option('#animation_strategy','reference')
+ page.wait_for_function("async()=>(await pywebview.api.get_state()).config.animation.strategy==='reference'")
+ preview=page.evaluate("async()=>await pywebview.api.animation_preview([{id:'scene',prompt:'Willy swims.'}],opts())")
+ assert preview['ok'] and preview['count']==0,preview
+ assert len(motion_requests)==1 and not errors,errors
  browser.close()
 print('Numbered workflow E2E passed: navigation never generates; keys unique; model roles filtered; voice preview isolates synthesis; layouts fit; data preserved.')

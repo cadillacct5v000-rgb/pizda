@@ -45,6 +45,9 @@ def prepare(cfg, rewrite, directory, *, start=0, seconds=30, progress=None):
     if cfg.get("enhancement_level")!="original":profile=studio.with_direction(profile,cfg)
     profile['sample']={'source_id':youtube_source.video_id(rewrite['url']),'start':float(start),
                        'requested_seconds':float(seconds),'source_seconds':actual}
+    if (cfg.get('animation') or {}).get('strategy')=='reference' and not profile.get('reference_animation'):
+        import reference_animation
+        profile['reference_animation']=reference_animation.analyse(clip,cfg,folder,say)
     target=min(float(seconds),actual)
     client=studio.text_client({**cfg,'llm_engine':rewrite.get('engine') or cfg.get('rewrite_engine') or cfg.get('llm_engine')},say)
     say('готовлю собственный сценарий только для отрезка')

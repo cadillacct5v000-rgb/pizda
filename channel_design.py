@@ -45,6 +45,8 @@ def validate(value):
     presentation=value.get('presentation','')
     if not isinstance(presentation,str) or len(presentation)>4000:raise ValueError('Описание подачи должно быть до 4000 символов.')
     result['presentation']=presentation.strip()
+    import reference_animation
+    result['reference_animation']=reference_animation.validate(value['reference_animation']) if value.get('reference_animation') else None
     import source_narration
     result['delivery']=source_narration.validate(value['delivery']) if value.get('delivery') else None
     voices=value.get('voices',{})
@@ -67,7 +69,7 @@ def fingerprint(profile):
 
 def generation_fingerprint(profile):
     value=validate(profile)
-    for key in ('name','font','motion_policy','presentation','delivery','voices'):value.pop(key)
+    for key in ('name','font','motion_policy','presentation','delivery','voices','reference_animation'):value.pop(key)
     reserved=[a.get('aliases',[]) for a in profile.get('assets',[]) if a['role']=='character_layer']
     if reserved:value['reserved_characters']=reserved
     return digest({**value,'references':[{k:a.get(k) for k in ('sha256','role','aliases','identity')} if a['role']=='character' else a['sha256'] for a in profile.get('assets',[]) if a['role'] in ('reference','character')],
@@ -92,6 +94,7 @@ def content_profile(profile, duration=0.):
                             'shot_types':['wide','detail','diagram']},
             'narrative_style':p['presentation'],'montage':{'shots':[]},
             'sampling':{'method':'transcript_only','duration':float(duration),'frame_count':0}}
+    if p['reference_animation']:result['reference_animation']=copy.deepcopy(p['reference_animation'])
     if p['delivery']:result['narration']={'delivery':copy.deepcopy(p['delivery'])}
     result['character_registry']=[{k:a.get(k) for k in ('name','aliases','identity','role')} for a in profile.get('assets',[]) if a['role'] in ('character','character_layer')]
     return result

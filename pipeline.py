@@ -2677,14 +2677,18 @@ def _clip_cached(out_path, signature):
         return False
 
 
-def render_scene_clip(img_path, i, duration, out_path):
+def render_scene_clip(img_path, i, duration, out_path, reference_motion=None):
     duration = max(1 / FPS, float(duration))
     signature = _clip_signature(img_path, duration, f"image:{i % 6}:crop={EDGE_CROP}")
+    if reference_motion:signature["reference_motion"]=reference_motion
     if _clip_cached(out_path, signature):
         return out_path
     from PIL import Image
 
-    path = kenburns_path(i, duration)
+    if reference_motion:
+        import reference_animation
+        path=reference_animation.local_path(reference_motion["kind"],duration,reference_motion["strength"])
+    else:path = kenburns_path(i, duration)
     tmp = out_path + ".tmp.mp4"
     im = _fit_16_9(Image.open(img_path).convert("RGB"))
     if path is None:
@@ -2784,7 +2788,8 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
                 render_video_clip(videos[i], dur, clip, retime="source_shot" in s)
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
-            render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
+            if s.get("_local_motion"):render_scene_clip(os.path.join(img_dir,f"{i:04d}.png"),i,dur,clip,s["_local_motion"])
+            else:render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
         if s.get('channel_overlays'):
             from channel_design import decorate_clip
             clip = decorate_clip(s, clip, job_dir, W, H, FPS)
@@ -3400,6 +3405,18 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         profile = source_narration.attach_youtube(profile, source_video, url, cfg, source_dir, say)
         if profile_callback:
             profile_callback(profile)
+    if (cfg.get('animation') or {}).get('strategy')=='reference':
+        import reference_animation
+        if not (profile or {}).get('reference_animation'):
+            if rw.get('source')!='youtube':raise ValueError('Для оживления по образцу выберите дизайн канала с сохранённым профилем движения.')
+            import youtube_source
+            source_video=youtube_source.video(url,source_dir,os.path.dirname(ffmpeg_bin()),say,**auth)
+            motion=reference_animation.analyse(source_video,cfg,source_dir,say)
+            if not profile:
+                _,_,own_style=resolve_style(cfg.get('style'),cfg)
+                profile={'content_only':True,'visual_style':{'description':own_style,'palette':[],'composition':'Own layouts','shot_types':[]},'narrative_style':'','montage':{'shots':[]}}
+            profile={**profile,'reference_animation':motion}
+            if profile_callback:profile_callback(profile)
     engine = rw.get("engine") or cfg.get("rewrite_engine") or "fastgen"
     key = cfg.get(REWRITE_KEYS.get(engine, ""), "")
     if not key:
@@ -3417,8 +3434,8 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
             if profile_callback:profile_callback(profile)
         client=studio.text_client({**cfg,'llm_engine':engine},say)
         return studio.improve_script(text,None if design else profile,cfg,os.path.join(data_dir(),'jobs','studio_scripts'),say,client,language=rw.get('language') or cfg.get('rewrite_lang'))
-    extra = {"source_profile": profile, "preserve_structure": True} if profile and not design else {}
-    target_words = len(text.split()) if profile and not design else (rw.get("words") or cfg.get("rewrite_words") or 1500)
+    extra = {"source_profile": profile, "preserve_structure": True} if profile and not design and not profile.get("content_only") else {}
+    target_words = len(text.split()) if profile and not design and not profile.get("content_only") else (rw.get("words") or cfg.get("rewrite_words") or 1500)
     return rwmod.rewrite(text, engine, key, cfg.get(engine + "_model"), target_words,
                          rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say, **extra)
 
@@ -3706,7 +3723,12 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             # Preview uses a trimmed assembly list; carry the same immutable design to captions/layers.
             if assembly_scenes is not None:
                 assembly_scenes = designs.apply(assembly_scenes, channel_design, data_dir())
+        if animation["strategy"]=="reference":
+            import reference_animation
+            scenes=reference_animation.attach(scenes,{"reference_animation":(channel_design or {}).get("reference_animation") or (profile or {}).get("reference_animation")})
+            if assembly_scenes is not None:assembly_scenes=reference_animation.attach(assembly_scenes,{"reference_animation":(channel_design or {}).get("reference_animation") or (profile or {}).get("reference_animation")})
         scenes = animation_selection.apply(scenes, animation, mode, video_first)
+        if assembly_scenes is not None and animation["strategy"]=="reference":assembly_scenes=animation_selection.apply(assembly_scenes,animation,mode,video_first)
         progress('scenes', 0, 0, f"Выбрано видеовставок: {len(animated_scenes(scenes, mode, video_first))}")
         if storyboard:
             write_json(os.path.join(job_dir, "active_scenes.json"), [{"index": item["index"]} for item in scenes])
@@ -3742,7 +3764,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         videos = redo_pass(ctx, scenes, style, job_dir, progress, refs, mode, motion, video_first, videos)
     if storyboard:
         storyboard_cache.publish(scenes, job_dir, asset_directory)
-    if source_montage or animation["strategy"] in ("key","hook","manual") or (channel_design and channel_design.get("motion_policy")=="generated"):
+    if source_montage or animation["strategy"] in ("key","hook","manual","reference") or (channel_design and channel_design.get("motion_policy")=="generated"):
         required = animated_scenes(scenes, mode, video_first)
         missing = [s["index"] + 1 for s in required if s["index"] not in videos]
         if missing:

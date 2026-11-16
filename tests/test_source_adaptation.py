@@ -31,6 +31,8 @@ def client_fixture():
         data = json.JSONDecoder().raw_decode(prompt.split('Reference JSON:\n')[1])[0]
         if 'source' in data:
             return {'facts': [{'statement': 'Heat travels through metal gradually.', 'source_excerpt': QUOTE}]}
+        if 'source_units' in data:
+            return {'facts': [{'statement': statement, 'source_excerpt': QUOTE} for statement in data['claims']]}
         if 'maximum_sections' in data:
             return {'angle': 'Why a handle changes the experience', 'viewer_promise': 'Explain the delay and material choice',
                     'keep': ['A concrete everyday mechanism'], 'change': ['Start with a question about the handle'],
@@ -87,7 +89,7 @@ def test_bad_evidence_or_copied_output_stops_before_media(tmp_path, fault):
         if fault == 'verbatim' and 'script' in value: value['script'] = SOURCE
         return value
     client.chat_json.side_effect = bad
-    with pytest.raises(ValueError, match='непроверяемый'):
+    with pytest.raises(ValueError, match='непроверяемый|Не подтверждены ссылки'):
         adaptation.create(SOURCE, PROFILE, {}, tmp_path, client)
     assert len(calls) <= 3
     client.chat_json.side_effect = base
@@ -166,3 +168,84 @@ def test_questionable_claim_notes_are_kept_out_of_spoken_script(tmp_path):
     text,profile=adaptation.create(SOURCE,PROFILE,{},tmp_path,client)
     assert profile['adaptation']['facts_to_verify'][0]['note'].startswith('Check the material')
     assert 'Check the material' not in text
+
+
+def test_source_ids_attach_exact_original_text_and_resume(tmp_path):
+    source='Он сказал: «Тепло — это передача энергии».\nПродолжение объяснения.'
+    path=tmp_path/'facts.json';client=Mock()
+    client.chat_json.return_value={'facts':[{'statement':'Передача энергии.', 'source_ids':['e0']}]}
+    result=adaptation._facts_query(client,'extract',path,source)
+    assert result['facts'][0]['source_excerpt']==source
+    assert adaptation._facts_query(client,'extract',path,source)==result
+    assert client.chat_json.call_count==1
+
+
+def test_legacy_typographic_quote_is_reused_without_request(tmp_path):
+    source='The “warm” handle — gradually heats.'
+    path=tmp_path/'facts.json'
+    storyboard.atomic(path,{'result':{'facts':[{'statement':'Handle heats.', 'source_excerpt':'The "warm" handle - gradually heats.'}]}})
+    client=Mock(side_effect=AssertionError('no request'))
+    first=adaptation._facts_query(client,'new prompt',path,source)
+    assert adaptation._facts_query(client,'new prompt',path,source)==first
+    client.chat_json.assert_not_called()
+
+
+def test_more_than_requested_facts_are_preserved(tmp_path):
+    client=Mock();client.chat_json.return_value={'facts':[{'statement':str(i),'source_ids':['e0']} for i in range(25)]}
+    result=adaptation._facts_query(client,'extract',tmp_path/'facts.json',SOURCE)
+    assert len(result['facts'])==25
+    assert client.chat_json.call_count==1
+
+
+def test_failed_evidence_repair_retries_only_broken_claim(tmp_path):
+    path=tmp_path/'facts.json';client=Mock()
+    valid={'statement':'Good claim.', 'source_ids':['e0']}
+    invalid={'statement':'Existing claim.', 'source_excerpt':'Not present in source','review_note':'Check the causal claim.'}
+    responses=[{'facts':[valid,invalid]}, {'facts':[{'statement':'Existing claim.','source_ids':['missing']}]},
+               {'facts':[{'statement':'Existing claim.','source_ids':['e0']}]}]
+    prompts=[]
+    def answer(system,prompt,**kwargs):prompts.append(prompt);return responses.pop(0)
+    client.chat_json.side_effect=answer
+    with pytest.raises(ValueError,match=r'Готовые утверждения \(1\)'):
+        adaptation._facts_query(client,'extract',path,SOURCE)
+    result=adaptation._facts_query(client,'extract',path,SOURCE)
+    assert len(prompts)==3 and prompts.count('extract')==1
+    assert 'Good claim.' not in prompts[-1] and 'Existing claim.' in prompts[-1]
+    assert result['facts'][0]['statement']=='Good claim.'
+    assert result['facts'][1]['review_note']=='Check the causal claim.'
+    assert path.with_suffix('.partial.json').exists()
+    assert adaptation._facts_query(client,'extract',path,SOURCE)==result
+    assert len(prompts)==3
+
+
+@pytest.mark.parametrize('repair',[
+    {'statement':'Changed claim.','source_ids':['e0']},
+    {'statement':'Existing claim.','source_ids':['unknown']},
+    {'statement':'Existing claim.','source_ids':[]},
+])
+def test_evidence_repair_cannot_change_claim_or_invent_source(tmp_path,repair):
+    client=Mock();client.chat_json.side_effect=[{'facts':[{'statement':'Existing claim.','source_excerpt':'invented quote'}]}, {'facts':[repair]}]
+    with pytest.raises(ValueError,match='Не подтверждены ссылки'):
+        adaptation._facts_query(client,'extract',tmp_path/'facts.json',SOURCE)
+    assert client.chat_json.call_count==2
+
+
+@pytest.mark.parametrize('complete',[True,False])
+def test_only_complete_raw_reply_can_be_recovered(tmp_path,complete):
+    path=tmp_path/'facts.json';client=Mock()
+    fact={'facts':[{'statement':'Heat travels.', 'source_ids':['e0']}]}
+    storyboard.atomic(path.with_suffix('.reply.json'),{'kind':'model','complete':complete,'finish_reason':'stop','text':json.dumps(fact)})
+    client.chat_json.return_value=fact
+    assert adaptation._facts_query(client,'extract',path,SOURCE)['facts']
+    assert client.chat_json.call_count==(0 if complete else 1)
+
+
+def test_malformed_facts_save_diagnostic_and_do_not_trap_retry(tmp_path):
+    client=Mock();client.chat_json.side_effect=[{'facts':[]},{'facts':[{'statement':'Heat travels.','source_ids':['e0']}]}]
+    path=tmp_path/'facts.json'
+    with pytest.raises(ValueError,match='массив facts'):
+        adaptation._facts_query(client,'extract',path,SOURCE)
+    diagnostic=json.loads(path.with_suffix('.received.json').read_text())
+    assert diagnostic['stage']=='facts' and diagnostic['result']=={'facts':[]}
+    assert adaptation._facts_query(client,'extract',path,SOURCE)['facts']
+    assert client.chat_json.call_count==2

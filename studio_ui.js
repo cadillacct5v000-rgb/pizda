@@ -149,7 +149,7 @@ function showYouTubeSample() {
 }
 
 // Channel design selection is an explicit immutable version, including saved projects.
-let channelDesignActive=null, channelDesignEditing=null,channelDesignVoices={},channelDesignDelivery=null;
+let channelDesignActive=null, channelDesignEditing=null,channelDesignVoices={},channelDesignDelivery=null,channelDesignMotion=null;
 let workflowVoiceLanguages={ru:'русском',en:'английском'},workflowChannelVoices={},workflowVoiceLanguage='';
 function channelDesignChoice() {
   return channelDesignActive===null?{}:{channel_design_id:channelDesignActive.id||'',channel_design_revision:channelDesignActive.revision||null};
@@ -162,7 +162,7 @@ function channelDesignLoad(c,force=false) {
   if(Object.hasOwn(c,'channel_design_id')){channelDesignActive={id:c.channel_design_id||'',revision:c.channel_design_revision||null};channelDesignBadge();}
 }
 function channelDesignPut(p) {
-  channelDesignEditing=p?.id?p:null;channelDesignVoices=JSON.parse(JSON.stringify(p?.voices||{}));channelDesignDelivery=p?.delivery||null;
+  channelDesignEditing=p?.id?p:null;channelDesignVoices=JSON.parse(JSON.stringify(p?.voices||{}));channelDesignDelivery=p?.delivery||null;channelDesignMotion=p?.reference_animation||null;
   $('cd_presentation').value=p?.presentation||'';
   $('cd_voice_language').innerHTML=Object.entries(workflowVoiceLanguages).map(([code,name])=>'<option value="'+code+'">'+esc(name)+'</option>').join('');
   $('cd_voice_language').value=workflowLanguageCode(F.rwLang)||'ru';
@@ -196,11 +196,11 @@ async function channelDesignAction(action) {
   let designPoll=null;
   try {
     let r;
-    if(action==='learn'){
+    if(action==='learn'||action==='learn_motion'){
       $('cd_cancel').hidden=false;$('cd_cancel').disabled=false;
       $('cd_status').textContent='Однократно изучаю стиль образца…';
       designPoll=setInterval(async()=>{try{const s=await pywebview.api.get_state();$('cd_status').textContent=s.message||'Изучаю дизайн…';}catch(e){}},1400);
-      r=await pywebview.api.channel_design_learn($('cd_name').value||'Мой канал',$('cd_source_url').value.trim(),$('cd_adapt').checked,$('cd_changes').value);
+      r=action==='learn_motion'?await pywebview.api.channel_animation_learn($('cd_source_url').value.trim()):await pywebview.api.channel_design_learn($('cd_name').value||'Мой канал',$('cd_source_url').value.trim(),$('cd_adapt').checked,$('cd_changes').value,$('cd_learn_motion').checked);
     }
     else if(action==='source')r=await pywebview.api.channel_design_select('');
     else if(action==='capture')r=await pywebview.api.channel_design_capture($('cd_name').value||'Мой канал',typeof boardState!=='undefined'?boardState?.id:null);
@@ -214,11 +214,12 @@ async function channelDesignAction(action) {
       r=await pywebview.api.channel_design_import(channelDesignEditing.id,channelDesignEditing.revision,$('cd_role').value,{aliases:$('cd_aliases').value.split(',').map(s=>s.trim()).filter(Boolean),identity:$('cd_identity').value});
     } else {
       const value={name:$('cd_name').value,description:$('cd_description').value,
-        palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,presentation:$('cd_presentation').value,delivery:channelDesignDelivery,voices:channelDesignVoices,
+        palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,presentation:$('cd_presentation').value,delivery:channelDesignDelivery,voices:channelDesignVoices,reference_animation:channelDesignMotion,
         faces:$('cd_faces').value,font:$('cd_font').value,layout:$('cd_layout').value,motion_policy:$('cd_motion').value};
       r=await pywebview.api.channel_design_save(value,channelDesignEditing?.id||null,channelDesignEditing?.revision||null);
     }
     if(r.cancelled){$('cd_status').textContent='Изучение остановлено; готовые ответы сохранены.';return;}if(!r.ok)throw new Error(r.error);
+    if(action==='learn_motion'){channelDesignMotion=r.reference_animation;$('cd_motion').value=channelDesignMotion.confidence!=='low'&&channelDesignMotion.subject_motion_share>.15?'generated':'local';channelDesignVoiceSummary();$('cd_status').textContent='Характер оживления изучен. Проверьте режим движения и сохраните профиль; сценарий и картинки не создавались.';return;}
     channelDesignActive=r.profile?{id:r.profile.id,revision:r.profile.revision}:{id:'',revision:null};channelDesignBadge();
     workflowChannelVoices=r.profile?.voices||{};await workflowUseChannelVoice(F.rwLang,false);
     channelDesignPut(r.profile);await channelDesignRefresh();
@@ -235,7 +236,7 @@ function queueAnimationPreview(){++animationPreviewRequest;clearTimeout(animatio
 function animationOptions(){return {strategy:$('animation_strategy').value,limit:Number($('animation_limit').value)}}
 function animationLoad(value){const a=value||{strategy:'legacy',limit:10};$('animation_strategy').value=a.strategy||'legacy';$('animation_limit').value=a.limit??10;animationDraw();}
 function animationDraw(){
-  const strategy=animationOptions().strategy, selective=['key','hook','manual'].includes(strategy);
+  const strategy=animationOptions().strategy, selective=['key','hook','manual','reference'].includes(strategy);
   drawVf();$('vf_row').style.display=strategy==='legacy'?'':'none';$('animation_budget').hidden=!selective;
   const label=document.querySelector('#modes [data-i18n="m_mixed"]');if(label)label.textContent=selective?'Выборочные вставки':t('m_mixed');
   $('animation_hint').hidden=strategy==='legacy';
@@ -245,7 +246,8 @@ async function animationChanged(){
     const a=animationOptions();
     if(!Number.isInteger(a.limit)||a.limit<0||a.limit>150)throw new Error('Лимит видеовставок: целое число от 0 до 150.');
     $('animation_hint').textContent=animationHintText;
-    if(['key','hook','manual'].includes(a.strategy))document.querySelector('input[name=mode][value=mixed]').checked=true;
+    if(a.strategy==='reference')$('animation_hint').textContent='Используется сохранённый характер движения: статика, приближения, сдвиги и примерная доля движения объектов. Сначала подготовьте исходник с этим режимом либо изучите оживление в дизайне канала. Выбор сам по себе не запускает модель. Нейроклипы ограничены лимитом; точные движения и склейки не копируются.';
+    if(['key','hook','manual','reference'].includes(a.strategy))document.querySelector('input[name=mode][value=mixed]').checked=true;
     if(a.strategy==='local')document.querySelector('input[name=mode][value=images]').checked=true;
     mark();animationDraw();
     const r=await pywebview.api.save_config({animation:a,mode:mode()});if(r?.ok===false)throw new Error(r.error);
@@ -491,6 +493,7 @@ function workflowOrganizeAccess(){
   const animation=$('animation_strategy')?.closest('.qrow');if(animation&&!workflowStatic.has('animation'))workflowStatic.set('animation',animation);
   if(workflowStatic.has('animation'))sections.video.appendChild(workflowStatic.get('animation'));
   for(const selector of ['#vf_row','#animation_hint'])workflowKeep(selector,sections.video);
+  const motionHelp=document.createElement('div');motionHelp.className='wf-help';motionHelp.innerHTML='<strong>Оживление как в образце</strong><p>Изучите короткие временные отрезки один раз, затем сохраните профиль в дизайне канала. Он задаёт характер камеры и примерную долю сцен с движением объектов, сохраняя своё оформление. Локальные сдвиги и приближения не требуют видеомодели; движение объектов генерируется отдельно и может отличаться от исходника.</p><button class="ghost" onclick="openChannelDesign()">Настроить оживление в дизайне канала</button>';sections.video.appendChild(motionHelp);
   for(const selector of ['#hd','#qa'])workflowKeep(selector,sections.images);
   for(const selector of ['#motion','#subs','#speed'])workflowKeep(selector,sections.render);
   const fps=$('render_fps')?.closest('label');if(fps&&!workflowStatic.has('fps'))workflowStatic.set('fps',fps);if(workflowStatic.has('fps'))sections.render.appendChild(workflowStatic.get('fps'));
@@ -654,6 +657,7 @@ async function workflowUseChannelVoice(language,persist=true){
 }
 function channelDesignVoiceSummary(){
  $('cd_voices').textContent=Object.entries(channelDesignVoices).map(([language,voice])=>language+': '+voice.service+' · '+(voice.elysium_voice||voice.id||'голос сервиса по умолчанию')).join('\n')||'Голоса по языкам ещё не закреплены.';
+ $('cd_motion_summary').textContent=channelDesignMotion?'Оживление: '+channelDesignMotion.camera_styles.join(', ')+'; доля движения объектов примерно '+Math.round(channelDesignMotion.subject_motion_share*100)+'%; уверенность '+channelDesignMotion.confidence+'. Это оценка выборочных отрезков.':'Профиль оживления не задан: по одиночным картинкам движение не определяется.';
  $('cd_delivery_status').textContent=channelDesignDelivery?'Сохранены общие параметры подачи из звукового анализа. Это не точная копия интонации.':'Звуковая подача не задана. Её нельзя определить по картинкам.';
 }
 function channelDesignRememberVoice(){
@@ -663,3 +667,5 @@ function channelDesignRememberVoice(){
 }
 async function channelDesignCopyDelivery(){try{const r=await pywebview.api.channel_design_seed(boardState?.id||null);if(!r.ok)throw new Error(r.error);channelDesignDelivery=r.profile.delivery||null;$('cd_presentation').value=r.profile.presentation||$('cd_presentation').value;channelDesignVoiceSummary();}catch(error){$('cd_status').textContent=String(error);}}
 function channelDesignRole(){ $('cd_character_fields').hidden=!['character','character_layer'].includes($('cd_role').value); }
+
+async function channelDesignCopyMotion(){try{const r=await pywebview.api.channel_design_seed(boardState?.id||null);if(!r.ok)throw new Error(r.error);if(!r.profile.reference_animation)throw new Error('В текущем анализе ещё нет временных наблюдений. Изучите оживление по ссылке.');channelDesignMotion=r.profile.reference_animation;channelDesignVoiceSummary();$('cd_status').textContent='Профиль движения взят из готового анализа. Сохраните дизайн канала.';}catch(error){$('cd_status').textContent=String(error);}}

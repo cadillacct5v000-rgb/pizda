@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.24-dev"
+VERSION = "2.0.25-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -217,6 +217,17 @@ def fg_limits(key):
     return out
 
 
+def reference_motion_for(opts,cfg,design=None):
+    import reference_animation
+    opts=opts or {}
+    if design is None:design=selected_channel_design(opts,cfg)
+    if (design or {}).get('reference_animation'):return reference_animation.validate(design['reference_animation'])
+    if opts.get('storyboard_id'):return reference_animation.validate(load_storyboard(opts['storyboard_id'])['profile'].get('reference_animation'))
+    with LOCK:
+        profile=STATE.get('source_profile') if opts.get('source_profile_id') and opts.get('source_profile_id')==STATE.get('source_profile_id') else None
+    return reference_animation.validate((profile or {}).get('reference_animation'))
+
+
 def estimate_plan(opts, *, limits=True):
     """Прогноз до запуска: сколько сцен, кредитов и времени, с учётом часового лимита fast-gen.
     Сцены считаются по длительности (в среднем 5,7 с на сцену по реальным роликам), точное число даст распознавание."""
@@ -256,7 +267,11 @@ def estimate_plan(opts, *, limits=True):
     animation=animation_selection.settings(opts.get('animation',cfg.get('animation')))
     strategy=animation['strategy']
     local_design=bool(strategy=='local' or (strategy=='legacy' and design and design.get('motion_policy','local')=='local'))
-    if strategy in ('key','hook'):clips=min(scenes,animation['limit'])
+    if strategy=='reference':
+        motion=reference_motion_for(opts,cfg,design)
+        share=motion['subject_motion_share'] if motion['confidence']!='low' and not (design and design.get('motion_policy')=='local') else 0
+        clips=min(scenes,animation['limit'],round(scenes*share))
+    elif strategy in ('key','hook'):clips=min(scenes,animation['limit'])
     elif strategy=='manual':
         board=load_storyboard(opts['storyboard_id']) if opts.get('storyboard_id') else None
         if not board:raise ValueError('Ручной выбор доступен в раскадровке. Сначала подготовьте её.')
@@ -1120,7 +1135,8 @@ class Api:
             if not isinstance(rows,list) or len(rows)>2000 or any(not isinstance(r,dict) for r in rows):raise ValueError('Некорректный список планов.')
             opts=opts or {};cfg=load_cfg()
             design=selected_channel_design(opts,cfg)
-            scenes=[{**r,'index':i,'channel_design':design} for i,r in enumerate(rows)]
+            motion=reference_motion_for(opts,cfg,design) if (opts.get('animation',cfg.get('animation')) or {}).get('strategy')=='reference' and rows else None
+            scenes=[{**r,'index':i,'channel_design':design,'reference_animation':motion} for i,r in enumerate(rows)]
             return {'ok':True,**animation_selection.select(scenes,opts.get('animation',cfg.get('animation')),opts.get('mode','images'),_vf(opts.get('video_first')))}
         except (ValueError,OSError,TypeError) as error:return {'ok':False,'error':str(error)}
 
@@ -1146,7 +1162,7 @@ class Api:
             except (ValueError,OSError):pass
         visual = profile.get('visual_style') or {}
         return {'ok': True, 'profile': {'name': 'Мой канал', 'description': visual.get('description',''),
-                'palette': visual.get('palette', []), 'faces': 'reference', 'layout': 'source', 'font': 'Arial', 'rules': '', 'presentation':profile.get('narrative_style',''), 'delivery':__import__('source_narration').delivery_of(profile), 'voices':{}},
+                'palette': visual.get('palette', []), 'faces': 'reference', 'layout': 'source', 'font': 'Arial', 'rules': '', 'presentation':profile.get('narrative_style',''), 'delivery':__import__('source_narration').delivery_of(profile),'reference_animation':profile.get('reference_animation'), 'voices':{}},
                 'has_source': bool(visual)}
 
     def channel_design_capture(self, name='Мой канал', board_id=None):
@@ -1169,13 +1185,13 @@ class Api:
                 from channel_design import DesignStore
                 store=DesignStore(data_dir())
                 profile=store.save({'name':name,'description':visual['description'],'palette':visual.get('palette',[]),
-                                    'faces':'reference','layout':'source','font':'Arial','rules':'','presentation':source.get('narrative_style',''),'delivery':__import__('source_narration').delivery_of(source)})
+                                    'faces':'reference','layout':'source','font':'Arial','rules':'','presentation':source.get('narrative_style',''),'delivery':__import__('source_narration').delivery_of(source),'reference_animation':source.get('reference_animation')})
                 for path in paths:profile=store.import_asset(profile['id'],profile['revision'],path,'reference')
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
             return {'ok':True,'profile':profile}
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
 
-    def channel_design_learn(self,name,url,adapt=False,changes=''):
+    def channel_design_learn(self,name,url,adapt=False,changes='',learn_motion=False):
         try:
             from channel_design import validate
             import youtube_source
@@ -1201,11 +1217,20 @@ class Api:
                 from channel_design import adapt_visual
                 say('создаю своё оформление по принципам референса')
                 value=adapt_visual(visual,name,changes,client,folder/'own-designs',say)
-                pipeline.check_cancel();profile=store.save(value)
+                pipeline.check_cancel()
+                if learn_motion:
+                    import reference_animation
+                    value['reference_animation']=reference_animation.analyse(video,cfg,folder,say)
+                    value['motion_policy']='generated' if value['reference_animation']['subject_motion_share']>.15 and value['reference_animation']['confidence']!='low' else 'local'
+                profile=store.save(value)
             else:
                 profile=store.save({'name':name,'description':visual['description'],'palette':visual['palette'],
                                     'rules':visual['character_design'][:4000],'faces':'reference','font':'Arial','layout':'source'})
                 for frame in learned['reference_frames']:profile=store.import_asset(profile['id'],profile['revision'],frame,'reference')
+            if learn_motion and not adapt:
+                import reference_animation
+                motion=reference_animation.analyse(video,cfg,folder,say)
+                profile=store.save({**profile,'reference_animation':motion},profile['id'],profile['revision'])
             pipeline.check_cancel()
             with LOCK:
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
@@ -1214,6 +1239,28 @@ class Api:
         except Exception as error:
             _record_error_traceback()
             return {'ok':False,'error':'Не удалось изучить дизайн: '+str(error)}
+        finally:
+            with LOCK:STATE['preparing']=False
+            keep_awake(False)
+
+    def channel_animation_learn(self,url):
+        import youtube_source
+        try:
+            youtube_source.video_id(url)
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
+                pipeline.CANCEL.clear();STATE.update(preparing=True,error=None,message='Изучаю характер оживления по временным отрезкам')
+        except ValueError as error:return {'ok':False,'error':str(error)}
+        keep_awake(True)
+        try:
+            import reference_animation
+            cfg=replacement.effective(load_cfg());__import__('source_analysis')._provider(cfg);folder=Path(data_dir(),'jobs','channel_learning')
+            say=lambda text:progress_cb('prepare',0,1,text)
+            video=youtube_source.video(url,Path(data_dir(),'jobs','youtube_sources'),str(Path(pipeline.ffmpeg_bin()).parent),say,cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
+            motion=reference_animation.analyse(video,cfg,folder,say);pipeline.check_cancel()
+            return {'ok':True,'reference_animation':motion}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
         finally:
             with LOCK:STATE['preparing']=False
             keep_awake(False)
@@ -1316,7 +1363,7 @@ class Api:
             check=production_check({**options,'rewrite':{'on':False},'script':'Preview narration. '*36})
             if check.get('blockers'):raise ValueError(' '.join(check['blockers']))
             cfg.update(studio.settings({**cfg,**(opts.get('studio') or {})}))
-            cfg.update(mode=options.get('mode','images'),quality='quality' if options.get('use_refs') else 'speed',
+            cfg.update(animation=options['animation'],mode=options.get('mode','images'),quality='quality' if options.get('use_refs') else 'speed',
                        image_providers=options['providers'],qa_images=bool(options.get('qa')),hd_images=bool(options.get('hd')),
                        subtitles=bool(options.get('subtitles')),render_fps=options['render_fps'],studio_configured=True,youtube_sample_start=start,
                        rewrite_url=rw['url'])
@@ -2014,7 +2061,7 @@ class Api:
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "_creative_options":{**studio.settings({**cfg,**(opts.get("studio") or {})}),"custom_style":opts.get("custom_style",cfg.get("custom_style","")),"style":opts.get("style",cfg.get("style"))}, "_replacement_options":selected, "montage": bool(rw.get("montage", cfg.get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", cfg.get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+        return {"on": True, "_creative_options":{**studio.settings({**cfg,**(opts.get("studio") or {})}),"custom_style":opts.get("custom_style",cfg.get("custom_style","")),"style":opts.get("style",cfg.get("style")),"animation":__import__("animation_selection").settings(opts.get("animation",cfg.get("animation")))}, "_replacement_options":selected, "montage": bool(rw.get("montage", cfg.get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", cfg.get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or cfg.get("rewrite_lang") or ("русском" if cfg.get("lang","ru")=="ru" else "английском")).strip()}
 
     def _validate(self, opts, providers):
@@ -2078,6 +2125,10 @@ class Api:
         local = strategy=='local' or strategy=='legacy' and design and design.get('motion_policy','local')=='local'
         needs_video = not local and ((strategy in ('key','hook','manual') and selection['limit']>0) or
                       strategy=='legacy' and ((opts or {}).get('mode',cfg.get('mode','images')) in ('video','mixed') or _vf((opts or {}).get('video_first',cfg.get('video_first')))>0))
+        if strategy=='reference':
+            try:motion=reference_motion_for(opts,cfg,design)
+            except ValueError as error:return str(error)
+            needs_video=bool(selection['limit'] and motion['confidence']!='low' and motion['subject_motion_share']>0 and not (design and design.get('motion_policy')=='local'))
         if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key") and needs_video:
             return "Для видео через Elysium введите ключ Elysium."
         has_fg = bool(cfg.get("fastgen_api_key"))
