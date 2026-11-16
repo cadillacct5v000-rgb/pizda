@@ -255,11 +255,13 @@ def rewrite(source_text, engine, key, model, words, language, cache_dir, progres
         if progress:
             progress("рерайт уже есть, беру из кэша")
         return open(cache, encoding="utf-8").read()
+    import narration_rules
+    narration_guide=narration_rules.writing('script',language)
     name = ENGINE_NAMES.get(engine, engine)
     if words <= PART_WORDS:
         if progress:
             progress(f"{name} переписывает сценарий (~{words} слов, это займёт минуту-две)")
-        out = _ask(engine, key, model, lang_rule(language) + "\n\n" + PROMPT.format(language=language, words=words, script=source_text.strip())
+        out = _ask(engine, key, model, narration_guide+lang_rule(language) + "\n\n" + PROMPT.format(language=language, words=words, script=source_text.strip())
                    + "\n\n" + lang_rule(language), words, language, progress)
     else:
         # Длинный сценарий одним ответом модели не пишут («too long for a single response») — пишем частями
@@ -270,7 +272,7 @@ def rewrite(source_text, engine, key, model, words, language, cache_dir, progres
             if progress:
                 progress(f"{name} пишет часть {i} из {n} (~{per} слов)")
             tail = " ".join(" ".join(parts).split()[-350:]) if parts else ""
-            prompt = lang_rule(language) + "\n\n" + PART_PROMPT.format(language=language, words=words, per=per, i=i, n=n, script=source_text.strip(),
+            prompt = narration_guide+lang_rule(language) + "\n\n" + PART_PROMPT.format(language=language, words=words, per=per, i=i, n=n, script=source_text.strip(),
                                         tail=(tail or "(это первая часть)"),
                                         ending="Это последняя часть: доведи рассказ до конца и заверши его." if i == n
                                         else "Это НЕ последняя часть: не завершай рассказ, остановись на месте, с которого удобно продолжить.")

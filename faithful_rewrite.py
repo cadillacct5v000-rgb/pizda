@@ -74,8 +74,9 @@ def _rewrite_part(chunk, previous, profile, engine, key, model, language,
             netutil.check_cancel()
             if progress:
                 progress(f"полный сценарий: часть {label}, попытка {attempt + 1}/{MAX_ATTEMPTS}")
+            import narration_rules
             prompt = (
-                rw.lang_rule(language) + "\nRewrite the supplied chunk of a complete narration. "
+                narration_rules.writing('script',language) + 'Preserve the requested source order in this legacy mode. ' + rw.lang_rule(language) + "\nRewrite the supplied chunk of a complete narration. "
                 f"This is part {label}. The source chunk contains {count} words. "
                 "Preserve ALL factual statements, events, examples, causal links and their order in this chunk. "
                 "Rewrite every source sentence in order, including the last sentence. "

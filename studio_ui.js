@@ -9,15 +9,18 @@ function studioBoardRequested() { studioBoardNeedsRetry=true; }
 function studioSyncGuard() { if(studioBoardNeedsRetry){$('btn_go').disabled=true;if($('board_preview'))$('board_preview').disabled=true;} }
 function studioBoardReady() { studioBoardNeedsRetry=false;$('btn_go').disabled=false;if($('board_preview'))$('board_preview').disabled=false; }
 function studioFields() {
-  return {enhancement_level:$('studio_level').value,editing_pace:$('studio_pace').value,
+  return {enhancement_level:$('studio_level').value,original_visual:$('studio_original_visual').value,editing_pace:$('studio_pace').value,
     visual_detail:$('studio_detail').value,render_quality:$('studio_quality').value,
     caption_style:$('studio_captions').value==='off'?'source':$('studio_captions').value,
     caption_position:$('studio_caption_position').value,on_screen_labels:$('studio_labels').checked};
 }
 function loadStudioSettings(c) {
+  if(c.voice_languages)workflowVoiceLanguages=c.voice_languages;
+  if(c.channel_voices)workflowChannelVoices=c.channel_voices;
   channelDesignLoad(c);
   const s=c.studio||{};
-  $('studio_level').value=s.enhancement_level||'enhanced';$('studio_pace').value=s.editing_pace||'balanced';
+  $('studio_original_visual').value=s.original_visual||'reference';
+  $('studio_level').value=c.studio_configured?(s.enhancement_level||'original'):'original';$('studio_pace').value=s.editing_pace||'balanced';
   $('studio_detail').value=s.visual_detail||'rich';$('studio_quality').value=s.render_quality||'high';
   $('studio_captions').value=(!c.studio_configured||c.subtitles)?(s.caption_style||'source'):'off';
   $('studio_caption_position').value=s.caption_position||'bottom';$('studio_labels').checked=s.on_screen_labels!==false;
@@ -146,7 +149,8 @@ function showYouTubeSample() {
 }
 
 // Channel design selection is an explicit immutable version, including saved projects.
-let channelDesignActive=null, channelDesignEditing=null;
+let channelDesignActive=null, channelDesignEditing=null,channelDesignVoices={},channelDesignDelivery=null;
+let workflowVoiceLanguages={ru:'русском',en:'английском'},workflowChannelVoices={},workflowVoiceLanguage='';
 function channelDesignChoice() {
   return channelDesignActive===null?{}:{channel_design_id:channelDesignActive.id||'',channel_design_revision:channelDesignActive.revision||null};
 }
@@ -158,11 +162,15 @@ function channelDesignLoad(c,force=false) {
   if(Object.hasOwn(c,'channel_design_id')){channelDesignActive={id:c.channel_design_id||'',revision:c.channel_design_revision||null};channelDesignBadge();}
 }
 function channelDesignPut(p) {
-  channelDesignEditing=p?.id?p:null;
+  channelDesignEditing=p?.id?p:null;channelDesignVoices=JSON.parse(JSON.stringify(p?.voices||{}));channelDesignDelivery=p?.delivery||null;
+  $('cd_presentation').value=p?.presentation||'';
+  $('cd_voice_language').innerHTML=Object.entries(workflowVoiceLanguages).map(([code,name])=>'<option value="'+code+'">'+esc(name)+'</option>').join('');
+  $('cd_voice_language').value=workflowLanguageCode(F.rwLang)||'ru';
+  channelDesignVoiceSummary();
   $('cd_name').value=p?.name||'Мой канал';$('cd_description').value=p?.description||'';
   $('cd_palette').value=(p?.palette||[]).join(', ');$('cd_rules').value=p?.rules||'';
   $('cd_motion').value=p?.motion_policy||'local';$('cd_faces').value=p?.faces||'reference';$('cd_layout').value=p?.layout||'source';$('cd_font').value=p?.font||'Arial';
-  $('cd_assets').innerHTML=(p?.assets||[]).map((a,i)=>`<div>${esc({reference:'Эталон',host:'Ведущий',logo:'Логотип'}[a.role])}: ${esc(a.name)} <button class="ghost small" onclick="channelDesignAction('remove:${i}')">Убрать из новой версии</button></div>`).join('')||'Файлы ещё не добавлены';
+  $('cd_assets').innerHTML=(p?.assets||[]).map((a,i)=>`<div>${esc({reference:'Эталон',host:'Ведущий',logo:'Логотип',character:'Персонаж — референс',character_layer:'Персонаж — готовый слой'}[a.role])}: ${esc(a.name)} ${esc((a.aliases||[]).join(', '))} <button class="ghost small" onclick="channelDesignAction('remove:${i}')">Убрать из новой версии</button></div>`).join('')||'Файлы ещё не добавлены';
   $('cd_import').disabled=!p?.id;
 }
 async function channelDesignRefresh() {
@@ -192,7 +200,7 @@ async function channelDesignAction(action) {
       $('cd_cancel').hidden=false;$('cd_cancel').disabled=false;
       $('cd_status').textContent='Однократно изучаю стиль образца…';
       designPoll=setInterval(async()=>{try{const s=await pywebview.api.get_state();$('cd_status').textContent=s.message||'Изучаю дизайн…';}catch(e){}},1400);
-      r=await pywebview.api.channel_design_learn($('cd_name').value||'Мой канал',$('cd_source_url').value.trim());
+      r=await pywebview.api.channel_design_learn($('cd_name').value||'Мой канал',$('cd_source_url').value.trim(),$('cd_adapt').checked,$('cd_changes').value);
     }
     else if(action==='source')r=await pywebview.api.channel_design_select('');
     else if(action==='capture')r=await pywebview.api.channel_design_capture($('cd_name').value||'Мой канал',typeof boardState!=='undefined'?boardState?.id:null);
@@ -203,15 +211,16 @@ async function channelDesignAction(action) {
       r=await pywebview.api.channel_design_remove(channelDesignEditing.id,channelDesignEditing.revision,+action.split(':')[1]);
     } else if(action==='import') {
       if(!channelDesignEditing)throw new Error('Сначала сохраните профиль.');
-      r=await pywebview.api.channel_design_import(channelDesignEditing.id,channelDesignEditing.revision,$('cd_role').value);
+      r=await pywebview.api.channel_design_import(channelDesignEditing.id,channelDesignEditing.revision,$('cd_role').value,{aliases:$('cd_aliases').value.split(',').map(s=>s.trim()).filter(Boolean),identity:$('cd_identity').value});
     } else {
       const value={name:$('cd_name').value,description:$('cd_description').value,
-        palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,
+        palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,presentation:$('cd_presentation').value,delivery:channelDesignDelivery,voices:channelDesignVoices,
         faces:$('cd_faces').value,font:$('cd_font').value,layout:$('cd_layout').value,motion_policy:$('cd_motion').value};
       r=await pywebview.api.channel_design_save(value,channelDesignEditing?.id||null,channelDesignEditing?.revision||null);
     }
     if(r.cancelled){$('cd_status').textContent='Изучение остановлено; готовые ответы сохранены.';return;}if(!r.ok)throw new Error(r.error);
     channelDesignActive=r.profile?{id:r.profile.id,revision:r.profile.revision}:{id:'',revision:null};channelDesignBadge();
+    workflowChannelVoices=r.profile?.voices||{};await workflowUseChannelVoice(F.rwLang,false);
     channelDesignPut(r.profile);await channelDesignRefresh();
     $('cd_status').textContent=r.profile?'Профиль закреплён для новых сборок. Генерация не запускалась.':'Выбран дизайн исходника.';
     mark();renderAccess();
@@ -485,7 +494,7 @@ function workflowOrganizeAccess(){
   for(const selector of ['#hd','#qa'])workflowKeep(selector,sections.images);
   for(const selector of ['#motion','#subs','#speed'])workflowKeep(selector,sections.render);
   const fps=$('render_fps')?.closest('label');if(fps&&!workflowStatic.has('fps'))workflowStatic.set('fps',fps);if(workflowStatic.has('fps'))sections.render.appendChild(workflowStatic.get('fps'));
-  const styleHelp=document.createElement('div');styleHelp.className='wf-help';styleHelp.innerHTML='<strong>Дизайн канала</strong><p>Сохранённый профиль позволяет использовать новые ссылки только как источник содержания. Повторное изучение чужого стиля не требуется.</p><button class="ghost" onclick="openChannelDesign()">Выбрать или сохранить дизайн канала</button>';
+  const styleHelp=document.createElement('div');styleHelp.className='wf-help';styleHelp.innerHTML='<strong>Дизайн канала</strong><p>Сохранённый профиль позволяет использовать новые ссылки только как источник содержания. Повторное изучение чужого стиля не требуется. После самостоятельной постановки здесь можно сохранить её оформление для следующих роликов.</p><button class="ghost" onclick="openChannelDesign()">Выбрать или сохранить дизайн канала</button>';
   sections.style.querySelector('.wf-heading').after(styleHelp);
   const sourceMode=document.createElement('div');sourceMode.className='wf-help';sourceMode.innerHTML='<label>Содержание ролика <select id="wf_source_kind"><option value="youtube">Видео YouTube</option><option value="text">Мой текст</option><option value="audio">Готовая озвучка</option></select></label><p>Ссылка или текст — содержание. Стиль и голос выбираются отдельно на следующих шагах.</p>';sections.source.querySelector('.wf-heading').after(sourceMode);
   sourceMode.querySelector('select').value=source!=='script'?'audio':rwOn()&&rwSrc==='youtube'?'youtube':'text';
@@ -504,6 +513,8 @@ function workflowOrganizeAccess(){
   const youtubePrepare=$('youtube_prepare');if(youtubePrepare){youtubePrepare.textContent=boardState?'Создать новый сценарий и планы по ссылке · платно':'Подготовить сценарий и планы по ссылке · платно';if(rwSrc==='youtube'&&rwOn())textAction.querySelector('#wf_prepare_text').hidden=true;textAction.prepend(youtubePrepare);}
   const voiceHelp=document.createElement('div');voiceHelp.className='wf-help';voiceHelp.innerHTML='<strong>Сначала проверьте голос</strong><p>Язык текста, выбранный голос и манера чтения — разные настройки. Анализ исходника не гарантирует перенос акцентов. Подготовьте 30-секундную пробу и послушайте результат перед полным роликом.</p><button class="ghost" onclick="showYouTubeSample()">Настроить пробу 30 секунд</button>';sections.voice.querySelector('.wf-heading').after(voiceHelp);
   const voicePreview=document.createElement('div');voicePreview.className='wf-help';voicePreview.innerHTML='<label>Текст пробы голоса<textarea id="wf_voice_text" maxlength="600" rows="4" placeholder="Введите 2–3 фразы на языке будущего ролика. Для русского проверьте ударения, окончания и отсутствие иностранного акцента."></textarea></label><button class="primary" id="wf_voice_preview" onclick="workflowVoiceSample()">Создать пробу голоса · платный синтез</button><button class="ghost" onclick="workflowStopVoice()">Остановить пробу</button><div id="wf_voice_status" role="status"></div><div id="wf_voice_player"></div><p>Создаётся только короткая озвучка этого текста. Картинки, распознавание и видео не запускаются. Совпадение интонации с исходником нужно оценить на слух.</p>';sections.voice.appendChild(voicePreview);
+  const voiceLanguage=document.createElement('label');voiceLanguage.innerHTML='Язык пробы <select id="wf_voice_language"><option value="">Автоопределение по тексту</option>'+Object.entries(workflowVoiceLanguages).map(([code,name])=>'<option value="'+code+'">'+esc(name)+'</option>').join('')+'</select>';voicePreview.prepend(voiceLanguage);$('wf_voice_language').value=workflowVoiceLanguage;
+  $('wf_voice_language').onchange=async event=>{workflowVoiceLanguage=event.target.value;await workflowUseChannelVoice(workflowVoiceLanguage,true);renderAccess();};
   voicePreview.querySelector('textarea').value=workflowVoiceDraft||(F.script||F.rwText||'').slice(0,450);voicePreview.querySelector('textarea').oninput=event=>workflowVoiceDraft=event.target.value;
   if(source!=='script'){
     voicePreview.hidden=true;
@@ -521,11 +532,20 @@ function workflowOrganizeAccess(){
   for(const id of ['replace_elysium_tts_model','replace_elysium_tts_voice','replace_elysium_image_model'])if($(id)){
     const label=$(id).closest('.lrow').querySelector('.lab');label.textContent=({'replace_elysium_tts_model':'Модель озвучки Elysium','replace_elysium_tts_voice':'Голос Elysium','replace_elysium_image_model':'Модель картинок Elysium'})[id];
   }
+  const originalMode=$('studio_level').value==='original';
+  const approach=document.createElement('div');approach.className='wf-help';
+  approach.innerHTML='<label for="wf_approach"><strong>Как использовать исходник</strong></label><select id="wf_approach">'+Array.from($('studio_level').options,o=>'<option value="'+esc(o.value)+'"'+(o.selected?' selected':'')+'>'+esc(o.text)+'</option>').join('')+'</select><p>Самостоятельный ролик: тема и сильные объяснительные приёмы исходника → свой угол, новая структура, собственные сцены и визуальная система. Анализ и сценарий оплачиваются и сохраняются по этапам. Выбор действует при следующем явном создании новой версии; готовые планы не меняются. Это не гарантия авторских прав или решения YouTube.</p>';
+  if(originalMode&&!channelDesignChoice().channel_design_id){const visual=document.createElement('label');visual.innerHTML='Визуальная основа <select id="wf_original_visual">'+Array.from($('studio_original_visual').options,o=>'<option value="'+o.value+'"'+(o.selected?' selected':'')+'>'+esc(o.text)+'</option>').join('')+'</select>';approach.appendChild(visual);}
+  sections.style.querySelector('.wf-heading').after(approach);
+  $('wf_approach').addEventListener('change',async event=>{const selected=event.target.value;$('studio_level').value=selected;await pywebview.api.save_config({studio:studioFields()});renderAccess();});
+  if($('wf_original_visual'))$('wf_original_visual').addEventListener('change',async event=>{const selected=event.target.value;$('studio_original_visual').value=selected;await pywebview.api.save_config({studio:studioFields()});renderAccess();});
   const designSelected=!!channelDesignChoice().channel_design_id;
-  const styleFromSource=rwOn()&&rwSrc==='youtube'&&analyzeVideo&&!designSelected;
+  if(originalMode&&$('source_processing_note'))$('source_processing_note').textContent='Самостоятельные сцены создаются по новому сценарию. Исходные планы и последовательность склеек не копируются. '+(designSelected?'Используется сохранённый дизайн канала.':'Видеоряд при включённом анализе изучается выборочно как ориентир, без разбора каждого плана.')+' Подготовка нового замысла и генерация оплачиваются сервисами.';
+  const styleFromSource=rwOn()&&rwSrc==='youtube'&&!designSelected&&(originalMode?$('studio_original_visual').value==='reference':analyzeVideo);
   const styleRow=workflowStatic.get('#screen2 .srow');if(styleRow)styleRow.hidden=designSelected||styleFromSource;
   if($('custom_row'))$('custom_row').hidden=designSelected||styleFromSource;
   if($('youtube_mode')){
+    $('youtube_mode').closest('.lrow').hidden=originalMode;
     $('youtube_mode').closest('.lrow').querySelector('.lab').textContent='Откуда брать оформление';
     for(const option of $('youtube_mode').options)option.text=({montage:'Стиль исходника + его планы',full:'Стиль исходника + новые планы',text:'Только содержание → мой стиль',channel:'Только содержание → дизайн канала'})[option.value]||option.text;
   }
@@ -547,7 +567,7 @@ let workflowVoiceDraft='';
 async function workflowVoiceSample(){
   const status=$('wf_voice_status'),button=$('wf_voice_preview');if(button.disabled)return;button.disabled=true;
   try{
-    syncAll();const sample={...replacementFields(),text:$('wf_voice_text').value,tts,voice:F.voice,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||null))};await saveKeys();status.textContent='Готовлю пробу голоса…';
+    syncAll();const sample={...replacementFields(),text:$('wf_voice_text').value,tts,voice:F.voice,language:workflowVoiceLanguage,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||null))};await saveKeys();status.textContent='Готовлю пробу голоса…';
     const result=await pywebview.api.voice_sample(sample);
     if(!result.ok)throw new Error(result.error);
     if($('wf_voice_player'))$('wf_voice_player').replaceChildren();
@@ -593,9 +613,9 @@ function workflowHelp(){
     <p>Переход по меню сохраняет доступ к настройкам и не запускает нейросеть. Генерация начинается только отдельной кнопкой действия.</p>
     <ol>
     <li><strong>Источник.</strong> Выберите YouTube, свой текст или готовую озвучку. Для YouTube вставьте ссылку. Браузер и cookies нужны только если YouTube требует входа. Распознавание переводит речь в текст и таймкоды; это не новая озвучка.</li>
-    <li><strong>Стиль.</strong> Выберите сохранённый дизайн канала, готовый стиль или опишите свой. Анализ исходника изучает его оформление и планы. Дизайн канала позволяет использовать новые ссылки только как содержание. Смена стиля может потребовать новых изображений.</li>
-    <li><strong>Сценарий.</strong> Модель пишет рерайт, раскадровку и промпты. Sonnet выбирается по каталогу выбранного сервиса. «Создать заново» — платная подготовка нового текста; «Открыть подготовленный сценарий» и «Использовать готовую раскадровку» не переписывают его. Проверьте факты, язык и объём. В полном разборе YouTube объём следует исходнику; поле количества слов там не используется.</li>
-    <li><strong>Озвучка.</strong> Выберите сервис и голос. Голос с иностранной манерой может не подойти для русского даже у многоязычной модели. Введите несколько фраз и нажмите «Создать пробу голоса»: оплачивается только короткий синтез, без картинок и видео. Послушайте ударения и интонацию. Анализ подачи исходника даёт ориентир; точный перенос интонации и ручной редактор голосовых акцентов пока не реализованы.</li>
+    <li><strong>Стиль.</strong> «Самостоятельный ролик по референсу» создаёт свой замысел, структуру и визуальную систему на основе полезных принципов исходника. Смена шрифтов и палитры сама по себе не делает копию самостоятельной.  Выберите сохранённый дизайн канала, готовый стиль или опишите свой. Анализ исходника изучает его оформление и планы. Дизайн канала позволяет использовать новые ссылки только как содержание. Смена стиля может потребовать новых изображений.</li>
+    <li><strong>Сценарий.</strong> Язык выбирается для новой версии: смена поля сама не переводит готовую раскадровку. Модель пишет рерайт, раскадровку и промпты. Sonnet выбирается по каталогу выбранного сервиса. «Создать заново» — платная подготовка нового текста; «Открыть подготовленный сценарий» и «Использовать готовую раскадровку» не переписывают его. Проверьте факты, язык и объём. В полном разборе YouTube объём следует исходнику; поле количества слов там не используется.</li>
+    <li><strong>Озвучка.</strong> Выберите язык пробы. В профиле канала можно закрепить разные голоса для разных языков и общие параметры подачи.  Выберите сервис и голос. Голос с иностранной манерой может не подойти для русского даже у многоязычной модели. Введите несколько фраз и нажмите «Создать пробу голоса»: оплачивается только короткий синтез, без картинок и видео. Послушайте ударения и интонацию. Анализ подачи исходника даёт ориентир; точный перенос интонации и ручной редактор голосовых акцентов пока не реализованы.</li>
     <li><strong>Раскадровка и тайминг.</strong> Для каждого плана указаны фраза, описание изображения, движение и длительность. Текст плана связан со сценарием. При сборке планы автоматически выравниваются по словам озвучки. Ручная длительность меняет темп соответствующей фразы в допустимых пределах. «Сохранить» фиксирует правки; «Открыть сохранённую» возвращает существующую версию без нового анализа.</li>
     <li><strong>Картинки.</strong> Выберите сервис, модель и разрешение. «Качество» включает работу с референсами, когда они поддерживаются; модель Elysium выбирается отдельно. HD повышает размер исходных картинок, а не разрешение видеоклипа. Автоотбор использует зрительную чат-модель: Gemini/Claude/подходящий GPT. Seedream рисует, Kling оживляет — они не проверяют картинки через чат API. Проверки и перерисовки оплачиваются. Единые локации связывают планы одной комнаты, но не гарантируют идеального постоянства. Проба картинок без оживления использует готовые планы и не отправляет задания видеомодели.</li>
     <li><strong>Оживление.</strong> Укажите видеомодель и разрешение. Можно оживлять ключевые сцены, начало и повороты, выбрать планы вручную либо оставить локальное движение картинок. Лимит относится к видеовставкам. Автовыбор локальный, без отдельного запроса. «Только видео» оживляет все планы при выборе по режиму; выборочная стратегия имеет приоритет. Смена модели видео требует новых клипов, а не нового сценария.</li>
@@ -623,3 +643,23 @@ async function workflowStopTask(){try{await pywebview.api.cancel();workflowStopp
 async function workflowStopVoice(){
   const result=await pywebview.api.cancel_voice_sample();if($('wf_voice_status'))$('wf_voice_status').textContent=result.message||result.error;
 }
+
+function workflowLanguageCode(language){if(Object.hasOwn(workflowVoiceLanguages,language))return language;return Object.keys(workflowVoiceLanguages).find(code=>workflowVoiceLanguages[code]===language)||null;}
+async function workflowUseChannelVoice(language,persist=true){
+  const voice=workflowChannelVoices[workflowLanguageCode(language)];if(!voice)return false;
+  tts=voice.service;F.voice=voice.id;if($('tts_voice'))$('tts_voice').value=F.voice;if($('tts_sel'))$('tts_sel').value=tts;
+  const patch={tts_service:tts,tts_voice:F.voice};
+  if(tts==='fastgen'&&elysiumReplacement.elysium_replace_fastgen){if(voice.elysium_voice)patch.elysium_tts_voice=voice.elysium_voice;if(voice.elysium_model)patch.elysium_tts_model=voice.elysium_model;Object.assign(elysiumReplacement,patch);}
+  if(persist)await pywebview.api.save_config(patch);return true;
+}
+function channelDesignVoiceSummary(){
+ $('cd_voices').textContent=Object.entries(channelDesignVoices).map(([language,voice])=>language+': '+voice.service+' · '+(voice.elysium_voice||voice.id||'голос сервиса по умолчанию')).join('\n')||'Голоса по языкам ещё не закреплены.';
+ $('cd_delivery_status').textContent=channelDesignDelivery?'Сохранены общие параметры подачи из звукового анализа. Это не точная копия интонации.':'Звуковая подача не задана. Её нельзя определить по картинкам.';
+}
+function channelDesignRememberVoice(){
+ const language=$('cd_voice_language').value;
+ channelDesignVoices[language]={service:tts,id:F.voice||'',elysium_voice:tts==='fastgen'&&elysiumReplacement.elysium_replace_fastgen?elysiumReplacement.elysium_tts_voice||'':'',elysium_model:tts==='fastgen'&&elysiumReplacement.elysium_replace_fastgen?elysiumReplacement.elysium_tts_model||'':''};
+ channelDesignVoiceSummary();$('cd_status').textContent='Голос добавлен в черновик профиля. Нажмите «Сохранить и использовать».';
+}
+async function channelDesignCopyDelivery(){try{const r=await pywebview.api.channel_design_seed(boardState?.id||null);if(!r.ok)throw new Error(r.error);channelDesignDelivery=r.profile.delivery||null;$('cd_presentation').value=r.profile.presentation||$('cd_presentation').value;channelDesignVoiceSummary();}catch(error){$('cd_status').textContent=String(error);}}
+function channelDesignRole(){ $('cd_character_fields').hidden=!['character','character_layer'].includes($('cd_role').value); }

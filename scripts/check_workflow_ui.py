@@ -18,8 +18,12 @@ from playwright.sync_api import sync_playwright
 
 root=Path(TEST_DATA.name)
 app.CONFIG_PATH=str(root/'config.json');app.check_update=lambda:None
-app.save_cfg({'source':'script','rewrite':True,'rewrite_source':'youtube','tts_service':'edge','image_providers':['fastgen'],'fastgen_api_key':'workflow-old-fastgen','llm_engine':'fastgen','stt_engine':'fastgen','lang':'ru'})
+app.save_cfg({'source':'script','rewrite':True,'rewrite_source':'youtube','tts_service':'edge','image_providers':['fastgen'],'fastgen_api_key':'workflow-old-fastgen','llm_engine':'fastgen','stt_engine':'fastgen','lang':'ru','studio_configured':True,'enhancement_level':'enhanced'})
 api=app.Api();calls=[];speech=[]
+from types import SimpleNamespace
+from PIL import Image
+character_file=root/'Willy.png';Image.new('RGB',(64,32),'#126B70').save(character_file)
+app.webview=SimpleNamespace(OPEN_DIALOG='open');app.WINDOW=SimpleNamespace(create_file_dialog=lambda *a,**k:[str(character_file)])
 provider_access.models=lambda engine,key:['google/gemini-3.6-flash','anthropic/claude-sonnet-5.5','deepseek/deepseek-chat','seedream/4.5','kling-2.6'] if engine=='elysium' else ['claude-sonnet-5-5']
 tone=root/'fixture.mp3'
 subprocess.run([pipeline.ffmpeg_bin(),'-y','-v','error','-f','lavfi','-i','sine=frequency=440:duration=1','-c:a','libmp3lame','-b:a','128k',str(tone)],check=True)
@@ -116,6 +120,41 @@ with sync_playwright() as p:
   assert page.locator('[data-workflow=connections]').is_visible()
  page.set_viewport_size({'width':1366,'height':768});section('source')
  page.screenshot(path=str(root/'workflow-source.png'),full_page=True)
+ assert not errors,errors
+ # Choosing reference-led creation is independent of provider selection and never generates.
+ section('source');page.select_option('#wf_source_kind','youtube')
+ section('style');before=len(calls)
+ page.select_option('#wf_approach','original')
+ page.wait_for_function("document.getElementById('studio_level').value==='original'")
+ page.wait_for_function("async()=>(await pywebview.api.get_state()).config.enhancement_level==='original'")
+ assert page.locator('#youtube_mode').is_hidden()
+ page.wait_for_function("document.getElementById('source_processing_note').textContent.includes('Самостоятельные сцены')")
+ assert page.evaluate('opts().studio.enhancement_level')=='original'
+ assert not any(name in ('rewrite','prepare_storyboard','start','youtube_sample') for name in calls[before:])
+ assert not errors,errors
+ # Save a reusable channel, a language-specific voice and a named recurring whale through the real UI.
+ section('voice');page.select_option('#tts_sel','elevenlabs');page.wait_for_selector('#tts_voice')
+ page.fill('#tts_voice','native-en-fixture');page.locator('#tts_voice').dispatch_event('change')
+ section('style');page.get_by_role('button',name='Выбрать или сохранить дизайн канала',exact=True).click()
+ page.wait_for_selector('#channel_design_dialog[open]')
+ page.fill('#cd_name','Persistent whale channel');page.fill('#cd_description','Own flat teal drawings with featureless human figures.')
+ page.fill('#cd_presentation','Curious, clear, with short reveals.')
+ page.select_option('#cd_voice_language','en');page.get_by_role('button',name='Закрепить голос, выбранный на шаге 4',exact=True).click()
+ page.get_by_role('button',name='Сохранить и использовать',exact=True).click()
+ page.wait_for_function("channelDesignEditing?.id && Object.keys(channelDesignEditing.voices).includes('en')")
+ assert page.evaluate("channelDesignEditing.voices.en.id")=='native-en-fixture'
+ page.select_option('#cd_role','character');page.wait_for_selector('#cd_character_fields:not([hidden])')
+ page.fill('#cd_aliases','Willy, кит Вилли');page.fill('#cd_identity','One teal whale with a pale left patch and rounded fins.')
+ page.get_by_role('button',name='Добавить файл',exact=True).click()
+ page.wait_for_function("channelDesignEditing?.assets.some(a=>a.role==='character')")
+ assert page.evaluate("channelDesignEditing.assets[0].aliases")==['Willy','кит Вилли']
+ assert page.evaluate("channelDesignEditing.presentation")=='Curious, clear, with short reveals.'
+ page.locator('#channel_design_dialog').get_by_role('button',name='Закрыть',exact=True).click()
+ section('voice');page.select_option('#wf_voice_language','en')
+ page.wait_for_function("F.voice==='native-en-fixture'")
+ page.fill('#wf_voice_text','This English sample uses clear native sentences and a natural spoken rhythm.')
+ page.click('#wf_voice_preview');page.wait_for_function("document.getElementById('wf_voice_status').textContent.includes('Прослушайте')")
+ assert len(speech)==2 and speech[-1][1:] == ('native-en-fixture','en'),speech
  assert not errors,errors
  browser.close()
 print('Numbered workflow E2E passed: navigation never generates; keys unique; model roles filtered; voice preview isolates synthesis; layouts fit; data preserved.')

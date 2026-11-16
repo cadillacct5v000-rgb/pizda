@@ -1795,21 +1795,24 @@ def qa_check(client, scene, path):
         if scene.get('channel_design'):
             from channel_design import guide
             desc += '\nMandatory approved design: ' + guide(scene['channel_design'])
-            if any(a['role']=='host' for a in scene.get('channel_overlays', [])):
+            if any(a['role'] in ('host','character_layer') for a in scene.get('channel_overlays', [])):
                 desc += '\nThe host is composited by the program AFTER this check. Do not reject the background because that host is absent.'
         chars = ", ".join(scene.get("characters") or [])
         user = f"Описание кадра: {desc}" + (f"\nПерсонажи по описанию: {chars}" if chars else "") + "\nОцени картинку."
         anchor = scene.get("location_reference_path")
         object_refs = [p for p in (scene.get('object_reference_paths') or {}).values() if os.path.isfile(p)]
-        if object_refs:
+        character_refs=[p for p in scene.get('character_reference_paths',[]) if os.path.isfile(p)]
+        if object_refs or character_refs:
             from PIL import Image, ImageOps
             import tempfile
-            references = object_refs + ([anchor] if anchor and os.path.isfile(anchor) else [])
+            references = character_refs + object_refs + ([anchor] if anchor and os.path.isfile(anchor) else [])
             system = qa_system + (' LEFT side contains object identity sheets and optionally the approved room, RIGHT side is the target shot. '
                 'Judge ONLY the RIGHT side; sheets/collages/text in reference panels are not defects. '
                 'Verify the recurring vehicle/object matches canonical body shape/type, colors, lights, wheels and interior, even across different rendering styles. '
                 'Different view, lighting, stylization, occlusion and narrated damage are allowed. A substituted vehicle model or color is a defect. '
                 'Also return identity_ok: true/false. Set false only for a visible identity contradiction, not hidden details.')
+            if character_refs:system+=' Also compare approved recurring character references: anatomy, proportions, silhouette, palette and distinctive markings. New pose/action is allowed; a different character or species is a defect. Do not impose one identity on unrelated animals.'
+            user += '\nApproved recurring characters: '+json.dumps([{k:a.get(k) for k in ('name','identity')} for a in scene.get('channel_characters',[])],ensure_ascii=False)
             user += '\nCanonical identities: ' + json.dumps(scene.get('recurring_objects') or {}, ensure_ascii=False)
             with tempfile.TemporaryDirectory(prefix='qa-objects-', dir=os.path.dirname(path)) as temp:
                 comparison = os.path.join(temp, 'comparison.png')
@@ -1824,6 +1827,7 @@ def qa_check(client, scene, path):
                     canvas.paste(view, (960+(960-view.width)//2,(1080-view.height)//2))
                 canvas.save(comparison)
                 j = client.see_json(system, user, comparison)
+            if character_refs and type(j.get('identity_ok')) is not bool:raise ValueError('Проверка не сравнила эталон персонажа.')
             if j.get('identity_ok') is False:
                 j = dict(j)
                 j.update(ok=False, issues='IDENTITY_MISMATCH: ' + str(j.get('issues') or 'wrong recurring object appearance'))
@@ -2179,7 +2183,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     write_json(state_path,state)
             # автоотбор: смотрим кадр; брак перерисовываем с подсказкой, что было не так; из вариантов берём лучший
             ok, score, issues = qa_check(ctx["qa"], s, path)
-            identity_failed = bool(object_refs) and issues.startswith("IDENTITY_MISMATCH:")
+            identity_failed = bool(object_refs or s.get("character_reference_paths")) and issues.startswith("IDENTITY_MISMATCH:")
             with lock:
                 QA_STATS["checked"] += 1
             cands = []
@@ -2210,7 +2214,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     break
                 model = m2
                 ok, score, issues = qa_check(ctx["qa"], s, path)
-                identity_failed = bool(object_refs) and issues.startswith("IDENTITY_MISMATCH:")
+                identity_failed = bool(object_refs or s.get("character_reference_paths")) and issues.startswith("IDENTITY_MISMATCH:")
                 with lock:
                     QA_STATS["checked"] += 1
             if cands:
@@ -2219,7 +2223,7 @@ def generate_all_images(ctx, scenes, style, job_dir, progress, refs, on_image=No
                     if identity_failed:
                         invalid_candidates.add(path)
                 eligible = [c for c in cands if c[1] not in invalid_candidates]
-                identity_failed = (bool(object_refs) and not eligible) or bool(s.get('channel_design') and not ok)
+                identity_failed = (bool(object_refs or s.get("character_reference_paths")) and not eligible) or bool(s.get('channel_design') and not ok)
                 best = (score, path) if ok and os.path.exists(path) else max(eligible or cands, key=lambda c: c[0])
                 if not ok and not identity_failed:
                     with lock:
@@ -2884,8 +2888,18 @@ def detect_language(text):
     letters = [ch for ch in t if ch.isalpha()]
     if not letters:
         return "ru"
+    # Distinct writing systems must not fall through to an English voice.
+    share=lambda low,high:sum(low<=ch<=high for ch in letters)/len(letters)
+    if share('\u3040','\u30ff')>.08:return 'ja'
+    if share('\uac00','\ud7af')>.2:return 'ko'
+    if share('\u3400','\u9fff')>.2:return 'zh'
+    for low,high,code in [('\u0900','\u097f','hi'),('\u0980','\u09ff','bn'),('\u0590','\u05ff','he'),('\u0370','\u03ff','el')]:
+        if share(low,high)>.3:return code
+    if share('\u0600','\u06ff')>.3:
+        return 'ur' if any(ch in t for ch in 'ٹڈڑںھ') else 'fa' if any(ch in t for ch in 'پژچگ') else 'ar'
     cyr = sum(1 for ch in letters if "\u0400" <= ch <= "\u04ff")
     if cyr / len(letters) > 0.3:
+        if any(ch in t for ch in "әғқңөұүһ"):return "kk"
         return "uk" if sum(t.count(ch) for ch in "іїєґ") > len(letters) * 0.004 else "ru"
     has = lambda s: any(ch in t for ch in s)
     if has("ąęłżźćńś"):
@@ -2929,12 +2943,18 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
                  "service": tts_service, "voice": voice_id or ""}
     if tts_service=="elysium":signature["model"]=cfg["elysium_tts_model"]
     source_delivery = cfg.get("_source_delivery") if tts_service in ("fastgen", "elevenlabs", "elysium") else None
+    import narration_rules
+    explicit_language=narration_rules.language_code(cfg.get("_tts_language"))
+    if explicit_language:
+        signature["language"]=explicit_language
+        source_delivery=narration_rules.voice_direction(source_delivery,explicit_language)
     if source_delivery:
         signature["source_delivery"] = source_delivery
     try:
         previous=read_json(out+'.json')
         legacy={"text_sha256":signature['text_sha256'],"service":logical_tts,"voice":(cfg.get('_legacy_tts_voice') or '')}
         if source_delivery:legacy['source_delivery']=source_delivery
+        if explicit_language:legacy['language']=explicit_language
         cached = previous == signature or bool(cfg.get('elysium_replace_fastgen') and logical_tts=='fastgen' and previous==legacy)
     except (OSError, ValueError):
         cached = False
@@ -2949,7 +2969,7 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
         raise SystemExit(f"Для озвучки выбран {tts_service}, но ключ не введён.")
     with open(os.path.join(job_dir, "script.txt"), "w", encoding="utf-8") as f:
         f.write(script_text)
-    lang = detect_language(script_text)
+    lang = explicit_language or detect_language(script_text)
     progress("tts", 0, 1, f"озвучиваю сценарий ({tts_service}, язык {lang})")
     if tts_service=='elysium':
         from elysium_media import ElysiumTTS
@@ -3324,6 +3344,7 @@ REWRITE_KEYS = {"elysium": "elysium_api_key", "openai": "openai_api_key", "anthr
 def rewrite_script(cfg, rw, progress, profile_callback=None):
     """Источник (ссылка YouTube или текст) → переписанный сценарий выбранной моделью."""
     import rewrite as rwmod
+    cfg={**cfg,**rw.get("_creative_options",{})}
     say = lambda m: progress("rewrite", 0, 1, m)
     cfg=replacement.effective(cfg,rw.get("_replacement_options"))
     rw={**rw,"engine":replacement.service(cfg,rw.get("engine") or cfg.get("rewrite_engine") or "fastgen")}
@@ -3374,7 +3395,7 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         import youtube_source
         import source_analysis
         source_video = youtube_source.video(url, source_dir, os.path.dirname(ffmpeg_bin()), say, **auth)
-        analysis_cfg = {**cfg, "source_analysis_engine": cfg.get("source_analysis_engine") or rw.get("engine") or cfg.get("rewrite_engine") or "fastgen", "source_montage": bool(rw.get("montage", cfg.get("source_montage", True)))}
+        analysis_cfg = {**cfg, "source_analysis_engine": cfg.get("source_analysis_engine") or rw.get("engine") or cfg.get("rewrite_engine") or "fastgen", "source_montage": False if cfg.get("enhancement_level")=="original" else bool(rw.get("montage", cfg.get("source_montage", True)))}
         profile = source_analysis.analyse(source_video, text, analysis_cfg, source_dir, say)
         profile = source_narration.attach_youtube(profile, source_video, url, cfg, source_dir, say)
         if profile_callback:
@@ -3384,6 +3405,12 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
     if not key:
         raise SystemExit(f"Для рерайта выбран {rwmod.ENGINE_NAMES.get(engine, engine)}, но его ключ не введён.")
     import studio
+    if cfg.get('enhancement_level')=='original':
+        import source_adaptation
+        client=studio.text_client({**cfg,'llm_engine':engine},say)
+        output,profile=source_adaptation.create(text,profile,cfg,os.path.join(data_dir(),'jobs','original_scripts'),client,say,language=rw.get('language') or cfg.get('rewrite_lang'))
+        if profile_callback:profile_callback(profile)
+        return output
     if cfg.get('enhancement_level','faithful') in ('enhanced','director'):
         if profile:
             profile=studio.with_direction(profile,cfg)
@@ -3410,6 +3437,8 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
         voice = tts_voice if tts_voice is not None else cfg.get("tts_voice", "")
         delivery=source_narration.delivery_of(source_profile)
         profile_identity=({'narration':delivery} if delivery else None) if (source_profile or {}).get('content_only') else source_profile
+        if (source_profile or {}).get('content_only') and (source_profile or {}).get('narration_language'):
+            profile_identity={**(profile_identity or {}),'language':source_profile['narration_language']}
         identity = json.dumps({"service": service, "voice": voice, "source_profile": profile_identity}, sort_keys=True, ensure_ascii=False)
         base += "_" + hashlib.sha256(identity.encode()).hexdigest()[:12]
         job_dir = os.path.join(data_dir(), "jobs", base)
@@ -3420,7 +3449,7 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
         if source_profile:
             write_json(os.path.join(job_dir, "source_profile.json"), source_profile)
         LAST_JOB_DIR = job_dir
-        voice_cfg = {**cfg, "_source_delivery": source_narration.delivery_of(source_profile)}
+        voice_cfg = {**cfg, "_source_delivery": source_narration.delivery_of(source_profile),"_tts_language":(source_profile or {}).get("narration_language")}
         audio_path = make_voiceover(voice_cfg, script_text.strip(), tts_service or cfg.get("tts_service") or "voicegen",
                                     tts_voice if tts_voice is not None else cfg.get("tts_voice", ""), job_dir, progress)
         return audio_path, job_dir, base

@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.23-dev"
+VERSION = "2.0.24-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -761,7 +761,7 @@ def run_voice_sample(text,cfg,service,voice):
     try:
         effective=replacement.effective(cfg)
         actual=replacement.service(effective,service)
-        identity=json.dumps([text,actual,effective['elysium_tts_voice'] if actual=='elysium' else voice,effective['elysium_tts_model'] if actual=='elysium' else None,cfg.get('_source_delivery')],sort_keys=True,ensure_ascii=False)
+        identity=json.dumps([text,actual,effective['elysium_tts_voice'] if actual=='elysium' else voice,effective['elysium_tts_model'] if actual=='elysium' else None,cfg.get('_source_delivery'),cfg.get('_tts_language')],sort_keys=True,ensure_ascii=False)
         import hashlib
         folder=Path(data_dir())/'jobs'/'voice_samples'/hashlib.sha256(identity.encode()).hexdigest()[:24]
         folder.mkdir(parents=True,exist_ok=True)
@@ -987,7 +987,11 @@ def run_studio(task_id,action,script,profile,board,cfg):
         result={'action':action,'script_hash':hashlib.sha256(script.encode()).hexdigest()}
         if action=='script':
             before=script
-            script=studio.improve_script(script,profile,cfg,root/'scripts',say,client)
+            if cfg.get('enhancement_level')=='original':
+                import source_adaptation
+                script,profile=source_adaptation.create(script,profile,cfg,root/'original_scripts',client,say)
+            else:
+                script=studio.improve_script(script,profile,cfg,root/'scripts',say,client)
             pipeline.check_cancel()
             result.update(script=script,script_hash=hashlib.sha256(script.encode()).hexdigest(),report=studio.editorial(script,None,before))
             profile=studio.with_direction(profile,cfg) if profile else None
@@ -1142,7 +1146,7 @@ class Api:
             except (ValueError,OSError):pass
         visual = profile.get('visual_style') or {}
         return {'ok': True, 'profile': {'name': 'Мой канал', 'description': visual.get('description',''),
-                'palette': visual.get('palette', []), 'faces': 'reference', 'layout': 'source', 'font': 'Arial', 'rules': ''},
+                'palette': visual.get('palette', []), 'faces': 'reference', 'layout': 'source', 'font': 'Arial', 'rules': '', 'presentation':profile.get('narrative_style',''), 'delivery':__import__('source_narration').delivery_of(profile), 'voices':{}},
                 'has_source': bool(visual)}
 
     def channel_design_capture(self, name='Мой канал', board_id=None):
@@ -1161,17 +1165,17 @@ class Api:
                     if 0<=index<len(shots):
                         path=shots[index].get('reference_frame')
                         if path and Path(path).is_file() and path not in paths:paths.append(path)
-                if not paths:raise ValueError('Опорные кадры исходника недоступны. Откройте сохранённую раскадровку с её файлами.')
+                if not paths and not source.get('content_only'):raise ValueError('Опорные кадры исходника недоступны. Откройте сохранённую раскадровку с её файлами.')
                 from channel_design import DesignStore
                 store=DesignStore(data_dir())
                 profile=store.save({'name':name,'description':visual['description'],'palette':visual.get('palette',[]),
-                                    'faces':'reference','layout':'source','font':'Arial','rules':''})
+                                    'faces':'reference','layout':'source','font':'Arial','rules':'','presentation':source.get('narrative_style',''),'delivery':__import__('source_narration').delivery_of(source)})
                 for path in paths:profile=store.import_asset(profile['id'],profile['revision'],path,'reference')
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
             return {'ok':True,'profile':profile}
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
 
-    def channel_design_learn(self,name,url):
+    def channel_design_learn(self,name,url,adapt=False,changes=''):
         try:
             from channel_design import validate
             import youtube_source
@@ -1186,15 +1190,22 @@ class Api:
             import source_analysis
             from channel_design import DesignStore
             cfg=load_cfg();source_analysis._provider(cfg)
+            client=studio.text_client(cfg) if adapt else None
             say=lambda text:progress_cb('prepare',0,1,text)
             folder=Path(data_dir(),'jobs','channel_learning')
             video=youtube_source.video(url,Path(data_dir(),'jobs','youtube_sources'),str(Path(pipeline.ffmpeg_bin()).parent),say,
                                        cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
             learned=source_analysis.analyse_design(video,cfg,folder,say)
             pipeline.check_cancel();visual=learned['visual_style'];store=DesignStore(data_dir())
-            profile=store.save({'name':name,'description':visual['description'],'palette':visual['palette'],
-                                'rules':visual['character_design'][:4000],'faces':'reference','font':'Arial','layout':'source'})
-            for frame in learned['reference_frames']:profile=store.import_asset(profile['id'],profile['revision'],frame,'reference')
+            if adapt:
+                from channel_design import adapt_visual
+                say('создаю своё оформление по принципам референса')
+                value=adapt_visual(visual,name,changes,client,folder/'own-designs',say)
+                pipeline.check_cancel();profile=store.save(value)
+            else:
+                profile=store.save({'name':name,'description':visual['description'],'palette':visual['palette'],
+                                    'rules':visual['character_design'][:4000],'faces':'reference','font':'Arial','layout':'source'})
+                for frame in learned['reference_frames']:profile=store.import_asset(profile['id'],profile['revision'],frame,'reference')
             pipeline.check_cancel()
             with LOCK:
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
@@ -1213,7 +1224,7 @@ class Api:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 from channel_design import DesignStore
                 store=DesignStore(data_dir());profile=store.save(value,key,revision)
-                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);__import__('channel_design').activate_voice(cfg,profile);save_cfg(cfg)
             return {'ok': True, 'profile': profile}
         except (ValueError,OSError) as error:return {'ok': False, 'error': str(error)}
 
@@ -1222,11 +1233,11 @@ class Api:
             with LOCK:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
                 profile=selected_channel_design({'channel_design_id':key,'channel_design_revision':revision}) if key else None
-                cfg=load_cfg();cfg.update(channel_design_id=profile['id'] if profile else '',channel_design_revision=profile['revision'] if profile else None);save_cfg(cfg)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'] if profile else '',channel_design_revision=profile['revision'] if profile else None);__import__('channel_design').activate_voice(cfg,profile);save_cfg(cfg)
             return {'ok': True, 'profile': profile}
         except (ValueError,OSError) as error:return {'ok': False,'error':str(error)}
 
-    def channel_design_import(self, key, revision, role='reference'):
+    def channel_design_import(self, key, revision, role='reference', metadata=None):
         try:
             with LOCK:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
@@ -1235,7 +1246,7 @@ class Api:
             with LOCK:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Программа уже занята.')
                 from channel_design import DesignStore
-                profile=DesignStore(data_dir()).import_asset(key,revision,selected[0],role)
+                profile=DesignStore(data_dir()).import_asset(key,revision,selected[0],role,metadata)
                 cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision']);save_cfg(cfg)
             return {'ok':True,'profile':profile}
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
@@ -1337,6 +1348,10 @@ class Api:
             if logical!='edge' and not cfg.get(keyfield):raise ValueError('Введите ключ '+logical+' в «Подключениях».')
             import source_narration
             cfg['_source_delivery']=source_narration.delivery_of(opts.get('source_profile'))
+            import narration_rules
+            if opts.get('language') and not narration_rules.language_code(opts['language']):raise ValueError('Выберите поддерживаемый язык пробы.')
+            cfg['_tts_language']=narration_rules.language_code(opts.get('language'))
+            if narration_rules.wrong_script(text,opts.get('language')):raise ValueError('Текст пробы написан не в письменности выбранного языка. Проверьте язык до синтеза.')
             with LOCK:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
                     raise ValueError('Дождитесь текущей задачи или остановите её.')
@@ -1603,6 +1618,8 @@ class Api:
             "text_engine": cfg.get("text_engine", "fastgen"),
             "openai_model": cfg.get("openai_model", "gpt-4.1-mini"),
             "theme": cfg.get("theme", "dark"),
+            "voice_languages":{code:label for label,code in __import__("narration_rules").LANGUAGES.items()},
+            "channel_voices":cfg.get("channel_voices",{}),
             "studio": studio.settings(cfg), "studio_configured": bool(cfg.get("studio_configured")), "youtube_sample_start": cfg.get("youtube_sample_start",0),
             "providers": [p for p in (cfg.get("image_providers") or []) if p in pipeline.PROVIDERS],
             "keys": {p: [mask(k) for k in pipeline.provider_keys(cfg, p)] for p in pipeline.PROVIDERS},
@@ -1997,7 +2014,7 @@ class Api:
         rw = opts.get("rewrite") or {}
         if not rw.get("on"):
             return None
-        return {"on": True, "_replacement_options":selected, "montage": bool(rw.get("montage", cfg.get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", cfg.get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
+        return {"on": True, "_creative_options":{**studio.settings({**cfg,**(opts.get("studio") or {})}),"custom_style":opts.get("custom_style",cfg.get("custom_style","")),"style":opts.get("style",cfg.get("style"))}, "_replacement_options":selected, "montage": bool(rw.get("montage", cfg.get("source_montage", True))), "analyze_video": bool(rw.get("analyze_video", cfg.get("youtube_analyze_video", True))), "source": rw.get("source") or "youtube", "url": (rw.get("url") or "").strip(), "text": (rw.get("text") or "").strip(),
                 "engine": rw.get("engine") or "fastgen", "words": rw.get("words") or 1500, "language": (rw.get("language") or cfg.get("rewrite_lang") or ("русском" if cfg.get("lang","ru")=="ru" else "английском")).strip()}
 
     def _validate(self, opts, providers):
@@ -2137,7 +2154,7 @@ class Api:
         rw = self._rewrite_opts(opts)
         if not rw:
             return {"ok": False, "error": "Рерайт не включён."}
-        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
+        cfg = load_cfg();cfg.update(replacement.settings(cfg,opts));cfg.update(rw["_creative_options"])
         if rw["source"] == "youtube" and not rw["url"]:
             return {"ok": False, "error": "Вставьте ссылку на ролик YouTube."}
         if rw["source"] == "text" and not rw["text"]:
@@ -2284,7 +2301,7 @@ class Api:
                              'narrative_style':'','montage':{'shots':[]},'sampling':{'method':'own_script','duration':0.,'frame_count':0}}
             elif not ((profile.get('montage') or {}).get('shots')):
                 profile['content_only']=True;profile['montage']={'shots':[]}
-            if opts.get('enhance'):profile=studio.with_direction(profile,{**cfg,**(opts.get('studio') or {})})
+            if opts.get('enhance') or (opts.get('studio') or {}).get('enhancement_level')=='original':profile=studio.with_direction(profile,{**cfg,**(opts.get('studio') or {})})
             with LOCK:
                 if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
                     return {'ok':False,'error':'Программа уже занята.'}

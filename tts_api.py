@@ -286,7 +286,13 @@ class EdgeTTS:
     DEFAULT_VOICE = "ru-RU-DmitryNeural"
     DEFAULT_BY_LANG = {"ru": "ru-RU-DmitryNeural", "uk": "uk-UA-OstapNeural", "en": "en-US-GuyNeural", "pl": "pl-PL-MarekNeural",
                        "de": "de-DE-ConradNeural", "es": "es-ES-AlvaroNeural", "fr": "fr-FR-HenriNeural", "it": "it-IT-DiegoNeural",
-                       "pt": "pt-BR-AntonioNeural", "tr": "tr-TR-AhmetNeural"}
+                       "pt": "pt-BR-AntonioNeural", "tr": "tr-TR-AhmetNeural",
+                       "zh":"zh-CN-YunxiNeural","ja":"ja-JP-KeitaNeural","hi":"hi-IN-MadhurNeural","bn":"bn-BD-PradeepNeural",
+                       "ar":"ar-SA-HamedNeural","ur":"ur-PK-AsadNeural","id":"id-ID-ArdiNeural","vi":"vi-VN-NamMinhNeural",
+                       "ko":"ko-KR-InJoonNeural","fa":"fa-IR-FaridNeural","nl":"nl-NL-MaartenNeural","ro":"ro-RO-EmilNeural",
+                       "el":"el-GR-NestorasNeural","cs":"cs-CZ-AntoninNeural","hu":"hu-HU-TamasNeural","sv":"sv-SE-MattiasNeural",
+                       "kk":"kk-KZ-DauletNeural","uz":"uz-UZ-SardorNeural","az":"az-AZ-BabekNeural","he":"he-IL-AvriNeural",
+                       "fi":"fi-FI-HarriNeural","da":"da-DK-JeppeNeural","no":"nb-NO-FinnNeural"}
     CHUNK = 1000
     WORKERS = 4
 

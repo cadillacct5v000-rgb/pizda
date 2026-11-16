@@ -715,7 +715,7 @@ async function prepareYouTube() {
   if (!url) { $('s_prep').textContent = 'Вставьте ссылку исходного ролика YouTube.'; return; }
   F.rwUrl = url; rwSrc = 'youtube'; source = 'script';
   $('use_rw').checked = true; $('use_tts').checked = true;
-  youtubeAutoBoard = true;
+  youtubeAutoBoard = $('studio_level').value!=='original';
   mark();
   try {
     await pywebview.api.save_config({rewrite:true,rewrite_source:'youtube',rewrite_url:url,source:'script',youtube_analyze_video:analyzeVideo,source_montage:sourceMontage,studio:window.studioFields?studioFields():{}});
@@ -770,6 +770,7 @@ async function pollRewrite() {
   }
 }
 function renderReview(script) {
+  const ownOriginal=!!(boardState?.profile||reviewSourceProfile)?.adaptation;
   const channelMode = !!reviewSourceProfile?.content_only || !!boardState?.channel_design_ref;
   const montageMode = !channelMode && !!(reviewSourceProfile && reviewSourceProfile.montage);
   if (montageMode || boardState) $('use_motion').checked = false;
@@ -780,17 +781,27 @@ function renderReview(script) {
   const row = (k, v, ctl) => rows.push(`<div class="${ctl ? 'ctlrow' : ''}"><span>${k}</span><span>${ctl ? v : esc(v)}</span></div>`);
   const sw = (id, on, txt) => `<label class="sw"><input type="checkbox" id="${id}"${on ? ' checked' : ''}><i></i><b>${on ? t(txt[0]) : t(txt[1])}</b></label>`;
   row(t('rv_services'), p.map(k => SVC_TITLES[k]).join(', ') || t('rv_none'));
+  const adaptation=(boardState?.profile||reviewSourceProfile)?.adaptation;
+  if(adaptation){
+    if((boardState?.profile||reviewSourceProfile)?.narration_language)row('Язык готового сценария',(boardState?.profile||reviewSourceProfile).narration_language);
+    row('Свой подход',adaptation.angle);
+    row('Берём за ориентир',(adaptation.keep||[]).join(' · '));
+    row('Меняем и добавляем',(adaptation.change||[]).join(' · '));
+    row('Проверка фактов',adaptation.claim_review||'Проверьте утверждения перед публикацией.');
+    if(adaptation.facts_to_verify?.length)row('Требует перепроверки',adaptation.facts_to_verify.map(item=>item.claim+' — '+item.note).join(' · '));
+  }
   if(boardState?.sample)row('Проба исходника',`${boardState.sample.start}–${boardState.sample.start+boardState.sample.source_seconds} с · только этот отрезок`);
-  if(boardState)row(L==='ru'?'Постановка':'Storyboard', ({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
+  if(boardState)row(L==='ru'?'Постановка':'Storyboard', ({original:'Самостоятельный ролик по референсу',enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   if (reviewSourceProfile) {
-    row(channelMode ? 'Сохранённый дизайн канала' : (L === 'ru' ? 'Стиль исходного ролика' : 'Source video style'), reviewSourceProfile.visual_style.description);
+    row(ownOriginal ? 'Собственное визуальное решение' : channelMode ? 'Сохранённый дизайн канала' : (L === 'ru' ? 'Стиль исходного ролика' : 'Source video style'), reviewSourceProfile.visual_style.description);
     const sample = reviewSourceProfile.sampling;
-    if(channelMode)row('Источник содержания','Только субтитры/транскрипция. Кадры, стиль и склейки исходника не анализировались.');
+    if(ownOriginal&&sample?.frame_count)row('Изучен референс',`${sample.frame_count} выборочных кадров и полный текст. Исходные планы и изображения не используются в новой постановке.`);
+    else if(channelMode)row('Источник содержания','Только субтитры/транскрипция. Кадры, стиль и склейки исходника не анализировались.');
     else row(L === 'ru' ? 'Проверено при анализе' : 'Analysis coverage', L === 'ru' ? (montageMode ? `Планов исходника: ${reviewSourceProfile.montage.shots.length}. Ритм найденных склеек; движение оценено по трём кадрам на план. Плавные переходы и звук не переносятся.` : `Весь исходный текст; ${sample.frame_count} выборочных кадров. Монтаж и звук не переносятся.`) : `Complete source text; ${sample.frame_count} frames across the full duration. Exact transitions and audio were not analysed.`);
   }
   row(t('regime'), sel('rv_mode', [['images', t('m_images')], ['mixed', t('m_mixed')], ['video', t('m_video')]], mode()), true);
   row(t('speed') + ' / ' + t('quality'), sw('rv_fgq', fgq() === 'quality', ['quality', 'speed']), true);
-  row(t('style_lbl'), (hasSourceStyle ? `<select id="rv_style" disabled><option>${channelMode?'Дизайн канала':(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style')}</option></select>` : sel('rv_style', styleOpts(false), styleKey)) + (!hasSourceStyle && styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
+  row(t('style_lbl'), (hasSourceStyle ? `<select id="rv_style" disabled><option>${ownOriginal?'Свой дизайн по референсу':channelMode?'Дизайн канала':(L === 'ru' ? 'Стиль исходного ролика' : 'Source video style')}</option></select>` : sel('rv_style', styleOpts(false), styleKey)) + (!hasSourceStyle && styleKey === 'custom' ? `<span class="note">${esc(customStyle())}</span>` : ''), true);
   if (animationOptions().strategy!=='legacy') row('Оживление', $('animation_strategy').selectedOptions[0].textContent+' · лимит '+animationOptions().limit);
   if (animationOptions().strategy==='legacy' && mode() !== 'video') row(t('rv_vf'), (vf() ? plural(vf(), t('vf_scenes')) : t('vf_none')) + (mode() === 'mixed' ? ' ' + t('rv_vf_mixed') : ''));
   row(t('o_rw'), rwOn() ? (rwSrc === 'youtube' ? F.rwUrl : t('rw_text_src')) + ` · ${F.rwWords} ${t('rv_words')} · ${langName(F.rwLang)}` : t('rv_no'));
@@ -1175,7 +1186,7 @@ function renderAccess() {
     }
     if (rwSrc === 'youtube' && analyzeVideo) {
       H.push(row(L === 'ru' ? 'Анализ исходника' : 'Source analysis', LINKS[analysisEngine] || SVC_LINKS[analysisEngine] || '', sel('analysis_engine', [['fastgen','fast-gen · Gemini'],['elysium','Elysium'],['gemini','Gemini API'],['openai','OpenAI API'],['anthropic','Claude API']], analysisEngine) + (analysisEngine === 'fastgen' ? `<button class="ghost" id="analysis_access_check" onclick="checkSourceAnalysisAccess()">${L === 'ru' ? 'Проверить доступ к кадрам' : 'Check image access'}</button>` : keyIn('k_analysis', analysisEngine, 0, single[analysisEngine] || '', RW_PH[analysisEngine]) + eye('k_analysis') + sel('analysis_model', modelOptions(analysisEngine, analysisModel || models[analysisEngine + '_model'], 'vision'), analysisModel || models[analysisEngine + '_model']) + chk('analysis', 0, 's_analysis') + modelButton(analysisEngine, 'analysis_model', 's_analysis')), 's_analysis'));
-      H.push(`<div class="note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника. Картинки или клипы — по выбранному режиму. Найденный ритм склеек подстраивается под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
+      H.push(`<div class="note" id="source_processing_note">${L === 'ru' ? (sourceMontage ? 'Новые кадры по планам исходника. Картинки или клипы — по выбранному режиму. Найденный ритм склеек подстраивается под новую озвучку. Плавные переходы, титры, музыка и точные движения камеры не воспроизводятся. Анализ и генерация каждого плана расходуют кредиты.' : 'Палитра и композиция по выборочным кадрам. Монтаж и звук не переносятся.') : (sourceMontage ? 'New shots following detected source cuts and rhythm, adapted to the new narration. Dissolves, titles, music and exact camera motion are not reproduced. Analysis and video generation incur per-shot charges.' : 'Palette and composition from sampled frames. Editing and audio are not transferred.')}</div>`);
     }
     H.push(row(t('rw_size'), '', `<input type="number" id="rw_words" ${rwSrc === 'youtube' && analyzeVideo ? 'disabled' : ''} min="100" max="20000" step="100" value="${esc(F.rwWords)}" title="${esc(t('rw_words'))}"><span class="note unit">${rwSrc === 'youtube' && analyzeVideo ? (L === 'ru' ? 'полный объём исходника' : 'full source length') : t('rv_words')}</span>${sel('rw_lang', LANGS.map(l => [l, langName(l)]).concat(LANGS.includes(F.rwLang) ? [] : [[F.rwLang, F.rwLang]]), F.rwLang)}`));
     const rk = (rwEngine === 'fastgen' && fg) ? `<span class="note">${t('same_key')}</span>` : keyIn('k_rw', rwEngine, 0, rwKeys[rwEngine] || '', RW_PH[rwEngine]) + eye('k_rw') + chk(rwEngine, 0, 's_rw');
@@ -1280,7 +1291,7 @@ function bindAccess() {
   on('youtube_source_url', 'input', () => { F.rwUrl = $('youtube_source_url').value; });
   on('youtube_source_url', 'change', () => { F.rwUrl = $('youtube_source_url').value.trim(); pywebview.api.save_config({rewrite_url:F.rwUrl}); });
   on('rw_words', 'change', () => { syncF(); pywebview.api.save_config({rewrite_words: F.rwWords}); });
-  on('rw_lang', 'change', () => { syncF(); pywebview.api.save_config({rewrite_lang: F.rwLang}); });
+  on('rw_lang', 'change', async () => { syncF();const language=F.rwLang;await pywebview.api.save_config({rewrite_lang:language});if(window.workflowUseChannelVoice&&await workflowUseChannelVoice(language))renderAccess(); });
   on('tts_voice', 'change', () => { syncF(); pywebview.api.save_config({tts_voice: F.voice}); });
   on('tts_voice', 'input', showVoice);
   on('rw_text', 'input', syncF); on('script', 'input', syncF);
@@ -1616,8 +1627,14 @@ function renderStoryboard() {
   if (!boardState) return;
   const rows = boardState.rows.slice(boardPage * 20, boardPage * 20 + 20);
   $('board_count').textContent = boardText(`Планов: ${boardState.rows.length}. Страница ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`, `Plans: ${boardState.rows.length}. Page ${boardPage + 1}/${Math.ceil(boardState.rows.length / 20)}`);
-  $('board_count').textContent += ' · ' + (({enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
+  $('board_count').textContent += ' · ' + (({original:'Самостоятельный ролик по референсу',enhanced:'Улучшенная версия',director:'Расширенная постановка'})[boardState.creative_direction?.enhancement_level] || 'По исходнику / ручная');
   if(boardState.sample)$('board_count').textContent += ` · Проба ${boardState.sample.source_seconds.toFixed(1)} с`;
+  let originalSummary=$('board_original_summary');
+  if(!originalSummary){originalSummary=document.createElement('div');originalSummary.id='board_original_summary';originalSummary.className='wf-help';$('board_rows').before(originalSummary);}
+  const adaptation=boardState.profile?.adaptation;
+  originalSummary.hidden=!adaptation;
+  if(adaptation)originalSummary.innerHTML='<strong>Самостоятельный замысел: '+esc(adaptation.angle)+'</strong><p><b>Берём за ориентир:</b> '+esc((adaptation.keep||[]).join(' · '))+'</p><p><b>Меняем и добавляем:</b> '+esc((adaptation.change||[]).join(' · '))+'</p><p>'+esc(adaptation.claim_review||'Проверьте факты перед публикацией.')+' Смена оформления не заменяет самостоятельного содержания и не гарантирует решение YouTube.</p>';
+  if(adaptation?.facts_to_verify?.length){const details=document.createElement('details');details.innerHTML='<summary>Утверждения для перепроверки: '+adaptation.facts_to_verify.length+'</summary><ul>'+adaptation.facts_to_verify.map(item=>'<li>'+esc(item.claim)+' — '+esc(item.note)+'</li>').join('')+'</ul>';originalSummary.appendChild(details);}
   $('board_rows').innerHTML = rows.map((r, i) => `<article class="board-row" data-row="${esc(r.id)}">
     <div class="board-ref"><img alt="${boardText('Референс исходного плана', 'Source shot reference')}" data-reference="${esc(r.id)}"><strong>${boardText('План', 'Plan')} ${boardPage * 20 + i + 1}</strong>
     <span class="board-confidence ${r.confidence === 'low' ? 'low' : ''}">${esc(({high:boardText('Уверенная привязка','Strong match'),medium:boardText('Проверьте привязку','Review match'),low:boardText('Нужно проверить','Needs review'),manual:boardText('Выбрано вручную','Manually selected')})[r.confidence] || r.confidence)}</span>
@@ -1672,7 +1689,8 @@ async function storyboardPreview() {
 <dialog id="studio_dialog">
   <header class="studio-head"><div><h2>Режиссёрская студия</h2><p>Сохраняем стиль и характер исходника. Усиливаем объяснение, детали и подачу.</p></div><button class="ghost" onclick="closeStudio()">Закрыть</button></header>
   <div class="studio-layout"><aside class="studio-settings">
-    <label>Версия ролика<select id="studio_level"><option value="faithful">Близко к исходнику</option><option value="enhanced" selected>Улучшенная версия</option><option value="director">Расширенная постановка</option></select></label>
+    <label>Версия ролика<select id="studio_level"><option value="original" selected>Самостоятельный ролик по референсу</option><option value="faithful">Близко к исходнику</option><option value="enhanced">Улучшенная версия</option><option value="director">Расширенная постановка</option></select></label>
+    <label>Свой визуал<select id="studio_original_visual"><option value="reference">По принципам референса, со своим дизайном</option><option value="custom">Мой выбранный стиль</option></select></label>
     <label>Темп монтажа<select id="studio_pace"><option value="source">По исходнику</option><option value="calm">Спокойный</option><option value="balanced" selected>Сбалансированный</option><option value="dynamic">Динамичный</option></select></label>
     <label>Детализация кадров<select id="studio_detail"><option value="balanced">Умеренная</option><option value="rich" selected>Богатая, по смыслу</option></select></label>
     <label>Отрисовка<select id="studio_quality"><option value="balanced">Обычное качество</option><option value="high" selected>HD-модели и референсы</option></select></label>
@@ -1711,8 +1729,10 @@ async function storyboardPreview() {
   <label>Профили<select id="cd_profiles" onchange="channelDesignView()"><option value="">Новый профиль</option></select></label><button class="ghost small" onclick="channelDesignView()">Открыть последнюю версию выбранного профиля</button>
   <p>После сохранения профиля новые ссылки используются только как содержание: субтитры или транскрипция. Чужие кадры, стиль и склейки повторно не анализируются.</p>
   <label>Образец понравившейся стилистики<input id="cd_source_url" placeholder="Ссылка YouTube — для однократного изучения дизайна"></label>
-  <button class="ghost" onclick="channelDesignAction('learn')">Однократно изучить стиль по ссылке</button>
-  <p>Это анализ нескольких кадров, без разбора всех сцен и озвучки. Если исходник уже разобран, кнопка «Сохранить дизайн из исходника» использует готовый анализ без нового запроса.</p>
+  <label><input id="cd_adapt" type="checkbox" checked>Создать своё оформление по принципам референса</label>
+  <label>Что изменить<textarea id="cd_changes" maxlength="4000" placeholder="Например: холодная бирюзовая гамма, контрастные подписи, свои персонажи; сохранить плоскую рисовку и безликие фигуры"></textarea></label>
+  <button class="ghost" onclick="channelDesignAction('learn')">Изучить образец и подготовить дизайн · платно</button>
+  <p>Изучаются несколько кадров, без разбора всех сцен и озвучки. Адаптация оформления добавляет текстовый запрос; успешные ответы сохраняются. Если исходник уже разобран, кнопка «Сохранить дизайн из исходника» использует готовый анализ без нового запроса.</p>
   <button id="cd_cancel" class="danger" hidden onclick="pywebview.api.cancel()">Остановить изучение</button>
   <label>Название<input id="cd_name" maxlength="120" value="Мой канал"></label>
   <label>Описание стиля<textarea id="cd_description" rows="4" maxlength="6000" placeholder="Рисовка, пропорции персонажей, фоны, степень детализации"></textarea></label>
@@ -1721,12 +1741,18 @@ async function storyboardPreview() {
   <label>Оформление схем<select id="cd_layout"><option value="source">По описанию и референсам</option><option value="minimal">Минимальное: 1–2 объекта, свободное место</option></select></label>
   <label>Движение<select id="cd_motion"><option value="local">Монтаж из картинок и слоёв — без нейрооживления</option><option value="generated">Генерация видеоклипов — нужна проверка пробой</option></select></label><label>Шрифт подписей<select id="cd_font"><option>Arial</option><option>Intro Demo Black CAPS</option></select></label>
   <label>Постоянные правила<textarea id="cd_rules" rows="3" maxlength="4000" placeholder="Что сохранять, что запрещено менять"></textarea></label>
+  <h3>Подача и голоса канала</h3>
+  <label>Характер рассказа<textarea id="cd_presentation" maxlength="4000" placeholder="Темп раскрытия мысли, юмор, драматичность, характер объяснений"></textarea></label>
+  <button class="ghost" onclick="channelDesignCopyDelivery()">Взять подачу из текущего анализа · без нового запроса</button><p id="cd_delivery_status"></p>
+  <label>Язык голоса<select id="cd_voice_language"></select></label><button class="ghost" onclick="channelDesignRememberVoice()">Закрепить голос, выбранный на шаге 4</button><pre id="cd_voices" style="white-space:pre-wrap"></pre>
+  <p>Один характер канала, разные голоса и естественные фразы для разных языков. Сначала прослушайте пробу нужного языка. Здесь не сохраняются API-ключи.</p>
   <div class="row"><button onclick="channelDesignAction('save')">Сохранить и использовать</button><button class="ghost" onclick="channelDesignAction('select')">Использовать выбранный</button></div>
   <div class="row"><button class="ghost" onclick="channelDesignAction('capture')">Сохранить дизайн из исходника</button><button class="ghost" onclick="channelDesignAction('source')">Дизайн текущего исходника</button></div>
   <h3>Утверждённые изображения</h3>
   <p>Эталон передаётся модели как образец. Ведущий и логотип с прозрачным фоном накладываются программой после оживления и не перерисовываются: ведущий — на схемы, логотип — на все кадры. Готовый ведущий остаётся статичным.</p>
   <pre id="cd_assets" style="white-space:pre-wrap"></pre>
-  <div class="row"><select id="cd_role"><option value="reference">Эталон дизайна</option><option value="host">Ведущий — прозрачный PNG/WebP</option><option value="logo">Логотип — прозрачный PNG/WebP</option></select><button id="cd_import" onclick="channelDesignAction('import')" disabled>Добавить файл</button></div>
+  <div class="row"><select id="cd_role" onchange="channelDesignRole()"><option value="reference">Эталон дизайна</option><option value="host">Ведущий — прозрачный PNG/WebP</option><option value="logo">Логотип — прозрачный PNG/WebP</option><option value="character">Персонаж — эталон для новых ракурсов</option><option value="character_layer">Персонаж — тот же готовый прозрачный слой</option></select><button id="cd_import" onclick="channelDesignAction('import')" disabled>Добавить файл</button></div>
+  <div id="cd_character_fields" hidden><label>Точные обозначения этого персонажа<textarea id="cd_aliases" placeholder="Кит Вилли, Willy the whale — через запятую; добавьте английское имя для визуальных промптов"></textarea></label><label>Неизменяемая внешность<textarea id="cd_identity" maxlength="2000" placeholder="Вид, силуэт, пропорции, цвета, отметины. Это один конкретный герой, а не все киты."></textarea></label><p>Эталон используется только в сценах с этими точными обозначениями. Новые ракурсы требуют проверки: генератор может отклониться. Готовый прозрачный слой накладывается без перерисовки снизу слева и остаётся статичным.</p></div>
   <p>Сохранение профиля не запускает платные запросы. Другой дизайн может потребовать новых картинок: сначала проверьте 30-секундную пробу. Старые материалы сохраняются.</p>
   <p id="cd_status" role="status"></p>
   <button class="ghost" onclick="$('channel_design_dialog').close()">Закрыть</button>

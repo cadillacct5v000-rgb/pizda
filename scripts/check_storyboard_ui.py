@@ -28,7 +28,7 @@ profile={'visual_style':{'description':'cinematic painting','palette':['red','bl
               for i,desc in enumerate(['A cat inside a red room.','A spaceship near a blue planet.'])]}}
 script='The spaceship slowly approaches the blue planet today. The cat waits patiently inside a red room.'
 app.save_cfg({'source':'script','tts_service':'edge','image_providers':['fastgen'],'fastgen_api_key':'browser-fixture',
-              'llm_engine':'fastgen','stt_engine':'fastgen','music_volume':0,'lang':'ru','rewrite':True})
+              'llm_engine':'fastgen','stt_engine':'fastgen','music_volume':0,'lang':'ru','rewrite':True,'studio_configured':True,'enhancement_level':'enhanced'})
 app.STATE.update(source_profile=profile,source_profile_id='test-profile',script=script,running=False,preparing=False,queue_active=False)
 def chat(self,system,user,**kwargs):
  data=json.JSONDecoder().raw_decode(user.split('Reference JSON:\n')[1])[0]

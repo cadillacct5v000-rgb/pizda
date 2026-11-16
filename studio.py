@@ -8,7 +8,7 @@ import re
 import netutil
 import model_reply
 
-LEVELS = ('faithful', 'enhanced', 'director')
+LEVELS = ('faithful', 'enhanced', 'director', 'original')
 PACES = ('source', 'calm', 'balanced', 'dynamic')
 CAPTIONS = ('source', 'focus', 'panel', 'minimal')
 ROLES = ('hook', 'explain', 'example', 'contrast', 'reveal', 'resolve')
@@ -21,6 +21,7 @@ def settings(cfg=None):
         value = cfg.get(name)
         return value if value in allowed else default
     return {'enhancement_level': pick('enhancement_level', LEVELS, 'enhanced'),
+            'original_visual': pick('original_visual', ('reference','custom'), 'reference'),
             'editing_pace': pick('editing_pace', PACES, 'balanced'),
             'visual_detail': pick('visual_detail', ('balanced', 'rich'), 'rich'),
             'caption_style': pick('caption_style', CAPTIONS, 'source'),
@@ -36,6 +37,8 @@ def direction(cfg):
 
 def with_direction(profile, cfg):
     result = copy.deepcopy(profile or {})
+    if settings(cfg)['enhancement_level']=='original' and (result.get('montage') or {}).get('shots') and not result.get('adaptation'):
+        raise ValueError('Для самостоятельной постановки сначала создайте самостоятельный сценарий: нужен новый замысел и свой визуальный стиль.')
     if settings(cfg)['enhancement_level']=='faithful':
         result.pop('creative_direction',None)
     else:
@@ -46,6 +49,9 @@ def with_direction(profile, cfg):
 def brief(cfg=None, *, plan_fields=True):
     cfg=settings(cfg)
     if cfg['enhancement_level']=='faithful':return ''
+    if cfg['enhancement_level']=='original':
+        from source_adaptation import BRIEF
+        return BRIEF + (' Every plan must include editorial_role (hook|explain|example|contrast|reveal|resolve), shot_size (wide|medium|close|detail|diagram), and optional overlay_text in the SAME LANGUAGE as the narration. Never ask the image model to render text. Keep visual prompts under 130 English words; use purposeful sequences and character continuity.' if plan_fields else '')
     common=('CREATIVE UPGRADE, not a new art direction. Preserve the source palette, linework, rendering technique, '
             'character design language, humour and narrative voice. Improve clarity and specificity. '
             'Every visual must explain the narrated idea, not decorate it. Show meaningful foreground/midground/background '
@@ -110,7 +116,11 @@ def _query(client, prompt, cache, progress=None):
 def improve_script(text, profile, cfg, directory, progress=None, client=None, *, language=None):
     import storyboard as sb
     from faithful_rewrite import source_chunks, _issue
+    original_cfg=cfg or {}
     cfg=settings(cfg)
+    if cfg['enhancement_level']=='original':
+        from source_adaptation import create
+        return create(text,profile,{**original_cfg,**cfg},directory,client,progress,language=language)[0]
     if not text.strip():raise ValueError('Сценарий пуст.')
     if client is None:raise ValueError('Не выбран текстовый сервис.')
     identity=sb.digest([text,profile,direction(cfg),language])
@@ -120,7 +130,8 @@ def improve_script(text, profile, cfg, directory, progress=None, client=None, *,
     for index,chunk in enumerate(chunks):
         netutil.check_cancel()
         if progress:progress(f'улучшение сценария: часть {index+1}/{len(chunks)}')
-        prompt=('Improve this complete narration section while preserving the source facts, order of arguments, '
+        import narration_rules
+        prompt=(narration_rules.writing('script',language)+'Improve this complete narration section while preserving the source facts, order of arguments, '
                 'causal links, humour and recognisable delivery. Remove redundant phrases and filler, add clear '
                 'comparisons/explanations grounded in existing source information. Do not invent evidence, dates or numbers. '
                 'Only the first section should open with a concrete hook '
@@ -167,7 +178,8 @@ def editorial(script, board=None, source_script=None):
         phrase=' '.join(normalized[i:i+5]);repeats[phrase]=repeats.get(phrase,0)+1
     repeated=[{'phrase':k,'count':v} for k,v in repeats.items() if v>=3]
     rows=(board or {}).get('rows') or []
-    weak=[row['id'] for row in rows if row.get('source_shot') is None or row.get('confidence')=='low']
+    own_board=bool(((board or {}).get('profile') or {}).get('content_only'))
+    weak=[row['id'] for row in rows if row.get('confidence')=='low' or (not own_board and row.get('source_shot') is None)]
     sizes={};roles={}
     for row in rows:
         size=row.get('shot_size','unspecified');sizes[size]=sizes.get(size,0)+1

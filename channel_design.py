@@ -12,7 +12,7 @@ from storyboard import digest
 
 FACES = ('reference', 'blank', 'simple', 'detailed')
 FONTS = ('Arial', 'Intro Demo Black CAPS')
-ROLES = ('reference', 'host', 'logo')
+ROLES = ('reference', 'host', 'logo', 'character', 'character_layer')
 DEFAULT = object()
 FACE_RULES = {
     'reference': 'Match the facial-detail level of each supplied character reference. Blank human faces must stay blank; never invent eyes, nose, mouth, beard or realistic facial features where the reference has none.',
@@ -42,6 +42,21 @@ def validate(value):
     if not isinstance(palette,list) or len(palette)>12 or any(not isinstance(x,str) or len(x)>80 for x in palette):
         raise ValueError('Некорректная палитра.')
     result['palette']=[x.strip() for x in palette if x.strip()]
+    presentation=value.get('presentation','')
+    if not isinstance(presentation,str) or len(presentation)>4000:raise ValueError('Описание подачи должно быть до 4000 символов.')
+    result['presentation']=presentation.strip()
+    import source_narration
+    result['delivery']=source_narration.validate(value['delivery']) if value.get('delivery') else None
+    voices=value.get('voices',{})
+    import narration_rules
+    allowed=('edge','elevenlabs','fastgen','royal','voicegen','voicer','lumean','elysium')
+    if not isinstance(voices,dict) or len(voices)>40:raise ValueError('Некорректные голоса канала.')
+    result['voices']={}
+    for language,voice in voices.items():
+        if narration_rules.language_code(language)!=language or not isinstance(voice,dict) or voice.get('service') not in allowed:raise ValueError('Выберите язык и сервис голоса канала.')
+        item={key:voice.get(key,'') for key in ('service','id','elysium_voice','elysium_model')}
+        if any(not isinstance(v,str) or len(v)>300 for v in item.values()):raise ValueError('Некорректный ID голоса.')
+        result['voices'][language]=item
     return result
 
 
@@ -52,8 +67,10 @@ def fingerprint(profile):
 
 def generation_fingerprint(profile):
     value=validate(profile)
-    for key in ('name','font','motion_policy'):value.pop(key)
-    return digest({**value,'references':[a['sha256'] for a in profile.get('assets',[]) if a['role']=='reference'],
+    for key in ('name','font','motion_policy','presentation','delivery','voices'):value.pop(key)
+    reserved=[a.get('aliases',[]) for a in profile.get('assets',[]) if a['role']=='character_layer']
+    if reserved:value['reserved_characters']=reserved
+    return digest({**value,'references':[{k:a.get(k) for k in ('sha256','role','aliases','identity')} if a['role']=='character' else a['sha256'] for a in profile.get('assets',[]) if a['role'] in ('reference','character')],
                    'separate_host':any(a['role']=='host' for a in profile.get('assets',[]))})
 
 
@@ -68,13 +85,16 @@ def selected(root, cfg):
 def content_profile(profile, duration=0.):
     """A new story uses an existing design, never source frames or source cut mapping."""
     p=validate(profile)
-    return {'content_only':True,'channel_design_ref':{'id':profile['id'],'generation_key':generation_fingerprint(profile)},
+    result={'content_only':True,'channel_design_ref':{'id':profile['id'],'generation_key':generation_fingerprint(profile)},
             'visual_style':{'description':p['description'],'palette':p['palette'],
                             'character_design':FACE_RULES[p['faces']],
                             'composition':'Minimal explanatory layouts with generous empty space.' if p['layout']=='minimal' else 'Follow the approved channel layout.',
                             'shot_types':['wide','detail','diagram']},
-            'narrative_style':'','montage':{'shots':[]},
+            'narrative_style':p['presentation'],'montage':{'shots':[]},
             'sampling':{'method':'transcript_only','duration':float(duration),'frame_count':0}}
+    if p['delivery']:result['narration']={'delivery':copy.deepcopy(p['delivery'])}
+    result['character_registry']=[{k:a.get(k) for k in ('name','aliases','identity','role')} for a in profile.get('assets',[]) if a['role'] in ('character','character_layer')]
+    return result
 
 
 class DesignStore:
@@ -132,10 +152,10 @@ class DesignStore:
             raise ValueError('Утверждённый файл дизайна отсутствует или изменён. Восстановите папку jobs/channel_designs.')
         return path
 
-    def import_asset(self, key, revision, path, role='reference'):
+    def import_asset(self, key, revision, path, role='reference', metadata=None):
         if role not in ROLES:raise ValueError('Неизвестная роль изображения.')
         profile=self.get(key,revision)
-        replacing=role!='reference' and any(a['role']==role for a in profile['assets'])
+        replacing=role in ('host','logo') and any(a['role']==role for a in profile['assets'])
         if len(profile['assets'])>=6 and not replacing:raise ValueError('В профиле допускается до шести изображений.')
         raw=Path(path).read_bytes()
         if not 0<len(raw)<=8*1024*1024:raise ValueError('Изображение должно быть не больше 8 МБ.')
@@ -143,7 +163,7 @@ class DesignStore:
             if image.width*image.height>25_000_000 or image.format not in ('PNG','JPEG','WEBP'):
                 raise ValueError('Используйте PNG, JPG или WebP размером до 25 мегапикселей.')
             extension={'PNG':'png','JPEG':'jpg','WEBP':'webp'}[image.format]
-            if role!='reference' and ('A' not in image.getbands() or image.getextrema()[-1][0]==255):
+            if role in ('host','logo','character_layer') and ('A' not in image.getbands() or image.getextrema()[-1][0]==255):
                 raise ValueError('Для неизменяемого ведущего/логотипа нужен файл с прозрачным фоном (PNG или WebP).')
             image.load()
         sha=hashlib.sha256(raw).hexdigest();name=sha+'.'+extension
@@ -152,7 +172,13 @@ class DesignStore:
         target=directory/name
         if not target.exists():
             temporary=directory/(name+'.'+uuid.uuid4().hex+'.tmp');temporary.write_bytes(raw);temporary.replace(target)
-        assets=[a for a in profile['assets'] if not (replacing and a['role']==role)]+[{'file':name,'sha256':sha,'role':role,'name':Path(path).name[:160]}]
+        item={'file':name,'sha256':sha,'role':role,'name':Path(path).name[:160]}
+        if role in ('character','character_layer'):
+            metadata=metadata or {};aliases=metadata.get('aliases',[]);identity=metadata.get('identity','')
+            if not isinstance(aliases,list) or not 1<=len(aliases)<=20 or any(not isinstance(x,str) or not 1<=len(x.strip())<=120 for x in aliases):raise ValueError('Задайте 1–20 точных имён/обозначений персонажа, включая английское название для промптов.')
+            if not isinstance(identity,str) or not identity.strip() or len(identity)>2000:raise ValueError('Опишите неизменяемую внешность персонажа (до 2000 символов).')
+            item.update(aliases=[x.strip() for x in aliases],identity=identity.strip())
+        assets=[a for a in profile['assets'] if not (replacing and a['role']==role)]+[item]
         return self.save(profile,key,revision,assets=assets)
 
     def remove_asset(self,key,revision,index):
@@ -175,13 +201,21 @@ def guide(profile):
 def apply(scenes, profile, root):
     if not profile:return scenes
     store=DesignStore(root);refs=[str(store.asset_path(a)) for a in profile.get('assets',[]) if a['role']=='reference']
-    overlays=[{**a,'path':str(store.asset_path(a))} for a in profile.get('assets',[]) if a['role']!='reference']
+    overlays=[{**a,'path':str(store.asset_path(a))} for a in profile.get('assets',[]) if a['role'] in ('host','logo')]
+    characters=[a for a in profile.get('assets',[]) if a['role'] in ('character','character_layer')]
     signature=generation_fingerprint(profile);instruction=guide(profile);output=[]
     for original in scenes:
         scene=dict(original)
         diagram=(scene.get('shot')=='diagram' or scene.get('shot_size')=='diagram') or bool(re.search(r'diagram|infographic|white background|white canvas|схем|инфограф',str(scene.get('raw_prompt','')),re.I))
         selected=[a for a in overlays if a['role']=='logo' or diagram]
-        scene.update(channel_design_signature=signature,channel_design=profile,channel_references=refs,channel_overlays=selected)
+        text=' '.join(str(scene.get(k,'')) for k in ('text','narration','raw_prompt','prompt')).casefold()
+        matched=[a for a in characters if any(re.search(r'(?<!\w)'+re.escape(alias.casefold())+r'(?!\w)',text) for alias in a.get('aliases',[]))]
+        character_refs=[str(store.asset_path(a)) for a in matched if a['role']=='character']
+        selected += [{**a,'path':str(store.asset_path(a))} for a in matched if a['role']=='character_layer']
+        scene.update(channel_design_signature=signature,channel_design=profile,channel_references=refs+character_refs,channel_overlays=selected,channel_characters=matched,character_reference_paths=[str(store.asset_path(a)) for a in matched if a['role']=='character'])
+        for a in matched:
+            if a['role']=='character':scene['prompt']+=' APPROVED RECURRING CHARACTER '+a['name']+': '+a['identity']+'. The attached character artwork defines this identity, never the other animals or background. Preserve anatomy, silhouette, proportions, colours and distinctive markings; change only pose and action.'
+            else:scene['prompt']+=' The approved character '+a['name']+' will be composited separately at bottom-left. Do not draw it again; keep that area free.'
         scene['prompt']+=' '+instruction
         if any(a['role']=='host' for a in selected):
             scene['prompt']+=' The approved host will be composited separately in the bottom-left corner. Do not draw a second host; leave that area empty.'
@@ -216,3 +250,41 @@ def decorate_clip(scene, clip, directory, width, height, fps):
     if result.returncode:raise RuntimeError('Не удалось наложить утверждённые слои канала.')
     netutil.check_cancel();Path(temporary).replace(output)
     return str(output)
+
+
+def activate_voice(cfg, profile, language=None):
+    import narration_rules
+    code=narration_rules.language_code(language or cfg.get('rewrite_lang') or ('русском' if cfg.get('lang','ru')=='ru' else 'английском'))
+    cfg['channel_voices']=copy.deepcopy((profile or {}).get('voices',{}))
+    voice=cfg['channel_voices'].get(code)
+    if voice:
+        cfg.update(tts_service=voice['service'],tts_voice=voice['id'])
+        if voice['service']=='fastgen' and cfg.get('elysium_replace_fastgen'):
+            if voice.get('elysium_voice'):cfg['elysium_tts_voice']=voice['elysium_voice']
+            if voice.get('elysium_model'):cfg['elysium_tts_model']=voice['elysium_model']
+    return voice
+
+
+def adapt_visual(visual, name, changes, client, directory, progress=None):
+    """Create an own design from broad reference grammar; never import source artwork."""
+    import studio
+    import model_reply
+    if not isinstance(changes,str) or len(changes)>4000:raise ValueError('Опишите изменения до 4000 символов.')
+    prompt=('Create an OWN reusable channel art direction from broad reference visual principles. '
+            'Preserve useful drawing medium, abstraction level, visual clarity and explanatory grammar. '
+            'Faceless human figures must remain faceless, not gain realistic faces. '
+            'Design a coherent distinct palette, typography/layout and own recurring character language. '
+            'Never reproduce specific source frames, iconic characters, creator brands, logos or copied compositions. '
+            'Honour the requested changes. Do not claim copyright clearance, uniqueness percentage or guaranteed YouTube approval. '
+            'Return JSON {"description":"English art direction","palette":["#..."],"rules":"English recurring visual rules",'
+            '"faces":"reference|blank|simple|detailed","font":"Arial|Intro Demo Black CAPS","layout":"source|minimal"}. '
+            'Reference JSON:\n'+json.dumps({'reference_grammar':visual,'requested_changes':changes},ensure_ascii=False))
+    path=Path(directory)/(digest(prompt)+'.json')
+    value=studio._query(client,prompt,path,progress)
+    try:
+        result=validate({**value,'name':name})
+        if result['description'].strip()==str(visual.get('description','')).strip():raise ValueError('Стиль не адаптирован.')
+    except (ValueError,TypeError):
+        path.unlink(missing_ok=True);model_reply.invalidate(path.with_suffix('.reply.json'))
+        raise ValueError('Модель не вернула самостоятельное оформление. Анализ сохранён; повторите только адаптацию.') from None
+    return result

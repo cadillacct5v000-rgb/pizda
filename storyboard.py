@@ -257,13 +257,14 @@ def create(script, profile, query, directory, progress=None, *, reuse_from=()):
                   '\nReference JSON:\n' + json.dumps({'passages': batch, 'source_shots': references}, ensure_ascii=False))
         if content_only:
             prompt=('Create NEW original visual plans for the supplied narration using the SAVED CHANNEL DESIGN. '
-                    'No source video was analysed; do not imitate source shots, source editing or source imagery. '
+                    'Do not imitate source shots, source editing or source imagery; source_shots are intentionally unavailable. '
                     'Set source_shot=null for every plan. Keep the channel character design and layout unchanged. '
+                    'When an approved recurring character is actually present, include its EXACT registered alias in the English visual prompt. Do not introduce it in unrelated scenes or apply one identity to other species or comparison subjects. '
                     'Generate images without readable text; put factual short labels into overlay_text when needed. '
                     'Return JSON {"plans":[{"index":0,"source_shot":null,"confidence":"high","reason":"...",'
                     '"prompt":"English visual prompt","motion":"static camera","editorial_role":"explain","shot_size":"diagram","overlay_text":""}]}. '
                     '\nReference JSON:\n'+json.dumps({'passages':batch,'source_shots':[],
-                    'approved_design':profile['visual_style']},ensure_ascii=False))
+                    'approved_design':profile['visual_style'],'editorial_blueprint':profile.get('adaptation',{}),'approved_characters':profile.get('character_registry',[])},ensure_ascii=False))
         if direction:
             import studio
             prompt += '\n' + studio.brief(direction)
