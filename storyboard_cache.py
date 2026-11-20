@@ -109,6 +109,8 @@ def restore(scenes, job_dir, cache_dir):
                     atomic(state_path,state)
             except (OSError,ValueError,TypeError):pass
             restore_source(image, [Path(str(cached_image) + ".source.json")])
+            import drawing_plugins
+            if not drawing_plugins.metadata(image):drawing_plugins.restore_metadata(image,cached_image)
         if not image.exists():
             continue
         video = job_dir / ('videos_' + scene['video_identity'] if scene.get('video_identity') else 'videos') / f"{scene['index']:04d}.mp4"
@@ -140,6 +142,8 @@ def publish(scenes, job_dir, cache_dir):
             if destination.exists() and valid(destination, kind):
                 if kind == "image":
                     restore_source(destination, [Path(str(source) + ".source.json")])
+                    import drawing_plugins
+                    if not drawing_plugins.metadata(destination):drawing_plugins.restore_metadata(destination,source)
                 continue
             if not valid(source, kind):
                 continue
@@ -148,3 +152,6 @@ def publish(scenes, job_dir, cache_dir):
             temporary.replace(destination)
             if kind == "image" and Path(str(source) + ".source.json").is_file():
                 shutil.copyfile(str(source) + ".source.json", str(destination) + ".source.json")
+            if kind=='image':
+                import drawing_plugins
+                drawing_plugins.restore_metadata(destination,source)

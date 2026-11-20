@@ -45,6 +45,9 @@ def validate(value):
     presentation=value.get('presentation','')
     if not isinstance(presentation,str) or len(presentation)>4000:raise ValueError('Описание подачи должно быть до 4000 символов.')
     result['presentation']=presentation.strip()
+    import drawing_plugins
+    drawing=drawing_plugins.settings(value.get('drawing'))
+    if drawing:result['drawing']=drawing
     import reference_animation
     result['reference_animation']=reference_animation.validate(value['reference_animation']) if value.get('reference_animation') else None
     import source_narration
@@ -69,6 +72,9 @@ def fingerprint(profile):
 
 def generation_fingerprint(profile):
     value=validate(profile)
+    if value.get('drawing'):
+        if value['drawing']['enabled']:value['drawing'].pop('motion',None)
+        else:value.pop('drawing')
     for key in ('name','font','motion_policy','presentation','delivery','voices','reference_animation'):value.pop(key)
     reserved=[a.get('aliases',[]) for a in profile.get('assets',[]) if a['role']=='character_layer']
     if reserved:value['reserved_characters']=reserved

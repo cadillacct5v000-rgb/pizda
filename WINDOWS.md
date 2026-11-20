@@ -115,3 +115,10 @@ WinGet входит в Microsoft App Installer; обновите его чере
 После установки исходников: `powershell -File scripts/build_windows.ps1`.
 Скрипт выполняет тесты, собирает приложение и проверяет комплектные инструменты.
 Нативный GUI и живые сервисы дополнительно проверяются на Windows с вашими ключами.
+
+
+2.0.26 adds the bundled Cloveric drawing adapters and a local Sketchling 2D adapter.
+Install the full Windows package: NumPy adds native dependencies, so the earlier three-file
+update is insufficient. Keep the existing data directory and projects. Sketchling uses
+installed Edge/Chrome; Cloveric does not require a browser. No Node or npm installation
+is required at runtime. Source scenes are bounded JSON data, not executable model output.

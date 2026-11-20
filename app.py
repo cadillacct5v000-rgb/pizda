@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.25-dev"
+VERSION = "2.0.26-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -258,7 +258,9 @@ def estimate_plan(opts, *, limits=True):
         board = load_storyboard(opts["storyboard_id"])
         scene_durations = [row["duration"] or max(.5, len(row["narration"].split()) / 2.4) for row in board["rows"]]
         scenes = sum(max(1, math.ceil(d / 10)) for d in scene_durations)
-    fg = "fastgen" in providers and not cfg.get("elysium_replace_fastgen")
+    import drawing_plugins
+    drawing=drawing_plugins.active(selected_channel_design(opts,cfg))
+    fg = "fastgen" in providers and not cfg.get("elysium_replace_fastgen") and not drawing
     limit, threads, vlimit = fg_limits(cfg.get("fastgen_api_key", "")) if limits and fg and cfg.get("fastgen_api_key") else (0, 0, 0)
     vf = _vf(opts.get("video_first", cfg.get("video_first", 0)))
     clips = scenes if mode == "video" else len({i for i in range(scenes) if i < vf or (mode == "mixed" and i % 2 == 0)})
@@ -302,7 +304,7 @@ def estimate_plan(opts, *, limits=True):
     cur, alt = plan(quality), plan("speed" if quality == "quality" else "quality")
     return {"ok": True, "duration": int(round(duration)), "scenes": scenes, "words": words, "quality": quality, "fastgen": fg,
             "limit": limit, "threads": threads, "clips": clips, "vlimit": vlimit, "video_off": video_off, "video_wait_hours": vwait,
-            **cur, "alt_minutes": alt["minutes"], "alt_wait_hours": alt["wait_hours"]}
+            **cur, "alt_minutes": alt["minutes"], "alt_wait_hours": alt["wait_hours"], "local_drawing":drawing}
 
 
 def key_error(e):
@@ -1139,6 +1141,142 @@ class Api:
             scenes=[{**r,'index':i,'channel_design':design,'reference_animation':motion} for i,r in enumerate(rows)]
             return {'ok':True,**animation_selection.select(scenes,opts.get('animation',cfg.get('animation')),opts.get('mode','images'),_vf(opts.get('video_first')))}
         except (ValueError,OSError,TypeError) as error:return {'ok':False,'error':str(error)}
+
+    def style_variants_prepare(self,value,source_kind='analysis',url='',changes='',board_id=None):
+        with LOCK:
+            if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):return {'ok':False,'error':'Сначала завершите текущую работу.'}
+            STATE['preparing']=True
+        pipeline.CANCEL.clear()
+        try:
+            import style_variants
+            import source_analysis
+            cfg=copy.deepcopy(load_cfg());say=lambda message:progress_cb('prepare',0,1,message)
+            if source_kind=='url':
+                import youtube_source
+                video=youtube_source.video(url,Path(data_dir(),'jobs','youtube_sources'),str(Path(pipeline.ffmpeg_bin()).parent),say,
+                    cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
+                learned=source_analysis.analyse_design(video,cfg,Path(data_dir(),'jobs','channel_learning'),say)
+                visual=learned['visual_style'];refs=learned['reference_frames']
+            elif source_kind=='analysis':
+                with LOCK:source=copy.deepcopy(STATE.get('source_profile') or {})
+                if board_id:source=load_storyboard(board_id)['profile']
+                if source.get('adaptation') and source.get('content_only'):
+                    raise ValueError('В этой раскадровке уже своё оформление. Для вариантов стиля исходника выберите его ссылку; для вариантов своего канала — сохранённый стиль.')
+                visual=source.get('visual_style') or {};refs=[r['reference_frame'] for r in (source.get('montage') or {}).get('shots',[]) if r.get('reference_frame')][:3]
+                if not visual.get('description'):raise ValueError('Готового анализа стиля нет. Выберите ссылку на образец или сохранённый стиль.')
+            elif source_kind=='profile':
+                from channel_design import validate,DesignStore
+                profile=validate(value);visual={'description':profile['description'],'palette':profile['palette'],'character_design':profile['rules'],'faces':profile['faces']}
+                refs=[]
+                if value.get('id'):
+                    store=DesignStore(data_dir());saved=store.get(value['id'],value.get('revision'))
+                    refs=[str(store.asset_path(a)) for a in saved['assets'] if a['role']=='reference'][:3]
+            else:raise ValueError('Выберите источник понравившегося стиля.')
+            pipeline.check_cancel()
+            result=style_variants.prepare(data_dir(),visual,refs,changes,studio.text_client(cfg),say)
+            return {'ok':True,'comparison':style_variants.public(result)}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+        finally:
+            with LOCK:STATE['preparing']=False
+
+    def style_variants_preview(self,key,brief,caption='',providers=None):
+        with LOCK:
+            if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):return {'ok':False,'error':'Сначала завершите текущую работу.'}
+            STATE['preparing']=True
+        pipeline.CANCEL.clear()
+        old_quality,old_hd=pipeline.FASTGEN_QUALITY,pipeline.HD_IMAGES
+        try:
+            import style_variants
+            cfg=replacement.effective(copy.deepcopy(load_cfg()));cfg['_channel_design']=None
+            providers=pipeline.normalize_providers(providers or cfg.get('image_providers') or cfg.get('providers'))
+            if providers==['slider']:raise ValueError('Для проб стиля выберите сервис с генерацией одной картинки на шаге 6.')
+            selected=next(p for p in providers if p!='slider');cfg['image_keys']={selected:(cfg.get('image_keys') or {}).get(selected,[])}
+            for provider in pipeline.PROVIDERS:
+                if provider!=selected:cfg.pop(pipeline.SINGLE_KEY[provider],None)
+            pipeline.FASTGEN_QUALITY=cfg.get('quality','speed');pipeline.HD_IMAGES=False
+            context=pipeline.make_context(cfg,[selected]);unit=context['providers'][0]
+            image_identity=[unit,cfg.get('elysium_replace_fastgen'),cfg.get('elysium_image_model'),cfg.get('elysium_base_url'),pipeline.FASTGEN_QUALITY]
+            generate=lambda scene,out,refs:context['image_gen'][unit](scene,out,progress_cb,refs)
+            choices=style_variants.previews(data_dir(),key,brief,caption,image_identity,generate,lambda m:progress_cb('prepare',0,1,m))
+            return {'ok':True,'choices':choices}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+        finally:
+            pipeline.FASTGEN_QUALITY,pipeline.HD_IMAGES=old_quality,old_hd
+            with LOCK:STATE['preparing']=False
+
+    def style_variants_apply(self,key,variant_id,value,profile_id=None,revision=None):
+        try:
+            import style_variants
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):raise ValueError('Сначала завершите текущую работу.')
+                profile=style_variants.save_choice(data_dir(),key,variant_id,value,profile_id,revision)
+                cfg=load_cfg();cfg.update(channel_design_id=profile['id'],channel_design_revision=profile['revision'])
+                active=json.loads((style_variants.folder(data_dir(),key)/'active-preview.json').read_text(encoding='utf-8'))
+                unit=active.get('image_identity',[None])[0];provider='fastgen' if unit=='elysium' else str(unit).split('#')[0]
+                if provider in pipeline.PROVIDERS:cfg.update(image_providers=[provider],providers=[provider])
+                __import__('channel_design').activate_voice(cfg,profile);save_cfg(cfg)
+            return {'ok':True,'profile':profile,'provider':provider}
+        except (ValueError,OSError,KeyError,TypeError) as error:return {'ok':False,'error':str(error)}
+
+    def drawing_catalog(self):
+        import drawing_plugins
+        return {'ok':True,'plugins':drawing_plugins.catalog()}
+
+    def drawing_variants(self,value,brief='',example_mode=False,scene=None):
+        with LOCK:
+            if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                return {'ok':False,'error':'Сначала завершите текущую работу.'}
+            STATE['preparing']=True
+        pipeline.CANCEL.clear()
+        try:
+            import drawing_plugins as drawings
+            from channel_design import validate
+            design=validate(value)
+            if not design.get('drawing'):design['drawing']=drawings.settings({'style':'sketchbook'})
+            folder=Path(data_dir())/'drawing-plugins'
+            def say(message):
+                with LOCK:STATE['message']=message
+            if scene is not None:scene=drawings.validate_scene(scene,design['drawing'])
+            elif example_mode:scene=drawings.example()
+            else:scene=drawings.plan(studio.text_client(load_cfg()),brief,design,folder/'scenes',say)
+            say('Собираю одинаковую пятисекундную видеопробу в каждом варианте рисовки…')
+            choices=drawings.gallery(scene,design,folder/'previews',clips=True)
+            return {'ok':True,'scene':scene,'choices':choices,'example':bool(example_mode)}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+        finally:
+            with LOCK:STATE['preparing']=False
+
+    def drawing_pin(self,drawing,scene,index,name,aliases):
+        try:
+            import drawing_plugins
+            return {'ok':True,'drawing':drawing_plugins.pin_object(drawing,scene,index,name,aliases)}
+        except (ValueError,TypeError,KeyError) as error:return {'ok':False,'error':str(error)}
+
+    def drawing_motion_sample(self,value,scene):
+        with LOCK:
+            if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                return {'ok':False,'error':'Сначала завершите текущую работу.'}
+            STATE['preparing']=True
+        pipeline.CANCEL.clear()
+        try:
+            import drawing_plugins as drawings
+            import base64
+            from channel_design import validate
+            design=validate(value)
+            if not design.get('drawing'):raise ValueError('Сначала выберите вариант рисовки.')
+            design['drawing']['motion']='draw'
+            folder=Path(data_dir())/'drawing-plugins'/'motion'/__import__('storyboard').digest([design,scene])
+            folder.mkdir(parents=True,exist_ok=True);image=folder/'image.png';video=folder/'preview.mp4'
+            drawings.render(scene,design,image,640,360)
+            if not video.is_file():drawings.render_clip(image,3,video,640,360,15,pipeline.ffmpeg_bin(),pipeline.check_cancel)
+            return {'ok':True,'video':'data:video/mp4;base64,'+base64.b64encode(video.read_bytes()).decode('ascii')}
+        except pipeline.Cancelled:return {'ok':False,'cancelled':True}
+        except Exception as error:return {'ok':False,'error':key_error(error)}
+        finally:
+            with LOCK:STATE['preparing']=False
 
     def channel_designs(self):
         from channel_design import DesignStore
@@ -2102,6 +2240,13 @@ class Api:
     def _validate_common(self, providers, opts=None):
         try:cfg = replacement.effective(load_cfg(),opts)
         except ValueError as error:return str(error)
+        try:design=selected_channel_design(opts or {},cfg)
+        except (ValueError,OSError) as error:return str(error)
+        import drawing_plugins
+        drawing=drawing_plugins.active(design)
+        if drawing:
+            if design['drawing']['style']=='sketchling' and not drawing_plugins.browser_path():return 'Для Sketchling нужен Edge/Chrome. Выберите Cloveric в дизайне канала.'
+            providers=[]
         if "fastgen" in providers and not cfg.get("elysium_replace_fastgen") and not cfg.get("fastgen_api_key"):
             return "Введите ключ fast-gen."
         if cfg.get("qa_images"):
@@ -2131,6 +2276,7 @@ class Api:
             needs_video=bool(selection['limit'] and motion['confidence']!='low' and motion['subject_motion_share']>0 and not (design and design.get('motion_policy')=='local'))
         if cfg.get("video_engine") == "elysium" and not cfg.get("elysium_api_key") and needs_video:
             return "Для видео через Elysium введите ключ Elysium."
+        if drawing and needs_video and cfg.get('video_engine')!='elysium':return 'Для нейрооживления рисованных кадров выберите Elysium на шаге 7 либо движение без нейрооживления.'
         has_fg = bool(cfg.get("fastgen_api_key"))
         stt = cfg.get("stt_engine") or ("fastgen" if has_fg else "whisper"); llm = cfg.get("llm_engine") or ("fastgen" if has_fg else "openai")
         if stt == "assemblyai" and not cfg.get("assemblyai_api_key"):
@@ -2847,6 +2993,13 @@ def main():
             assert studio.settings()['caption_style']=='source'
             for asset in ('studio_ui.js','assets/studio.css','assets/studio-wallpaper.svg','THIRD_PARTY_NOTICES.txt'):
                 assert Path(RES_DIR,asset).is_file(),asset
+            import style_variants
+            assert callable(style_variants.prepare) and callable(style_variants.previews)
+            import drawing_plugins
+            drawing_plugins.render(drawing_plugins.example(),{'drawing':{'style':'sketchbook'}},root/'drawing.png',320,180)
+            assert drawing_plugins.metadata(root/'drawing.png')
+            assert Path(RES_DIR,'assets/drawing/sketchling.js').is_file()
+            assert Path(RES_DIR,'drawing_vendor/sketchling/LICENSE').is_file()
             import subtitles
             subtitles.write_ass([{'text':'Studio','start':0.,'end':1.}],root/'test.ass',preset='focus')
             assert 'Dialogue:' in (root/'test.ass').read_text(encoding='utf-8-sig')

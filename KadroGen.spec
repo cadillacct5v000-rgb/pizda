@@ -3,7 +3,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 if sys.platform != 'win32':
     raise SystemExit('Build KadroGen.spec on Windows. Use KadroGen-macOS.spec on macOS.')
@@ -28,7 +28,9 @@ def required_tool(name, directory):
     return str(found)
 
 datas = [(str(root / 'ui.html'), '.'), (str(root / 'fonts'), 'fonts'),
-         (str(root / 'assets'), 'assets'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
+         (str(root / 'assets'), 'assets'), (str(root / 'drawing_vendor'), 'drawing_vendor'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
+# Preserve NumPy and bundled native-library license notices in the full package.
+datas += copy_metadata('numpy')
 binaries = [(required_tool('ffmpeg.exe', 'ffmpeg'), 'ffmpeg'),
             (required_tool('ffprobe.exe', 'ffmpeg'), 'ffmpeg'),
             (required_tool('deno.exe', 'runtime'), 'runtime')]

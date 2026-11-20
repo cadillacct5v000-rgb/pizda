@@ -150,6 +150,7 @@ function showYouTubeSample() {
 
 // Channel design selection is an explicit immutable version, including saved projects.
 let channelDesignActive=null, channelDesignEditing=null,channelDesignVoices={},channelDesignDelivery=null,channelDesignMotion=null;
+let channelDesignDrawing=null,channelActiveDrawing=null,drawingPreviewScene=null;
 let workflowVoiceLanguages={ru:'русском',en:'английском'},workflowChannelVoices={},workflowVoiceLanguage='';
 function channelDesignChoice() {
   return channelDesignActive===null?{}:{channel_design_id:channelDesignActive.id||'',channel_design_revision:channelDesignActive.revision||null};
@@ -159,9 +160,10 @@ function channelDesignBadge() {
 }
 function channelDesignLoad(c,force=false) {
   if(channelDesignActive!==null&&!force)return;
-  if(Object.hasOwn(c,'channel_design_id')){channelDesignActive={id:c.channel_design_id||'',revision:c.channel_design_revision||null};channelDesignBadge();}
+  if(Object.hasOwn(c,'channel_design_id')){channelDesignActive={id:c.channel_design_id||'',revision:c.channel_design_revision||null};channelDesignBadge();channelDrawingLoadActive();}
 }
 function channelDesignPut(p) {
+  channelDesignDrawing=p?.drawing?JSON.parse(JSON.stringify(p.drawing)):null;drawingPreviewScene=null;channelDrawingSummary();
   channelDesignEditing=p?.id?p:null;channelDesignVoices=JSON.parse(JSON.stringify(p?.voices||{}));channelDesignDelivery=p?.delivery||null;channelDesignMotion=p?.reference_animation||null;
   $('cd_presentation').value=p?.presentation||'';
   $('cd_voice_language').innerHTML=Object.entries(workflowVoiceLanguages).map(([code,name])=>'<option value="'+code+'">'+esc(name)+'</option>').join('');
@@ -213,14 +215,12 @@ async function channelDesignAction(action) {
       if(!channelDesignEditing)throw new Error('Сначала сохраните профиль.');
       r=await pywebview.api.channel_design_import(channelDesignEditing.id,channelDesignEditing.revision,$('cd_role').value,{aliases:$('cd_aliases').value.split(',').map(s=>s.trim()).filter(Boolean),identity:$('cd_identity').value});
     } else {
-      const value={name:$('cd_name').value,description:$('cd_description').value,
-        palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,presentation:$('cd_presentation').value,delivery:channelDesignDelivery,voices:channelDesignVoices,reference_animation:channelDesignMotion,
-        faces:$('cd_faces').value,font:$('cd_font').value,layout:$('cd_layout').value,motion_policy:$('cd_motion').value};
+      const value=channelDesignValue();
       r=await pywebview.api.channel_design_save(value,channelDesignEditing?.id||null,channelDesignEditing?.revision||null);
     }
     if(r.cancelled){$('cd_status').textContent='Изучение остановлено; готовые ответы сохранены.';return;}if(!r.ok)throw new Error(r.error);
     if(action==='learn_motion'){channelDesignMotion=r.reference_animation;$('cd_motion').value=channelDesignMotion.confidence!=='low'&&channelDesignMotion.subject_motion_share>.15?'generated':'local';channelDesignVoiceSummary();$('cd_status').textContent='Характер оживления изучен. Проверьте режим движения и сохраните профиль; сценарий и картинки не создавались.';return;}
-    channelDesignActive=r.profile?{id:r.profile.id,revision:r.profile.revision}:{id:'',revision:null};channelDesignBadge();
+    channelDesignActive=r.profile?{id:r.profile.id,revision:r.profile.revision}:{id:'',revision:null};channelActiveDrawing=r.profile?.drawing||null;channelDesignBadge();
     workflowChannelVoices=r.profile?.voices||{};await workflowUseChannelVoice(F.rwLang,false);
     channelDesignPut(r.profile);await channelDesignRefresh();
     $('cd_status').textContent=r.profile?'Профиль закреплён для новых сборок. Генерация не запускалась.':'Выбран дизайн исходника.';
@@ -523,6 +523,7 @@ function workflowOrganizeAccess(){
     voicePreview.hidden=true;
     voiceHelp.innerHTML='<strong>Используется готовая озвучка</strong><p>Новый синтез не нужен: в сборку поступит выбранный аудиофайл. Проверьте его произношение и подачу в своём плеере до генерации кадров.</p><button class="ghost" onclick="workflowOpen(\'source\')">К выбору аудиофайла</button>';
   }
+  const drawingNote=document.createElement('div');drawingNote.className='wf-help';drawingNote.id='wf_drawing_active';sections.images.appendChild(drawingNote);
   const imageTrial=document.createElement('div');imageTrial.className='wf-help';imageTrial.innerHTML='<strong>Проверьте картинки до оживления</strong><p>Проба использует готовую раскадровку и создаёт недостающие картинки без запросов видеомодели. Подготовка озвучки для раскадровки может охватывать весь сценарий; короткая проба голоса находится в пункте 4.</p><button class="primary" id="wf_image_trial" onclick="workflowImageTrial()">Проба картинок без оживления · платно</button>';sections.images.appendChild(imageTrial);
   const renderHelp=document.createElement('div');renderHelp.className='wf-help';renderHelp.innerHTML='<p>Короткая проба запускает платную подготовку выбранного отрезка. Полная сборка создаёт недостающие кадры и клипы; совместимые готовые части используются повторно.</p><button class="primary" onclick="workflowOpen(\'board\')">К раскадровке и предпросмотру</button><button class="ghost" onclick="workflowEditScript()">Проверить сценарий перед сборкой</button>';sections.render.querySelector('.wf-heading').after(renderHelp);
   container.replaceChildren(...Object.values(sections));
@@ -558,6 +559,7 @@ function workflowOrganizeAccess(){
   if($('hd'))$('hd').dataset.help='Повышает разрешение генерируемых изображений у поддерживаемого сервиса. У Elysium запрашивается 2K вместо 1K. Это не меняет разрешение видеоклипов и может увеличить стоимость.';
   if($('wf_voice_preview')&&tts==='edge')$('wf_voice_preview').textContent='Создать пробу голоса · Edge без ключа';
   const replacement=$('replace_mode');if(replacement){replacement.closest('.lrow').querySelector('.lab').textContent='Схема работы';replacement.options[0].text='Сервисы по отдельности';replacement.options[1].text='Задачи FastGen через Elysium';}
+  channelDrawingImageStep();
   if(window.elysiumReplacement?.elysium_replace_fastgen){for(const select of [$('stt_sel'),$('llm_sel'),$('rw_eng'),$('tts_sel'),$('analysis_engine')])for(const option of select?.options||[])if(option.value==='fastgen')option.text='Elysium · вместо FastGen';}
   const nav=$('screen4').querySelector('.nav');nav.innerHTML='<button class="ghost" onclick="workflowPrevious()">Предыдущий пункт</button><button class="ghost" onclick="workflowOpen(\'board\')">5 · Раскадровка</button><button class="primary" id="btn_prep" onclick="workflowNext()">Следующий пункт</button>';
   workflowShowPane();
@@ -669,3 +671,155 @@ async function channelDesignCopyDelivery(){try{const r=await pywebview.api.chann
 function channelDesignRole(){ $('cd_character_fields').hidden=!['character','character_layer'].includes($('cd_role').value); }
 
 async function channelDesignCopyMotion(){try{const r=await pywebview.api.channel_design_seed(boardState?.id||null);if(!r.ok)throw new Error(r.error);if(!r.profile.reference_animation)throw new Error('В текущем анализе ещё нет временных наблюдений. Изучите оживление по ссылке.');channelDesignMotion=r.profile.reference_animation;channelDesignVoiceSummary();$('cd_status').textContent='Профиль движения взят из готового анализа. Сохраните дизайн канала.';}catch(error){$('cd_status').textContent=String(error);}}
+
+// Bounded, local drawing plugins. Choosing a style never sends a model request.
+function channelDesignValue(){
+  const drawing=channelDesignDrawing?{...channelDesignDrawing,enabled:$('cd_drawing_enabled').checked,motion:$('cd_drawing_motion').value}:null;
+  return {name:$('cd_name').value,description:$('cd_description').value,
+    palette:$('cd_palette').value.split(',').map(s=>s.trim()).filter(Boolean),rules:$('cd_rules').value,
+    presentation:$('cd_presentation').value,delivery:channelDesignDelivery,voices:channelDesignVoices,reference_animation:channelDesignMotion,
+    faces:$('cd_faces').value,font:$('cd_font').value,layout:$('cd_layout').value,motion_policy:$('cd_motion').value,drawing};
+}
+function channelDrawingSummary(){
+  $('cd_drawing_enabled').checked=!!channelDesignDrawing?.enabled;
+  $('cd_drawing_motion').value=channelDesignDrawing?.motion||'still';
+  const names={sketchbook:'Цветной карандаш · Cloveric',lineart:'Линия и акцент · Cloveric',sketchling:'Рисованная заливка · Sketchling'};
+  $('cd_drawing_summary').textContent=channelDesignDrawing?'Выбран: '+names[channelDesignDrawing.style]+'. Закреплено объектов: '+channelDesignDrawing.symbols.length+'. Сохраните профиль, чтобы применить к новым роликам.':'Плагин рисовки ещё не выбран. Можно бесплатно сравнить варианты на тестовой сцене.';
+  const list=$('cd_drawing_symbols');list.replaceChildren();
+  for(const symbol of channelDesignDrawing?.symbols||[]){
+    const row=document.createElement('div');row.textContent=symbol.name+' · '+symbol.aliases.join(', ')+' ';
+    const remove=document.createElement('button');remove.className='ghost small';remove.textContent='Убрать из новой версии';remove.onclick=()=>{channelDesignDrawing.symbols=channelDesignDrawing.symbols.filter(s=>s.id!==symbol.id);channelDrawingSummary();};row.appendChild(remove);list.appendChild(row);
+  }
+}
+async function channelDrawingLoadActive(){
+  const key=JSON.stringify(channelDesignActive);
+  if(!channelDesignActive?.id){channelActiveDrawing=null;channelDrawingImageStep();return;}
+  try{const r=await pywebview.api.channel_design_get(channelDesignActive.id,channelDesignActive.revision);if(key===JSON.stringify(channelDesignActive)){channelActiveDrawing=r.ok?r.profile.drawing||null:null;channelDrawingImageStep();}}
+  catch(error){channelActiveDrawing=null;channelDrawingImageStep();}
+}
+function channelDrawingImageStep(){
+  const on=!!channelActiveDrawing?.enabled,note=$('wf_drawing_active');
+  if(note){note.hidden=!on;note.textContent=on?'Используется местная рисовка из дизайна канала. Ключи сервисов картинок не нужны. Для новой сцены оплачивается текстовый запрос; смена кисти и прорисовка выполняются локально. Автоотбор при включении оплачивается отдельно.':'';}
+  for(const element of [$('providers'),document.querySelector('#screen4 .tiles'),$('fgq_speed')?.closest('.qrow'),$('hd')])if(element){element.hidden=on;element.style.setProperty('display',on?'none':'',on?'important':'');}
+}
+async function openDrawingPlugins(){
+  $('drawing_plugins_dialog').showModal();$('dp_status').textContent='Выберите бесплатный пример или подготовьте свою сцену.';
+  $('dp_gallery').replaceChildren();$('dp_motion_player').replaceChildren();
+  const row=typeof boardState!=='undefined'?boardState?.rows?.[0]:null;
+  if(!$('dp_brief').value&&row)$('dp_brief').value=row.prompt||row.narration||'';
+  drawingPreviewScene=null;$('dp_objects').replaceChildren();
+}
+function drawingDraft(){
+  const value=channelDesignValue();
+  if(!value.description.trim())value.description='Original hand-drawn explanatory illustration with a consistent palette and recurring approved objects.';
+  if(!value.name.trim())value.name='Мой канал';
+  if(!value.palette.length)value.palette=['#167b88','#9ddbdd','#dcad57'];
+  if(!value.drawing)value.drawing={enabled:true,style:'sketchbook',seed:24,motion:'still',symbols:[]};
+  return value;
+}
+async function drawingVariants(mode){
+  const buttons=$('drawing_plugins_dialog').querySelectorAll('button,input,textarea,select');buttons.forEach(e=>e.disabled=true);
+  $('dp_status').textContent=mode==='example'?'Рисую бесплатный пример локально…':mode==='repaint'?'Повторно рисую сохранённую сцену без запроса к модели…':'Подготавливаю геометрию сцены выбранной текстовой моделью…';
+  $('dp_cancel').hidden=false;$('dp_cancel').disabled=false;
+  try{
+    if(mode==='repaint'&&!drawingPreviewScene)throw new Error('Сначала подготовьте пример или свою сцену.');
+    const r=await pywebview.api.drawing_variants(drawingDraft(),$('dp_brief').value.trim(),mode==='example',mode==='repaint'?drawingPreviewScene:null);
+    if(r.cancelled){$('dp_status').textContent='Остановлено; готовые ответы сохранены.';return;}if(!r.ok)throw new Error(r.error);
+    drawingPreviewScene=r.scene;$('dp_gallery').replaceChildren();
+    for(const choice of r.choices){
+      const card=document.createElement('article');card.className='drawing-card';
+      const title=document.createElement('strong');title.textContent=choice.name+' · '+choice.engine;card.appendChild(title);
+      if(choice.video){const video=document.createElement('video');video.controls=true;video.preload='metadata';video.src=choice.video;video.poster=choice.image||'';video.style.width='100%';video.setAttribute('aria-label',choice.name+' — видеопроба 5 секунд');card.appendChild(video);}
+      else if(choice.image){const image=document.createElement('img');image.src=choice.image;image.alt=choice.name+' — та же сцена';card.appendChild(image);}
+      const button=document.createElement('button');button.textContent='Выбрать этот вариант';button.disabled=!choice.available;
+      button.onclick=()=>{channelDesignDrawing={...drawingDraft().drawing,enabled:true,style:choice.id,motion:choice.motion||drawingDraft().drawing.motion};
+        if(!$('cd_description').value.trim())$('cd_description').value=choice.description;
+        if(!$('cd_palette').value.trim())$('cd_palette').value='#167b88, #9ddbdd, #dcad57';
+        channelDrawingSummary();$('dp_status').textContent='Вариант выбран. Можно закрепить объект и посмотреть прорисовку, затем сохраните профиль канала.';};
+      card.appendChild(button);
+      if(choice.reason){const reason=document.createElement('p');reason.textContent=choice.reason;card.appendChild(reason);}
+      $('dp_gallery').appendChild(card);
+    }
+    $('dp_objects').innerHTML=r.scene.objects.map((obj,i)=>'<option value="'+i+'">'+esc(obj.name)+'</option>').join('');
+    $('dp_status').textContent=(r.example?'Бесплатный тестовый кит: это пример, не анализ вашего исходника. ':'Сцена подготовлена; все варианты используют одну геометрию. ')+'Выберите вариант. Сохранение профиля — в предыдущем окне.';
+  }catch(error){$('dp_status').textContent=String(error);}
+  finally{buttons.forEach(e=>e.disabled=false);$('dp_cancel').hidden=true;}
+}
+async function drawingPin(){
+  try{
+    if(!drawingPreviewScene)throw new Error('Сначала подготовьте пробную сцену.');
+    const draft=drawingDraft();const r=await pywebview.api.drawing_pin(draft.drawing,drawingPreviewScene,Number($('dp_objects').value),$('dp_object_name').value.trim(),$('dp_aliases').value.split(',').map(s=>s.trim()).filter(Boolean));
+    if(!r.ok)throw new Error(r.error);channelDesignDrawing=r.drawing;channelDrawingSummary();
+    $('dp_status').textContent='Объект закреплён в черновике профиля. В новых сценах он будет использовать сохранённую геометрию. Сохраните профиль канала.';
+  }catch(error){$('dp_status').textContent=String(error);}
+}
+async function drawingMotionSample(){
+  if(!drawingPreviewScene){$('dp_status').textContent='Сначала подготовьте сцену и выберите вариант.';return;}
+  const buttons=$('drawing_plugins_dialog').querySelectorAll('button,input,textarea,select');buttons.forEach(e=>e.disabled=true);$('dp_cancel').hidden=false;$('dp_cancel').disabled=false;
+  try{
+    $('dp_status').textContent='Собираю трёхсекундную прорисовку локально…';
+    const r=await pywebview.api.drawing_motion_sample(drawingDraft(),drawingPreviewScene);
+    if(r.cancelled){$('dp_status').textContent='Остановлено.';return;}if(!r.ok)throw new Error(r.error);
+    const video=document.createElement('video');video.controls=true;video.src=r.video;video.style.width='100%';$('dp_motion_player').replaceChildren(video);
+    $('dp_status').textContent='Проба готова без запросов к модели. Чтобы использовать эффект в роликах, выберите «Прорисовка контуров и цвета» и сохраните профиль.';
+  }catch(error){$('dp_status').textContent=String(error);}
+  finally{buttons.forEach(e=>e.disabled=false);$('dp_cancel').hidden=true;}
+}
+
+// Primary gallery: three variations of the reference's own visual language.
+let sourceStyleComparison=null,sourceStyleBusy=false;
+function sourceStyleDraft(){const value=channelDesignValue();if(!value.description.trim())value.description='Pending reference style.';return {...value,id:channelDesignEditing?.id,revision:channelDesignEditing?.revision};}
+function openSourceStyleVariants(){
+  sourceStyleComparison=null;$('sv_gallery').replaceChildren();$('sv_preview').disabled=true;
+  $('sv_url').value=$('cd_source_url').value||F.rwUrl||'';$('sv_changes').value=$('cd_changes').value||'';
+  const row=typeof boardState!=='undefined'?boardState?.rows?.[0]:null;
+  $('sv_brief').value=row?.prompt||'';$('sv_caption').value=(row?.narration||'Один и тот же фрагмент').slice(0,160);
+  const visualSource=boardState?.profile||(typeof reviewSourceProfile!=='undefined'?reviewSourceProfile:null);
+  const analysed=visualSource?.visual_style?.description,adapted=visualSource?.adaptation;
+  $('sv_source').value=analysed&&!adapted?'analysis':$('sv_url').value?'url':channelDesignEditing?'profile':'analysis';
+  const providers=['fastgen','nonstop','yougen','royal','google','syntx'];
+  $('sv_provider').innerHTML=providers.map(p=>'<option value="'+p+'">'+esc(p==='fastgen'&&window.elysiumReplacement?.elysium_replace_fastgen?'Elysium · выбранная модель картинок':workflowKeyLabel(p))+'</option>').join('');
+  $('sv_provider').value=provs().find(p=>providers.includes(p))||'fastgen';
+  $('sv_status').textContent='Варианты будут построены по выбранному образцу; универсальные кисти здесь не подставляются.';
+  $('source_style_variants_dialog').showModal();
+}
+async function sourceStyleWork(action){
+  if(sourceStyleBusy)return;sourceStyleBusy=true;
+  const controls=$('source_style_variants_dialog').querySelectorAll('button,input,select,textarea');controls.forEach(e=>e.disabled=true);$('sv_cancel').hidden=false;$('sv_cancel').disabled=false;
+  const poll=setInterval(async()=>{try{const s=await pywebview.api.get_state();if(s.preparing&&s.message)$('sv_status').textContent=s.message;}catch(error){}},1200);
+  try{return await action();}catch(error){$('sv_status').textContent=String(error);}
+  finally{clearInterval(poll);sourceStyleBusy=false;controls.forEach(e=>e.disabled=false);$('sv_preview').disabled=!sourceStyleComparison;$('sv_cancel').hidden=true;}
+}
+function sourceStyleCards(choices=[]){
+  $('sv_gallery').replaceChildren();
+  for(const variant of sourceStyleComparison?.variants||[]){
+    const preview=choices.find(c=>c.id===variant.id),card=document.createElement('article');card.className='drawing-card';
+    const name=document.createElement('strong');name.textContent=variant.name;card.appendChild(name);
+    const note=document.createElement('p');note.textContent=Object.values(variant.changes).join(' ');card.appendChild(note);
+    if(preview){const player=document.createElement('video');player.controls=true;player.preload='metadata';player.src=preview.video;player.style.width='100%';card.appendChild(player);
+      const choose=document.createElement('button');choose.textContent='Выбрать и сохранить этот стиль';choose.onclick=()=>sourceStyleApply(variant.id);card.appendChild(choose);}
+    $('sv_gallery').appendChild(card);
+  }
+}
+async function sourceStylePrepare(){return sourceStyleWork(async()=>{
+  $('sv_status').textContent='Готовлю три собственных варианта по визуальному языку образца…';
+  const r=await pywebview.api.style_variants_prepare(sourceStyleDraft(),$('sv_source').value,$('sv_url').value.trim(),$('sv_changes').value,boardState?.id||null);
+  if(r.cancelled){$('sv_status').textContent='Остановлено; готовые результаты сохранены.';return;}if(!r.ok)throw new Error(r.error);
+  sourceStyleComparison=r.comparison;sourceStyleCards();$('sv_status').textContent='Основа всех трёх вариантов: '+r.comparison.source_description+' Теперь создайте одинаковые видеопробы.';
+});}
+async function sourceStylePreview(){return sourceStyleWork(async()=>{
+  if(!sourceStyleComparison)throw new Error('Сначала подготовьте варианты по образцу.');
+  $('sv_status').textContent='Создаю три одинаковые пробы выбранным сервисом картинок…';
+  const r=await pywebview.api.style_variants_preview(sourceStyleComparison.id,$('sv_brief').value.trim(),$('sv_caption').value,[$('sv_provider').value]);
+  if(r.cancelled){$('sv_status').textContent='Остановлено; готовые картинки сохранены.';return;}if(!r.ok)throw new Error(r.error);
+  sourceStyleCards(r.choices);$('sv_status').textContent='Три пробы готовы. Сравните сохранение рисовки образца, палитру и подписи; затем выберите свой вариант.';
+});}
+async function sourceStyleApply(variant){return sourceStyleWork(async()=>{
+  const r=await pywebview.api.style_variants_apply(sourceStyleComparison.id,variant,sourceStyleDraft(),channelDesignEditing?.id||null,channelDesignEditing?.revision||null);
+  if(!r.ok)throw new Error(r.error);
+  channelDesignActive={id:r.profile.id,revision:r.profile.revision};channelActiveDrawing=r.profile.drawing||null;channelDesignBadge();
+  if(r.provider)for(const input of document.querySelectorAll('input[name=prov]'))input.checked=input.value===r.provider;
+  workflowChannelVoices=r.profile.voices||{};await workflowUseChannelVoice(F.rwLang,false);
+  channelDesignPut(r.profile);await channelDesignRefresh();mark();renderAccess();
+  $('sv_status').textContent='Выбранный стиль и свой кадр-эталон сохранены. Сценарий не менялся; новые ролики продолжат с этим оформлением.';
+});}

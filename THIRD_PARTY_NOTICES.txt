@@ -1,1 +1,12 @@
 KadroGen Studio is derived from KadroGen 1.7.1, originally attributed to Grisha Youtuber (https://t.me/Grisha_Youtuber_2003). Original source attribution is preserved here. Dependency copyright and license notices remain with their respective packages.
+
+
+Drawing adapters (2.0.26)
+Cloveric claude-drawing-skill: MIT, Copyright (c) 2026 cloveric.
+Included core.py, lineart.py and sketchbook.py with package-relative imports.
+Sketchling 2D primitives and style helpers: MIT, Copyright (c) 2026 Anay Garodia.
+Rough.js and its geometry dependencies: MIT, Copyright Preet Shihn.
+Complete notices: drawing_vendor/cloveric/LICENSE, drawing_vendor/sketchling/LICENSE,
+drawing_vendor/sketchling/DEPENDENCY_LICENSES.txt and drawing_vendor/UPSTREAM.json.
+The adapter does not include GSAP or the upstream WebGL/Three.js renderer.
+NumPy: BSD-3-Clause; its distribution retains its own license notices.

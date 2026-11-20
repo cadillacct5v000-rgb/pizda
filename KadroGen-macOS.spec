@@ -2,14 +2,16 @@
 import sys
 import platform
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 if sys.platform != 'darwin':
     raise SystemExit('Build KadroGen-macOS.spec on macOS.')
 
 root = Path(SPECPATH)
 datas = [(str(root / 'ui.html'), '.'), (str(root / 'fonts'), 'fonts'),
-         (str(root / 'assets'), 'assets'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
+         (str(root / 'assets'), 'assets'), (str(root / 'drawing_vendor'), 'drawing_vendor'), (str(root / 'studio_ui.js'), '.'), (str(root / 'THIRD_PARTY_NOTICES.txt'), '.'), (str(root / 'docs/instruction.html'), 'docs')]
+# Preserve NumPy and bundled native-library license notices in the full package.
+datas += copy_metadata('numpy')
 binaries, hiddenimports = [], []
 for package in ('webview', 'youtube_transcript_api', 'edge_tts', 'yt_dlp', 'yt_dlp_ejs'):
     d, b, h = collect_all(package)

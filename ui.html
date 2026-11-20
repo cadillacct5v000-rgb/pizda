@@ -550,6 +550,45 @@ body.workflow-enabled .wrap{max-width:1700px;padding-left:252px;padding-right:24
   </div>
 </div>
 
+
+<dialog id="drawing_plugins_dialog" style="width:min(1100px,96vw);max-height:92vh;overflow:auto">
+  <h2>Варианты рисовки</h2>
+  <h3>1. Одна тестовая сцена</h3>
+  <label>Что изобразить<textarea id="dp_brief" maxlength="6000" rows="3" placeholder="Опишите свою сцену. Из раскадровки подставляется первый план; его можно заменить."></textarea></label>
+  <div class="row"><button id="dp_example" class="ghost" onclick="drawingVariants('example')">Бесплатный пример с китом</button><button id="dp_create" onclick="drawingVariants('custom')">Создать мою сцену · текстовый запрос</button><button class="ghost" onclick="drawingVariants('repaint')">Перерисовать готовую сцену · без запроса</button></div>
+  <p>Создание своей сцены использует модель текстов, выбранную в подключениях. Готовая геометрия сохраняется: все кисти используют один ответ модели. Кредиты генерации картинок не расходуются.</p>
+  <h3>2. Сравните видеопробы и выберите рисовку</h3><p>Одна и та же сцена, по 5 секунд в каждом варианте, без звука. Так сравниваются кисть, цвет и прорисовка; озвучка проверяется отдельно на шаге 4. Выбранный вариант применяется к ролику после сохранения профиля.</p><div id="dp_gallery" class="drawing-gallery"></div>
+  <h3>3. Закрепите повторяющийся объект</h3>
+  <label>Объект из пробной сцены<select id="dp_objects"></select></label>
+  <label>Название<input id="dp_object_name" maxlength="120" placeholder="Например: наш кит"></label>
+  <label>Точные обозначения в сценариях<input id="dp_aliases" maxlength="1200" placeholder="Например: наш кит, Willy, whale"></label>
+  <button class="ghost" id="dp_pin" onclick="drawingPin()">Закрепить геометрию объекта</button>
+  <p>Закреплённый объект сохраняет контуры и детали. В новых сценах меняются его размер и положение; новые позы автоматически не создаются. Геометрия не зависит от текстового описания или случайного seed.</p>
+  <h3>4. Проверьте эффект и сохраните профиль</h3>
+  <button class="ghost" id="dp_motion" onclick="drawingMotionSample()">Проба прорисовки · 3 секунды · локально</button><div id="dp_motion_player"></div>
+  <p id="dp_status" role="status"></p><button id="dp_cancel" hidden class="danger" onclick="pywebview.api.cancel()">Остановить</button>
+  <button class="ghost" onclick="$('drawing_plugins_dialog').close()">К настройкам и сохранению профиля</button>
+</dialog>
+<style>.drawing-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.drawing-card{padding:12px;border:1px solid #41515b;border-radius:10px;display:flex;flex-direction:column;gap:10px}.drawing-card img{display:block;width:100%;border-radius:5px}.drawing-card p{overflow-wrap:anywhere}.drawing-card button{margin-top:auto}</style>
+<dialog id="source_style_variants_dialog" style="width:min(1120px,96vw);max-height:92vh;overflow:auto">
+  <h2>Три моих варианта стиля по образцу</h2>
+  <h3>1. Откуда взять понравившийся стиль</h3>
+  <label>Образец<select id="sv_source"><option value="analysis">Из готового анализа исходника · без повторного анализа видео</option><option value="url">По ссылке на исходник · анализ оплачивается один раз</option><option value="profile">Из сохранённого оформления канала</option></select></label>
+  <label>Ссылка на образец<input id="sv_url" placeholder="YouTube · используется только при выборе ссылки выше"></label>
+  <label>Что изменить под наш канал<textarea id="sv_changes" rows="3" maxlength="4000" placeholder="Например: сохранить технику и характер фигур, сделать палитру холоднее, подписи контрастнее, свои детали и персонажи"></textarea></label>
+  <button id="sv_prepare" onclick="sourceStylePrepare()">Подготовить три варианта · текстовый запрос</button>
+  <p>Акварель останется акварелью, объёмная рисовка — объёмной, безликие люди — безликими. При создании вариантов не переписываются сценарий и раскадровка. Успешные результаты сохраняются.</p>
+  <h3>2. Одинаковый фрагмент для сравнения</h3>
+  <label>Сцена<textarea id="sv_brief" rows="3" maxlength="6000" placeholder="Первый план раскадровки либо ваша тестовая сцена — одинаковая для всех вариантов"></textarea></label>
+  <label>Одинаковая подпись · чтобы сравнить оформление<input id="sv_caption" maxlength="160" placeholder="Например: короткая фраза из сценария"></label>
+  <label>Сервис картинок для всех трёх проб<select id="sv_provider"></select></label>
+  <button id="sv_preview" disabled onclick="sourceStylePreview()">Создать три видеопробы · до трёх картинок</button>
+  <p>Три пробы одной сцены по 5 секунд, без звука. Картинки создаёт выбранный сервис по кадрам и описанию стиля образца; шрифт и подпись накладывает программа. Видеомодель не вызывается. Повтор использует готовые картинки и создаёт только недостающие.</p>
+  <h3>3. Выберите вариант и продолжите с ним</h3><div id="sv_gallery" class="drawing-gallery"></div>
+  <p>Кнопка выбора сохраняет оформление и собственный пробный кадр как эталон канала. Следующие ролики используют этот стиль; образец заново разбирать не нужно.</p>
+  <p id="sv_status" role="status"></p><button id="sv_cancel" class="danger" hidden onclick="pywebview.api.cancel()">Остановить</button>
+  <button class="ghost" onclick="$('source_style_variants_dialog').close()">Вернуться к профилю</button>
+</dialog>
 <script>
 const $ = id => document.getElementById(id);
 const I18N = {
@@ -1731,10 +1770,12 @@ async function storyboardPreview() {
   <label>Образец понравившейся стилистики<input id="cd_source_url" placeholder="Ссылка YouTube — для однократного изучения дизайна"></label>
   <label><input id="cd_adapt" type="checkbox" checked>Создать своё оформление по принципам референса</label>
   <label>Что изменить<textarea id="cd_changes" maxlength="4000" placeholder="Например: холодная бирюзовая гамма, контрастные подписи, свои персонажи; сохранить плоскую рисовку и безликие фигуры"></textarea></label>
-  <label><input id="cd_learn_motion" type="checkbox" checked>Также изучить характер оживления по коротким временным отрезкам · дополнительный запрос</label>
+  <h3>Три варианта моего стиля по образцу</h3>
+  <p>Возьмём технику и характер понравившегося исходника и подготовим три собственных оформления. Все варианты сохраняют исходную рисовку; меняются палитра, подписи, плотность линий и детали оформления.</p>
+  <button id="cd_style_variants_open" onclick="openSourceStyleVariants()">Сделать три моих варианта по образцу</button>
   <button class="ghost" onclick="channelDesignAction('learn_motion')">Изучить только оживление по ссылке · платно</button>
   <button class="ghost" onclick="channelDesignCopyMotion()">Взять оживление из текущего анализа · без запроса</button><p id="cd_motion_summary"></p>
-  <button class="ghost" onclick="channelDesignAction('learn')">Изучить образец и подготовить дизайн · платно</button>
+  <details><summary>Дополнительно: сохранить один профиль без сравнения</summary><label><input id="cd_learn_motion" type="checkbox" checked>Также изучить характер оживления по коротким временным отрезкам · дополнительный запрос</label><button class="ghost" onclick="channelDesignAction('learn')">Изучить образец и подготовить дизайн · платно</button></details>
   <p>Изучаются несколько кадров, без разбора всех сцен и озвучки. Адаптация оформления добавляет текстовый запрос; успешные ответы сохраняются. Если исходник уже разобран, кнопка «Сохранить дизайн из исходника» использует готовый анализ без нового запроса.</p>
   <button id="cd_cancel" class="danger" hidden onclick="pywebview.api.cancel()">Остановить изучение</button>
   <label>Название<input id="cd_name" maxlength="120" value="Мой канал"></label>
@@ -1744,6 +1785,14 @@ async function storyboardPreview() {
   <label>Оформление схем<select id="cd_layout"><option value="source">По описанию и референсам</option><option value="minimal">Минимальное: 1–2 объекта, свободное место</option></select></label>
   <label>Движение<select id="cd_motion"><option value="local">Монтаж из картинок и слоёв — без нейрооживления</option><option value="generated">Генерация видеоклипов — нужна проверка пробой</option></select></label><label>Шрифт подписей<select id="cd_font"><option>Arial</option><option>Intro Demo Black CAPS</option></select></label>
   <label>Постоянные правила<textarea id="cd_rules" rows="3" maxlength="4000" placeholder="Что сохранять, что запрещено менять"></textarea></label>
+  <details id="cd_drawing_advanced"><summary>Дополнительно: локальные кисти и рисованные объекты</summary>
+  <h3>Местная рисовка · дополнительные инструменты</h3>
+  <p>Одна сцена — несколько кистей. Cloveric работает локально; Sketchling использует установленный Edge или Chrome. Подходит для схем и плоской иллюстрации.</p>
+  <button class="ghost" id="cd_drawing_open" onclick="openDrawingPlugins()">Сравнить варианты на одной сцене</button>
+  <p id="cd_drawing_summary"></p>
+  <label><input id="cd_drawing_enabled" type="checkbox">Использовать выбранную местную рисовку для новых роликов</label>
+  <label>Эффект готовых кадров<select id="cd_drawing_motion"><option value="still">Картинки и обычное движение камеры</option><option value="draw">Прорисовка контуров и цвета · без видеомодели</option></select></label>
+  <div id="cd_drawing_symbols"></div></details>
   <h3>Подача и голоса канала</h3>
   <label>Характер рассказа<textarea id="cd_presentation" maxlength="4000" placeholder="Темп раскрытия мысли, юмор, драматичность, характер объяснений"></textarea></label>
   <button class="ghost" onclick="channelDesignCopyDelivery()">Взять подачу из текущего анализа · без нового запроса</button><p id="cd_delivery_status"></p>

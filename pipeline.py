@@ -104,7 +104,7 @@ def base_of(unit):
 
 def unit_name(unit):
     b, _, n = unit.partition("#")
-    return PROVIDER_NAMES[b] + (f" (ключ {n})" if n else "")
+    return ("Местная рисовка" if b=="drawing" else PROVIDER_NAMES[b]) + (f" (ключ {n})" if n else "")
 TEXT_ENGINES = ("fastgen", "openai")  # кто распознаёт речь и пишет промпты
 MODES = ("images", "video", "mixed")  # mixed — через одну: видео, картинка, видео...
 TRANSITION = 0.5  # секунд на переход в моушн-режиме
@@ -2679,6 +2679,16 @@ def _clip_cached(out_path, signature):
 
 def render_scene_clip(img_path, i, duration, out_path, reference_motion=None):
     duration = max(1 / FPS, float(duration))
+    import drawing_plugins
+    drawing_meta=drawing_plugins.metadata(img_path)
+    if drawing_meta and drawing_meta.get('drawing',{}).get('motion')=='draw':
+        signature=_clip_signature(img_path,duration,'local-drawing-v1')
+        signature['drawing']=drawing_meta['key']
+        if not _clip_cached(out_path,signature):
+            import drawing_plugins
+            drawing_plugins.render_clip(img_path,duration,out_path,W,H,FPS,ffmpeg_bin(),check_cancel)
+            write_json(out_path+'.json',signature)
+        return out_path
     signature = _clip_signature(img_path, duration, f"image:{i % 6}:crop={EDGE_CROP}")
     if reference_motion:signature["reference_motion"]=reference_motion
     if _clip_cached(out_path, signature):
@@ -2788,6 +2798,13 @@ def assemble_video(scenes, img_dir, videos, audio_path, job_dir, out_mp4, progre
                 render_video_clip(videos[i], dur, clip, retime="source_shot" in s)
         else:
             clip = os.path.join(clips_dir, f"{i:04d}{suffix}.mp4")
+            import drawing_plugins
+            image=os.path.join(img_dir,f"{i:04d}.png")
+            if drawing_plugins.active(s.get('channel_design')):
+                meta=drawing_plugins.metadata(image)
+                if meta:
+                    meta['drawing']['motion']=s['channel_design']['drawing'].get('motion','still')
+                    write_json(image+'.drawing.json',meta)
             if s.get("_local_motion"):render_scene_clip(os.path.join(img_dir,f"{i:04d}.png"),i,dur,clip,s["_local_motion"])
             else:render_scene_clip(os.path.join(img_dir, f"{i:04d}.png"), i, dur, clip)
         if s.get('channel_overlays'):
@@ -3272,6 +3289,11 @@ def make_context(cfg, providers):
     """providers — выбранные сервисы. Каждый ключ сервиса — отдельный «юнит» (fastgen, fastgen#2, …) со своими лимитами;
     сцены делятся между юнитами по кругу. Сервисы с ключом, но без галочки, — подстраховка."""
     cfg=replacement.effective(cfg)
+    import drawing_plugins
+    if drawing_plugins.active(cfg.get('_channel_design')):
+        ctx=drawing_plugins.local_context(cfg)
+        configure_video_context(ctx,cfg)
+        return ctx
     keys = {p: provider_keys(cfg, p) for p in PROVIDERS}
     if cfg.get("elysium_replace_fastgen"):keys["fastgen"]=[cfg["elysium_api_key"]] if "fastgen" in providers else []
     for p in providers:
@@ -3332,6 +3354,11 @@ def make_context(cfg, providers):
             for n, k in enumerate(keys[p]):
                 add(p, n, k, False)
     if cfg.get("elysium_replace_fastgen"):ctx["bases"]=["elysium" if p=="fastgen" else p for p in ctx["bases"]]
+    configure_video_context(ctx,cfg)
+    return ctx
+
+
+def configure_video_context(ctx,cfg):
     ctx["cfg"]=cfg
     ctx["video_engine"] = cfg.get("video_engine", "providers")
     ctx["video_config"] = dict(cfg)
@@ -3500,6 +3527,8 @@ def prepare(audio_path=None, progress_cb=None, provider=None, mode="images", use
     img_dir = os.path.join(job_dir, "images")
     have_images = sum(1 for s in scenes if os.path.exists(os.path.join(img_dir, f"{s['index']:04d}.png")))
     todo = n - have_images
+    import drawing_plugins
+    if drawing_plugins.active(channel_designs.selected(data_dir(),cfg)):providers=['drawing']
     share = {p: len([i for i in range(todo) if providers[i % len(providers)] == p]) for p in providers}
     est = {
         "scenes": n, "duration": round(duration), "have_images": have_images,
@@ -3600,8 +3629,9 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
     out_dir = out_dir or os.path.join(data_dir(), "output")
     os.makedirs(out_dir, exist_ok=True)
     duration = audio_duration(audio_path)
-    progress("start", 0, 0, f"аудио {duration:.0f} с · картинки: {' + '.join('Elysium' if p=='fastgen' and cfg.get('elysium_replace_fastgen') else PROVIDER_NAMES[p] for p in providers)} · режим: {mode} · стиль: {style_name}")
     ctx = make_context(cfg, providers)
+    image_names=('местная рисовка · '+__import__('drawing_plugins').STYLES[channel_design['drawing']['style']]['name']) if ctx.get('drawing') else ' + '.join('Elysium' if p=='fastgen' and cfg.get('elysium_replace_fastgen') else PROVIDER_NAMES[p] for p in providers)
+    progress("start", 0, 0, f"аудио {duration:.0f} с · картинки: {image_names} · режим: {mode} · стиль: {style_name}")
     ctx["qa"] = make_qa_client(cfg)
     for k in QA_STATS:
         QA_STATS[k] = 0
@@ -3669,7 +3699,7 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
         if channel_design:
             style = {**style, 'style': channel_design['description'], 'style_hint': channel_design['description']}
         refs, ref_pool = {}, None
-        if use_refs:
+        if use_refs and not ctx.get('drawing'):
             # портреты героев зависят только от библии — рисуем их, пока пишутся промпты сцен (сообщения пока в журнал)
             ref_quiet = threading.Event()
             ref_quiet.set()
@@ -3683,12 +3713,16 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
             ref_pool = cf.ThreadPoolExecutor(max_workers=1)
             pools.append(ref_pool)
             ref_fut = ref_pool.submit(make_references, ctx, style, job_dir, ref_progress)
-        scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
+        if ctx.get('drawing'):
+            for scene in scenes:
+                scene['raw_prompt']=scene.get('raw_prompt') or scene.get('text','')
+                scene['prompt']=scene['raw_prompt']
+        else:scenes = build_prompts(llm, style, scenes, job_dir, progress, use_refs)
         import object_continuity
         object_directory = job_dir
         if storyboard:
             object_directory = os.path.join(data_dir(), 'jobs', 'storyboard-assets', sb.digest([profile, FASTGEN_QUALITY, hd, providers]), 'identities')
-        if cfg.get('object_continuity', True) and (Path(object_directory, 'object-continuity').is_dir() or any(not Path(job_dir, 'images', f"{sc['index']:04d}.png").is_file() for sc in scenes)):
+        if not ctx.get('drawing') and cfg.get('object_continuity', True) and (Path(object_directory, 'object-continuity').is_dir() or any(not Path(job_dir, 'images', f"{sc['index']:04d}.png").is_file() for sc in scenes)):
             scenes = object_continuity.prepare(scenes, style, llm, object_directory, progress)
         if ref_pool:
             ref_quiet.clear()
@@ -3711,10 +3745,10 @@ def make_video(audio_path=None, progress_cb=None, out_dir=None, provider=None, m
                 base += "_preview_" + sb.digest(preview_range)[:8]
                 out_mp4 = os.path.join(out_dir, base + ".mp4")
                 progress("start", 0, 0, f"предпросмотр: видео только для выбранного отрезка ({len(scenes)} фрагментов)")
-        if cfg.get("location_continuity"):
+        if cfg.get("location_continuity") and not ctx.get('drawing'):
             import scene_continuity
             scenes = scene_continuity.prepare(scenes, llm, job_dir, progress)
-        scenes = object_continuity.references(scenes, ctx, object_directory, style, progress)
+        if not ctx.get('drawing'):scenes = object_continuity.references(scenes, ctx, object_directory, style, progress)
         if channel_design:
             import channel_design as designs
             scenes = designs.apply(scenes, channel_design, data_dir())

@@ -1,0 +1,26 @@
+{
+  "cloveric": {
+    "repository": "https://github.com/cloveric/claude-drawing-skill",
+    "source_tree": "6af36dc717b63d6ddafb54d2eaa120cacd99ab4d",
+    "license": "MIT",
+    "adaptations": "Absolute imports changed to package-relative imports. Two brush modules included; not all 83 styles."
+  },
+  "sketchling": {
+    "repository": "https://github.com/AnayGarodia/sketchling",
+    "commit": "1cba8ad4dbec08b4346034c0655de0db9382f234",
+    "license": "MIT",
+    "adapter": "2D Stroke geometry + pathFromPoints + roughOptionsFor + Rough.js. Own bounded-data renderer, no GSAP/Three.js renderer or runtime Node dependency. Animation is KadroGen local outline/colour reveal."
+  },
+  "files": {
+    "drawing_vendor/cloveric/LICENSE": "1b7c54cc469ce6b25d4da7a307af2a08ad9677546cd67784c32cd8eb3b76a168",
+    "drawing_vendor/cloveric/__init__.py": "96846e18f2d150076b75efb157141519aa6df8827c86187fc9850b6b33775ba9",
+    "drawing_vendor/cloveric/sketchbook.py": "f6aa6e184d874ef07de36d5339b0be9573c6114e58174c13807f43efada2d3c8",
+    "drawing_vendor/cloveric/lineart.py": "69002aa4e7a1749bb69f82de48fbfb52e2dd9493245f076335948b6f30c6c776",
+    "drawing_vendor/cloveric/core.py": "5638aab1d1b140d92771f9809c152a29aff555f83b9185ed1a5fedda1c023eda",
+    "drawing_vendor/sketchling/DEPENDENCY_LICENSES.txt": "ea454ff3fd76a7c3d20586bd146332a5edfbcb1cf24d0dfe4413a11142a31252",
+    "drawing_vendor/sketchling/LICENSE": "6e5d76dd29355687b86e67317ff1f3d6f23ac571c4aebc08c411227a922e4014",
+    "drawing_vendor/sketchling/adapter.js": "987e5863562c990833a4443b8b951a91f48f87b1a195416c5a8c39dd69d9f42b",
+    "assets/drawing/sketchling.js.LEGAL.txt": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "assets/drawing/sketchling.js": "801bf73633ecf12ece97b94b1ea99c96be03759735833e436bf3949775abbaf4"
+  }
+}
