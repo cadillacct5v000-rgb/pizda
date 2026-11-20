@@ -167,3 +167,18 @@ def test_freeform_variant_description_cannot_override_reference_medium(tmp_path)
     result=styles.prepare(tmp_path,VISUAL,[],'',client)
     assert all(VISUAL['description'] in row['profile']['description'] for row in result['variants'])
     assert 'pencil rendering' not in result['variants'][0]['profile']['description']
+
+
+def test_caption_changes_reuse_images_but_scene_and_image_model_changes_do_not(tmp_path):
+    result,_,client=prepared(tmp_path);calls=[];generate=render_fixture(calls)
+    first=styles.previews(tmp_path,result['id'],'An original whale','First caption',['elysium','model-a'],generate)
+    changed=styles.previews(tmp_path,result['id'],'An original whale','Different caption',['elysium','model-a'],generate)
+    assert len(calls)==3 and client.chat_json.call_count==1
+    assert all(a['video']!=b['video'] for a,b in zip(first,changed))
+    chosen=styles.save_choice(tmp_path,result['id'],'v1',{'name':'Own channel','description':'draft'})
+    asset=channel_design.DesignStore(tmp_path).asset_path(chosen['assets'][0])
+    assert asset.is_file()
+    styles.previews(tmp_path,result['id'],'An original whale','Different caption',['elysium','model-b'],generate)
+    assert len(calls)==6
+    styles.previews(tmp_path,result['id'],'Another scene','Different caption',['elysium','model-b'],generate)
+    assert len(calls)==9 and client.chat_json.call_count==1

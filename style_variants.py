@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 
 from PIL import Image
 import netutil
@@ -94,12 +95,28 @@ def public(value):
             'variants':[{k:copy.deepcopy(v[k]) for k in ('id','name','changes','profile')} for v in value['variants']]}
 
 
+def _image_receipt(image):
+    try:
+        saved=json.loads(image.with_suffix('.receipt.json').read_text(encoding='utf-8'))
+        return saved if saved.get('sha256')==hashlib.sha256(image.read_bytes()).hexdigest() else None
+    except (OSError,ValueError,AttributeError):return None
+
+
+def _copy_frame(source,destination,receipt):
+    temporary=destination.with_suffix('.copy.png')
+    shutil.copyfile(source,temporary);temporary.replace(destination)
+    sb.atomic(destination.with_suffix('.receipt.json'),receipt)
+
+
 def previews(root,key,brief,caption,image_identity,generate,progress=None):
     """One same scene, three reference-conditioned images; completed images resume locally."""
     value=load(root,key);brief=_text(brief,6000)
     if not isinstance(caption,str) or len(caption)>160:raise ValueError('Подпись должна быть до 160 символов.')
     target=folder(root,key)/'previews'/sb.digest([VERSION,brief,caption,image_identity])
     target.mkdir(parents=True,exist_ok=True)
+    # Captions change only the local video. Billable image identity excludes them.
+    frames=folder(root,key)/'frames'/sb.digest([VERSION,brief,image_identity])
+    frames.mkdir(parents=True,exist_ok=True)
     refs=[]
     for ref in value['references']:
         p=Path(ref['path'])
@@ -109,11 +126,12 @@ def previews(root,key,brief,caption,image_identity,generate,progress=None):
     from media_tools import ffmpeg_bin,run_media
     for n,variant in enumerate(value['variants']):
         netutil.check_cancel();profile=variant['profile'];image=target/(variant['id']+'.png');receipt=image.with_suffix('.receipt.json')
-        cached=None
-        try:
-            cached=json.loads(receipt.read_text(encoding='utf-8'))
-            if cached.get('sha256')!=hashlib.sha256(image.read_bytes()).hexdigest():cached=None
-        except (OSError,ValueError,AttributeError):pass
+        shared=frames/image.name;cached=_image_receipt(image)
+        if not cached:
+            cached=_image_receipt(shared)
+            if cached:
+                _copy_frame(shared,image,cached)
+                for suffix in ('.mp4','.silent.mp4','.approved.json'):(target/(variant['id']+suffix)).unlink(missing_ok=True)
         if not cached:
             if progress:progress(f'Проба {n+1}/3: {profile["name"]}; создаю только недостающую картинку')
             prompt=('Render ONE new scene in the SAME CORE DRAWING LANGUAGE as the attached reference frames and reference grammar. '
@@ -124,7 +142,7 @@ def previews(root,key,brief,caption,image_identity,generate,progress=None):
                     'The SAME comparison scene must remain recognisable in all variants. '
                     'Reference JSON:\n'+json.dumps({'reference_grammar':value['source_visual'],'own_style':profile,'same_scene':brief},ensure_ascii=False))
             temporary=image.with_suffix('.tmp.png')
-            model=generate({'index':n,'plan_id':key+'-'+target.name+'-'+variant['id'],'plan_take':0,'prompt':prompt},str(temporary),refs)
+            model=generate({'index':n,'plan_id':key+'-'+frames.name+'-'+variant['id'],'plan_take':0,'prompt':prompt},str(temporary),refs)
             if not model or not temporary.is_file():raise ValueError('Сервис не вернул пробную картинку. Готовые варианты сохранены.')
             with Image.open(temporary) as check:
                 if check.width*check.height>25_000_000:raise ValueError('Сервис вернул слишком большую картинку.')
@@ -133,6 +151,7 @@ def previews(root,key,brief,caption,image_identity,generate,progress=None):
             netutil.check_cancel();temporary.replace(image)
             for suffix in ('.mp4','.silent.mp4','.approved.json'):(target/(variant['id']+suffix)).unlink(missing_ok=True)
             cached={'sha256':hashlib.sha256(image.read_bytes()).hexdigest(),'model':str(model)};sb.atomic(receipt,cached)
+        if not _image_receipt(shared):_copy_frame(image,shared,cached)
         movie=target/(variant['id']+'.mp4')
         if not movie.is_file():
             silent=target/(variant['id']+'.silent.mp4')
