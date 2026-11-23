@@ -2575,7 +2575,11 @@ class Api:
         custom_style = " ".join(str(opts.get("custom_style") or "").split())
         try:channel_design=selected_channel_design(opts)
         except (ValueError,OSError) as error:return {'ok':False,'error':str(error)}
-        if style == pipeline.CUSTOM_STYLE and not custom_style and not source_profile and not channel_design:
+        automatic_rewrite=opts.get('rewrite') or {}
+        derives_design=bool(opts.get('automatic') and automatic_rewrite.get('on') and (
+            (automatic_rewrite.get('source')=='youtube' and automatic_rewrite.get('analyze_video')) or
+            (opts.get('studio') or {}).get('enhancement_level')=='original'))
+        if style == pipeline.CUSTOM_STYLE and not custom_style and not source_profile and not channel_design and not derives_design:
             return {"ok": False, "error": "Опишите свой стиль на экране «Режим» или выберите стиль из списка."}
         motion = bool(opts.get("motion")) and not bool(source_profile and source_profile.get("montage"))
         try:

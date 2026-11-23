@@ -222,3 +222,17 @@ def test_automatic_voice_follows_language_and_keeps_cached_native_choice(local,m
     assert (first,second)==('native-ro','native-es')
     assert app.automatic_native_voice(cfg,'lumean',second,'es')==second
     assert client.voices.call_count==2
+
+
+def test_automatic_start_derives_custom_design_without_manual_checkpoint(local,monkeypatch):
+    app.save_cfg({'fastgen_api_key':'fixture','tts_service':'edge'})
+    monkeypatch.setattr(app,'selected_channel_design',lambda *a,**k:None)
+    monkeypatch.setattr(app.Api,'_validate',lambda *a:None)
+    monkeypatch.setattr(app,'production_check',lambda *a:{'blockers':[]})
+    worker=Mock();monkeypatch.setattr(app.threading,'Thread',worker)
+    options={'automatic':True,'source':'script','providers':['fastgen'],'tts':'edge','style':'custom','custom_style':'',
+             'studio':{'enhancement_level':'original'},'rewrite':{'on':True,'source':'text','text':'A whale swims.','language':'румынском','engine':'fastgen'}}
+    result=app.Api().start(options)
+    assert result['ok'],result
+    assert worker.call_args.kwargs['kwargs']['config_snapshot']['_automatic_speech'] is True
+    assert worker.call_args.kwargs['args'][8]['language']=='румынском'
