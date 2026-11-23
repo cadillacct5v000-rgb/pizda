@@ -57,6 +57,8 @@ def test_storyboard_stream_request_is_not_retried_after_read_timeout(monkeypatch
     assert client.s.post.call_count==1
     assert 'fixture-private' not in str(caught.value)
     assert client.s.post.call_args.kwargs['stream'] is True
+    assert client.s.post.call_args.kwargs['timeout']==(60,300)
+    assert 'до получения заголовков' in str(caught.value)
 
 
 def test_storyboard_stream_finishes_without_polling_unknown_board(monkeypatch):
@@ -88,3 +90,68 @@ def test_storyboard_fastgen_network_timeout_is_not_replayed(monkeypatch):
         client.chat_json('system','user')
     assert api.s.post.call_count==1
     assert api.s.post.call_args.kwargs['timeout']==(15,180)
+
+
+def test_slow_https_proxy_uses_connect_budget_not_model_read_budget(monkeypatch):
+    """Reproduce urllib3's ReadTimeout(connect) at a real local CONNECT proxy."""
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+    calls=[]
+    class Proxy(BaseHTTPRequestHandler):
+        def do_CONNECT(self):
+            calls.append(self.path)
+            time.sleep(.2)
+            # Stop at the proxy: never connect to any real model provider.
+            try:self.send_error(502,'Local proxy fixture')
+            except (OSError,ConnectionError):pass
+        def log_message(self,*args):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Proxy)
+    thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    monkeypatch.setattr('endpoints.base',lambda provider:'https://model.example.invalid/v1')
+    client=OpenAIClient('fixture-secret',provider='elysium',stream=True)
+    client.s.trust_env=False
+    client.s.proxies={'https':f'http://127.0.0.1:{server.server_port}'}
+    client.STREAM_READ_TIMEOUT=4
+    try:
+        # Scale the previous 15-second connect limit down for this local test.
+        client.STREAM_CONNECT_TIMEOUT=.04
+        with pytest.raises(OpenAIError,match='ReadTimeout'):
+            client.chat_json('JSON','fixture',model='anthropic/claude-opus-4.6')
+        client.STREAM_CONNECT_TIMEOUT=2
+        # The same delayed proxy response now arrives inside the connect budget.
+        # It intentionally refuses the tunnel with 502, rather than timing out.
+        with pytest.raises(OpenAIError,match='ProxyError') as caught:
+            client.chat_json('JSON','fixture',model='anthropic/claude-opus-4.6')
+        assert 'ReadTimeout' not in str(caught.value)
+        assert len(calls)==2  # one CONNECT for each explicit call, no replay
+    finally:
+        client.s.close();server.shutdown();server.server_close();thread.join(timeout=2)
+
+
+def test_interrupted_script_stream_keeps_receipt_and_reuses_ready_sections(tmp_path,monkeypatch):
+    import studio
+    from test_chat_stream import StreamResponse,event
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    first=StreamResponse(event('{"script":"Ready first section."}',finish='stop'))
+    interrupted=StreamResponse(event('{"script":"Partial next section')+[
+        requests.exceptions.ChunkedEncodingError('Response ended prematurely')])
+    second=StreamResponse(event('{"script":"Ready second section."}',finish='stop'))
+    transport=OpenAIClient('fixture-secret',provider='elysium',stream=True)
+    transport.s.post=Mock(side_effect=[first,interrupted,second])
+    client=pipeline.LLM('elysium',transport,'anthropic/claude-opus-4.6')
+    a,b=tmp_path/'first.json',tmp_path/'second.json'
+    assert studio._query(client,'section one',a)=={'script':'Ready first section.'}
+    with pytest.raises(OpenAIError,match='ChunkedEncodingError.*при чтении потока'):
+        studio._query(client,'section two',b)
+    assert transport.s.post.call_count==2 and interrupted.closed
+    receipt=json.loads(b.with_suffix('.reply.json').read_text())
+    assert receipt['complete'] is False and receipt['text']=='{"script":"Partial next section'
+    assert not b.exists()
+    # Explicitly resume: the ready section is not sent again; partial JSON is
+    # never mistaken for a complete script or passed to synthesis.
+    assert studio._query(client,'section one',a)=={'script':'Ready first section.'}
+    assert transport.s.post.call_count==2
+    assert studio._query(client,'section two',b)=={'script':'Ready second section.'}
+    assert transport.s.post.call_count==3
