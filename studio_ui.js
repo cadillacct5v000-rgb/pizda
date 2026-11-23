@@ -15,6 +15,8 @@ function studioFields() {
     caption_position:$('studio_caption_position').value,on_screen_labels:$('studio_labels').checked};
 }
 function loadStudioSettings(c) {
+  speechLocales=c.speech_locales||{};speechPlanId=c.speech_plan_dirty?'':c.speech_plan_id||'';
+  if(c.speech_language)workflowVoiceLanguage=c.speech_language;
   if(c.voice_languages)workflowVoiceLanguages=c.voice_languages;
   if(c.channel_voices)workflowChannelVoices=c.channel_voices;
   channelDesignLoad(c);
@@ -405,6 +407,9 @@ function workflowOpen(id){
   if(cur!==4)go(4);else workflowShowPane();
 }
 function workflowShowPane(){
+  if(workflowCurrent==='voice'&&!speechReferenceMode&&$('wf_speech_reference')&&(reviewSourceProfile?.narration?.delivery||boardState?.profile?.narration?.delivery||channelDesignDelivery)){
+    $('wf_speech_reference').value='saved';$('wf_speech_url').hidden=true;
+  }
   document.querySelectorAll('#dropzone [data-workflow-pane]').forEach(p=>p.hidden=p.dataset.workflowPane!==workflowCurrent);
   workflowMark();$('dropzone').scrollTop=0;const i=workflowSteps.findIndex(([id])=>id===workflowCurrent);const next=$('btn_prep');if(next)next.textContent=workflowCurrent==='render'?'Проверить перед сборкой':i<0?'К производству ролика':'Следующий пункт';const previous=$('screen4').querySelector('.nav>button');if(previous)previous.disabled=workflowCurrent==='source';
 }
@@ -519,6 +524,7 @@ function workflowOrganizeAccess(){
   const voiceLanguage=document.createElement('label');voiceLanguage.innerHTML='Язык пробы <select id="wf_voice_language"><option value="">Автоопределение по тексту</option>'+Object.entries(workflowVoiceLanguages).map(([code,name])=>'<option value="'+code+'">'+esc(name)+'</option>').join('')+'</select>';voicePreview.prepend(voiceLanguage);$('wf_voice_language').value=workflowVoiceLanguage;
   $('wf_voice_language').onchange=async event=>{workflowVoiceLanguage=event.target.value;await workflowUseChannelVoice(workflowVoiceLanguage,true);renderAccess();};
   voicePreview.querySelector('textarea').value=workflowVoiceDraft||(F.script||F.rwText||'').slice(0,450);voicePreview.querySelector('textarea').oninput=event=>workflowVoiceDraft=event.target.value;
+  workflowSpeechPanel(sections,voiceHelp,voicePreview);
   if(source!=='script'){
     voicePreview.hidden=true;
     voiceHelp.innerHTML='<strong>Используется готовая озвучка</strong><p>Новый синтез не нужен: в сборку поступит выбранный аудиофайл. Проверьте его произношение и подачу в своём плеере до генерации кадров.</p><button class="ghost" onclick="workflowOpen(\'source\')">К выбору аудиофайла</button>';
@@ -579,7 +585,7 @@ async function workflowVoiceSample(){
     let state;do{await new Promise(resolve=>setTimeout(resolve,700));state=await pywebview.api.get_state();if($('wf_voice_status'))$('wf_voice_status').textContent=state.message||'Готовлю озвучку…';}while(state.preparing);
     if(state.error)throw new Error(state.error);if(state.cancelled)return;
     const audio=await pywebview.api.voice_sample_result();if(!audio.ok)throw new Error(audio.error);
-    if($('wf_voice_player')){const player=document.createElement('audio');player.controls=true;player.src=audio.audio;$('wf_voice_player').replaceChildren(player);$('wf_voice_status').textContent='Прослушайте: понятны ли все слова, верны ли ударения и подходит ли подача. Полный ролик пока не запускался.';}
+    if($('wf_voice_player')){if($('wf_voice_player').closest('details'))$('wf_voice_player').closest('details').open=true;const player=document.createElement('audio');player.controls=true;player.src=audio.audio;$('wf_voice_player').replaceChildren(player);$('wf_voice_status').textContent='Прослушайте: понятны ли все слова, верны ли ударения и подходит ли подача. Полный ролик пока не запускался.';}
   }catch(error){if($('wf_voice_status'))$('wf_voice_status').textContent=String(error);}
   finally{if($('wf_voice_preview'))$('wf_voice_preview').disabled=false;}
 }
@@ -823,3 +829,63 @@ async function sourceStyleApply(variant){return sourceStyleWork(async()=>{
   channelDesignPut(r.profile);await channelDesignRefresh();mark();renderAccess();
   $('sv_status').textContent='Выбранный стиль и свой кадр-эталон сохранены. Сценарий не менялся; новые ролики продолжат с этим оформлением.';
 });}
+
+// Voice direction belongs to the target language, independently of UI language.
+let speechLocales={},speechPlanId='',speechPrompt='',speechNotes='',speechReferenceMode='',speechReferenceUrl='',speechBusy=false;
+const speechRegions={ro:[['ro-RO','Румыния']],es:[['es-MX','Латинская Америка · нейтральный'],['es-ES','Испания']],pt:[['pt-BR','Бразилия'],['pt-PT','Португалия']]};
+function speechRegionControl(language, callback){
+ const code=workflowLanguageCode(language),rows=speechRegions[code];
+ const label=document.createElement('label');label.textContent='Вариант языка ';label.hidden=!rows;
+ const select=document.createElement('select');select.dataset.speechRegion=code||'';
+ for(const [value,name] of rows||[]){const o=document.createElement('option');o.value=value;o.textContent=name;select.append(o);}
+ select.value=speechLocales[code]||(rows||[])[0]?.[0]||'';
+ select.onchange=async()=>{speechLocales[code]=select.value;const result=await pywebview.api.save_config({speech_locales:speechLocales});if(!result.ok){workflowNotice(result.error);return;}workflowSpeechDirty();callback?.();};
+ label.append(select);return label;
+}
+function workflowSpeechPanel(sections,help,quick){
+ help.innerHTML='<strong>Озвучка по референсу</strong><p>1. Подготовьте сценарий на нужном языке. 2. Выберите подачу референса и подготовьте промпт. 3. Прослушайте первые 30 секунд. Эти же аудиофрагменты используются при полной сборке.</p>';
+ const advanced=document.createElement('details');advanced.className='wf-help';advanced.innerHTML='<summary>Дополнительно · проба произвольного текста до 600 символов</summary>';quick.before(advanced);advanced.append(quick);
+ const language=$('wf_voice_language');language.parentElement.remove();
+ const panel=document.createElement('div');panel.className='wf-help';panel.id='wf_speech_panel';
+ const target=document.createElement('label');target.textContent='Язык готового сценария ';target.append(language);panel.append(target);
+ // Priority languages are first. All existing languages remain available.
+ const preferred=['ro','es','pt'];const entries=[...preferred.map(k=>[k,workflowVoiceLanguages[k]]),...Object.entries(workflowVoiceLanguages).filter(([k])=>!preferred.includes(k))];
+ language.innerHTML=entries.map(([code,name])=>'<option value="'+code+'">'+esc(name||code)+'</option>').join('');
+ workflowVoiceLanguage=workflowVoiceLanguage||workflowLanguageCode(F.rwLang)||'ro';language.value=workflowVoiceLanguage;
+ language.onchange=async e=>{workflowVoiceLanguage=e.target.value;workflowSpeechDirty();await pywebview.api.save_config({speech_language:workflowVoiceLanguage});await workflowUseChannelVoice(workflowVoiceLanguage,true);renderAccess();};
+ panel.append(speechRegionControl(workflowVoiceLanguage,()=>renderAccess()));
+ const choice=document.createElement('label');choice.textContent='Откуда взять подачу ';choice.innerHTML+='<select id="wf_speech_reference"><option value="saved">Из готового анализа или дизайна канала</option><option value="url">Из звука ролика YouTube</option></select>';panel.append(choice);
+ const input=document.createElement('input');input.id='wf_speech_url';input.type='url';input.placeholder='https://www.youtube.com/watch?v=...';input.value=speechReferenceUrl||F.rwUrl||'';input.oninput=e=>{speechReferenceUrl=e.target.value;workflowSpeechDirty();};panel.append(input);
+ const reference=choice.querySelector('select');reference.value=speechReferenceMode||((reviewSourceProfile?.narration?.delivery||channelDesignDelivery)?'saved':'url');
+ const toggle=()=>{input.hidden=reference.value!=='url';};reference.onchange=()=>{speechReferenceMode=reference.value;toggle();workflowSpeechDirty();};toggle();
+ const notes=document.createElement('textarea');notes.id='wf_speech_notes';notes.rows=3;notes.maxLength=2500;notes.placeholder='Указания к чтению: какие слова выделить, как произнести имена, где нужна пауза. Текст сценария не меняется.';notes.value=speechNotes;notes.oninput=e=>{speechNotes=e.target.value;workflowSpeechDirty();};panel.append(notes);
+ const actions=document.createElement('div');actions.innerHTML='<button class="primary" id="wf_speech_prepare" onclick="workflowSpeech(true)">2 · Подготовить промпт подачи</button><button class="primary" id="wf_speech_preview" onclick="workflowSpeech(false)">3 · Прослушать первые 30 секунд</button><button class="ghost" onclick="workflowStopVoice()">Остановить</button><button class="ghost" onclick="workflowSpeechDisable()">Отключить план подачи</button>';panel.append(actions);
+ const status=document.createElement('div');status.id='wf_speech_status';status.setAttribute('role','status');status.textContent='Промпт составляется без нового текстового запроса. Анализ звука и синтез оплачиваются выбранными сервисами. Для Lumean выберите голос нужного языка и региона.';panel.append(status);
+ const prompt=document.createElement('details');prompt.innerHTML='<summary>Посмотреть конкретный промпт подачи</summary><pre id="wf_speech_prompt" style="white-space:pre-wrap;max-height:240px;overflow:auto"></pre>';panel.append(prompt);
+ const player=document.createElement('div');player.id='wf_speech_player';panel.append(player);
+ advanced.before(panel);$('wf_speech_prompt').textContent=speechPrompt||'Сначала подготовьте подачу по референсу.';
+ if(speechPlanId&&!speechPrompt)pywebview.api.speech_plan_result().then(p=>{if(p.ok&&$('wf_speech_prompt')){speechPrompt=p.prompt;$('wf_speech_prompt').textContent=p.prompt;}}).catch(e=>{status.textContent=String(e);});
+ const scriptLanguage=$('rw_lang');if(scriptLanguage){const region=speechRegionControl(F.rwLang,()=>renderAccess());region.id='wf_script_region';scriptLanguage.closest('.lrow')?.after(region);scriptLanguage.addEventListener('change',()=>{workflowVoiceLanguage=workflowLanguageCode(scriptLanguage.value)||workflowVoiceLanguage;speechPlanId='';speechPrompt='';renderAccess();});}
+}
+function workflowSpeechText(){syncAll();return (F.script||boardState?.script||F.rwText||'').trim();}
+async function workflowSpeech(prepareOnly){
+ if(speechBusy)return;speechBusy=true;
+ try{
+  const text=workflowSpeechText();if(!text)throw new Error('Сначала подготовьте сценарий в пункте 3.');
+  const options={...replacementFields(),text,tts,voice:F.voice,language:workflowVoiceLanguage,locale:speechLocales[workflowVoiceLanguage]||speechRegions[workflowVoiceLanguage]?.[0][0]||null,reference_mode:$('wf_speech_reference').value,reference_url:$('wf_speech_url').value,notes:speechNotes,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||boardState?.profile||null)),prepare_only:prepareOnly,plan_id:prepareOnly?'':speechPlanId};
+  if(!prepareOnly&&!options.plan_id)throw new Error('Сначала нажмите «Подготовить промпт подачи».');
+  await saveKeys();
+  if($('wf_speech_status'))$('wf_speech_status').textContent=prepareOnly?'Анализирую подачу…':'Озвучиваю начало готового сценария…';
+  const result=await pywebview.api.speech_sample(options);if(!result.ok)throw new Error(result.error);
+  let state;do{await new Promise(r=>setTimeout(r,700));state=await pywebview.api.get_state();if($('wf_speech_status'))$('wf_speech_status').textContent=state.message||'Готовлю озвучку…';}while(state.preparing);
+  if(state.error)throw new Error(state.error);if(state.cancelled)return;
+  const plan=await pywebview.api.speech_plan_result();if(!plan.ok)throw new Error(plan.error);
+  speechPlanId=plan.id;speechPrompt=plan.prompt;if($('wf_speech_prompt'))$('wf_speech_prompt').textContent=plan.prompt;
+  if($('wf_speech_status'))$('wf_speech_status').textContent=(prepareOnly?'Подача подготовлена. Теперь прослушайте начало. ':'Проверьте произношение, акценты, паузы и подачу. ')+(plan.capability||'');
+  if(!prepareOnly){const audio=await pywebview.api.voice_sample_result();if(!audio.ok)throw new Error(audio.error);const player=document.createElement('audio');player.controls=true;player.src=audio.audio;if($('wf_speech_player'))$('wf_speech_player').replaceChildren(player);}
+ }catch(e){if($('wf_speech_status'))$('wf_speech_status').textContent=String(e);}
+ finally{speechBusy=false;}
+}
+async function workflowSpeechDisable(){const r=await pywebview.api.save_config({speech_plan_id:''});if(r.ok){speechPlanId='';speechPrompt='';if($('wf_speech_status'))$('wf_speech_status').textContent='План отключён. Сохранённые пробы остаются в кэше.';}else if($('wf_speech_status'))$('wf_speech_status').textContent=r.error;}
+
+function workflowSpeechDirty(){const had=!!speechPlanId;speechPlanId='';speechPrompt='';if(had)pywebview.api.save_config({speech_plan_dirty:true}).catch(e=>workflowNotice(String(e)));if($('wf_speech_prompt'))$('wf_speech_prompt').textContent='Настройки изменены. Подготовьте промпт подачи заново.';}

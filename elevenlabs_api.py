@@ -110,6 +110,8 @@ class ElevenLabs:
         if not parts:
             raise TTSError("Нет текста для озвучки")
         identity = json.dumps([self.MODEL, voice, parts], ensure_ascii=False).encode("utf-8")
+        outer_context=[getattr(self,'previous_text',''),getattr(self,'next_text','')]
+        if any(outer_context):identity+=json.dumps(outer_context,ensure_ascii=False).encode()
         settings = source_narration.eleven_settings(self.source_delivery)
         if settings:
             identity += json.dumps([self.source_delivery, settings, "context-v1"], sort_keys=True).encode()
@@ -131,6 +133,8 @@ class ElevenLabs:
                         payload["previous_text"] = parts[index - 1][-1000:]
                     if index + 1 < len(parts):
                         payload["next_text"] = parts[index + 1][:1000]
+                if not index and outer_context[0]:payload['previous_text']=outer_context[0][-1000:]
+                if index+1==len(parts) and outer_context[1]:payload['next_text']=outer_context[1][:1000]
                 response = self.s.post(self.BASE + f"/v1/text-to-speech/{voice}",
                                        params={"output_format": "mp3_44100_128"},
                                        json=payload,

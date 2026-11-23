@@ -97,7 +97,8 @@ with sync_playwright() as p:
  key=page.locator('[data-key-provider=elevenlabs] input.key');assert key.count()==1
  key.fill('workflow-eleven-fixture');key.blur()
  page.wait_for_function("async()=> (await pywebview.api.get_state()).config.has_elevenlabs")
- section('voice');page.locator('#tts_voice').fill('ru-fixture');page.locator('#tts_voice').blur()
+ section('voice');page.select_option('#wf_voice_language','ru');page.locator('#tts_voice').fill('ru-fixture');page.locator('#tts_voice').blur()
+ page.locator('details').filter(has=page.locator('#wf_voice_text')).evaluate("e=>e.open=true")
  page.locator('#wf_voice_text').fill('Русская речь должна быть понятной. Ударения и интонация важны.')
  page.locator('#wf_voice_preview').click();page.wait_for_selector('#wf_voice_player audio',timeout=15000)
  assert len(speech)==1 and speech[0][1:] == ('ru-fixture','ru')
@@ -172,6 +173,7 @@ with sync_playwright() as p:
  page.locator('#channel_design_dialog').get_by_role('button',name='Закрыть',exact=True).click()
  section('voice');page.select_option('#wf_voice_language','en')
  page.wait_for_function("F.voice==='native-en-fixture'")
+ page.locator('details').filter(has=page.locator('#wf_voice_text')).evaluate("e=>e.open=true")
  page.fill('#wf_voice_text','This English sample uses clear native sentences and a natural spoken rhythm.')
  page.click('#wf_voice_preview');page.wait_for_function("document.getElementById('wf_voice_status').textContent.includes('Прослушайте')")
  assert len(speech)==2 and speech[-1][1:] == ('native-en-fixture','en'),speech

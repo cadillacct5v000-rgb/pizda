@@ -189,44 +189,38 @@ class Lumean:
         return j.get("data", j)
 
     def check(self):
-        r = self.s.get(self.BASE + "/user", timeout=30)
-        if r.status_code in (403, 404):  # нет права profile.read — пробуем voices.read
-            r2 = self.s.get(self.BASE + "/voices/elevenlabs/library", params={"page": 0, "page_size": 1}, timeout=30)
-            if r2.status_code == 403:
-                raise TTSError("Lumean: у ключа нет прав. В кабинете Lumean создайте новый API-ключ с набором прав «full» "
-                               "(нужны orders.write, templates.write, voices.read, orders.download).")
-            self._j(r2)
-            return "OK · ключ принят (без доступа к профилю)"
+        r = self.s.get(self.BASE + "/key", timeout=30)
         d = self._j(r)
-        name = d.get("name") or d.get("email") or ""
-        return f"OK · {name}".rstrip(" ·")
+        return 'OK · ключ Lumean принят; синтез не запускался'
 
-    def voices(self):
-        try:
-            d = self._j(self.s.get(self.BASE + "/voices/elevenlabs/library", params={"page": 0, "page_size": 30}, timeout=60))
-            items = d.get("voices") or []
-            return [{"id": v.get("voice_id"), "name": v.get("name", ""), "lang": (v.get("language") or ""),
-                     "gender": v.get("gender", "")} for v in items if v.get("voice_id")]
-        except Exception:
-            return []
+    def voices(self,language=None):
+        params={'provider':'elevenlabs','page':1,'per_page':100}
+        if language:params['language']=language
+        d=self._j(self.s.get(self.BASE+'/voices',params=params,timeout=60))
+        items=d.get('items') or []
+        return [{'id':v['voice_id'],'name':(v.get('name') or v['voice_id'])+' · '+', '.join(filter(None,[v.get('language'),v.get('accent')])),
+                 'lang':v.get('language') or '', 'gender':v.get('gender') or ''} for v in items if v.get('voice_id')]
 
     MODELS = ("eleven_v4", "eleven_v3")  # новейшая модель первой; если сервис её не принимает — откат
 
     def _template(self, voice_id, language):
         """Находим или создаём шаблон TTS с нужным голосом."""
         existing = self._j(self.s.get(self.BASE + "/templates", timeout=60)) or []
+        if isinstance(existing,dict):existing=existing.get('items',existing.get('templates',[]))
         last = None
         for model_id in self.MODELS:
+            settings=source_narration.eleven_settings(getattr(self,'source_delivery',None)) or {'stability':0.5,'speed':1.0}
+            settings=dict(settings)
+            if model_id in ('eleven_v3','eleven_v3_beta'):
+                settings['stability']=min((0.,.5,1.),key=lambda v:abs(v-settings['stability']))
+            desired={'mode':'mode_v1','model_id':model_id,'voice_id':voice_id,
+                     'advanced_voice_settings':True,'voice_settings':settings}
+            if language:desired['language_code']=language
             for t in existing:
                 cfg = (t.get("config") or {}).get("tts_settings") or {}
-                if t.get("name") == self.TEMPLATE_NAME and cfg.get("voice_id") == voice_id and cfg.get("model_id") == model_id:
+                if t.get("name") == self.TEMPLATE_NAME and all(cfg.get(k)==v for k,v in desired.items()) and cfg.get('language_code')==language:
                     return t["id"]
-            body = {"service_key": "elevenlabs", "name": self.TEMPLATE_NAME, "config": {"tts_settings": {
-                "mode": "mode_v1", "model_id": model_id, "voice_id": voice_id,
-                "advanced_voice_settings": False,
-                "voice_settings": {"stability": 0.5, "speed": 1.0}}}}
-            if language:
-                body["config"]["tts_settings"]["language_code"] = language
+            body = {"service_key": "elevenlabs", "name": self.TEMPLATE_NAME, "config": {"tts_settings":desired}}
             try:
                 return self._j(self.s.post(self.BASE + "/templates", json=body, timeout=60))["id"]
             except TTSError as e:
@@ -236,26 +230,42 @@ class Lumean:
         raise last
 
     def synthesize(self, text, voice_id, out_path, progress=None, language=None):
+        import hashlib
+        import json
+        from pathlib import Path
+        import narration_rules
+        language=narration_rules.language_code(language)
         if not voice_id:
+            if getattr(self,'speech_prompt',None):raise TTSError('Lumean: выберите голос нужного языка в «Списке». Первый случайный голос не используется для пробы.')
             vs = self.voices()
             if not vs:
                 raise TTSError("Lumean: не выбран голос")
             voice_id = vs[0]["id"]
         tid = self._template(voice_id, language)
-        d = self._j(self.s.post(self.BASE + "/orders", json={"template_id": tid, "input_text": text, "name": "VideoGen voiceover"}, timeout=60))
-        order_id = d["id"]
+        voiced_text=text
+        if getattr(self,'speech_prompt',None):
+            import speech_plan
+            voiced_text=speech_plan.lumean_direction(getattr(self,'speech_locale',None),language,self.source_delivery,getattr(self,'speech_notes',''))+'\n'+text
+        signature=hashlib.sha256(json.dumps([voiced_text,voice_id,language,getattr(self,'source_delivery',None),
+                     hashlib.sha256(self.s.headers.get('X-API-KEY','').encode()).hexdigest()],sort_keys=True).encode()).hexdigest()
+        receipt=Path(out_path).parent/('.lumean-'+signature+'.json')
+        try:saved=json.loads(receipt.read_text(encoding='utf-8'))
+        except (OSError,ValueError):saved={}
+        if saved.get('state')=='submitting':
+            raise TTSError('Lumean: предыдущая отправка не подтверждена. Проверьте заказ в кабинете; автоматическая повторная оплата остановлена.')
+        order_id=saved.get('order_id')
+        if not order_id:
+            netutil.check_cancel()
+            source_narration._atomic(receipt,{'state':'submitting'})
+            response=self.s.post(self.BASE + "/orders", json={"template_id": tid, "input_text": voiced_text, "name": "KadroGen voiceover"}, timeout=60)
+            if response.status_code in (400,401,403,404,422,429):receipt.unlink(missing_ok=True)
+            d = self._j(response)
+            order_id = d['id']
+            source_narration._atomic(receipt,{'state':'submitted','order_id':order_id})
         t0 = time.time()
-        retried, retried_at, reorders = 0, 0.0, 0
         while True:
+            netutil.check_cancel()
             d = self._j(netutil.patient(lambda: self.s.get(self.BASE + f"/orders/{order_id}", timeout=30)))
-            if reorders < 1 and time.time() - t0 > 1500 and (d.get("status") or "") not in ("partially_completed", "completed", "result_delivered"):
-                # заказ висит в очереди 25 минут — такое у Lumean бывает, отправляем тот же текст заново
-                reorders += 1
-                if progress:
-                    progress("озвучка Lumean: заказ завис в очереди, отправляю заново")
-                d = self._j(self.s.post(self.BASE + "/orders", json={"template_id": tid, "input_text": text, "name": "VideoGen voiceover"}, timeout=60))
-                order_id, t0 = d["id"], time.time()
-                continue
             st = d.get("status")
             if progress:
                 progress(f"озвучка Lumean: {st}")
@@ -263,9 +273,8 @@ class Lumean:
                 break
             if st in ("failed", "compensated", "cancelled"):
                 raise TTSError(f"Lumean: заказ {st}: {(d.get('result') or {}).get('user_message') or ''}")
-            if st == "partially_completed" and retried < 3 and time.time() - retried_at > 60:
-                retried, retried_at = retried + 1, time.time()
-                self.s.post(self.BASE + f"/orders/{order_id}/items/retry-failed", timeout=30)
+            if st == 'partially_completed':
+                raise TTSError('Lumean: часть заказа не готова. Заказ '+str(order_id)+' сохранён; проверьте неудачные части в кабинете. Повторные запросы не отправлялись.')
             if time.time() - t0 > 3600:
                 raise TTSError("Lumean: озвучка не завершилась за час")
             netutil.pause(4)
@@ -342,7 +351,18 @@ class EdgeTTS:
         import os
         import subprocess
         import tempfile
-        voice = (voice_id or "").strip() or self.DEFAULT_BY_LANG.get((language or "ru")[:2], self.DEFAULT_VOICE)
+        locale=getattr(self,'speech_locale',None)
+        if locale:
+            import speech_plan
+            speech_plan.check_voice('edge',voice_id,locale)
+        regional={'ro-RO':'ro-RO-EmilNeural','es-MX':'es-MX-JorgeNeural','es-ES':'es-ES-AlvaroNeural',
+                  'pt-BR':'pt-BR-AntonioNeural','pt-PT':'pt-PT-DuarteNeural'}
+        voice = (voice_id or "").strip() or regional.get(locale) or self.DEFAULT_BY_LANG.get((language or "ru")[:2], self.DEFAULT_VOICE)
+        delivery=getattr(self,'source_delivery',None)
+        rate={}
+        if locale and delivery:
+            percent=round(max(-12,min(12,(delivery.get('tempo_wpm',150)/150-1)*100)))
+            rate={'rate':f'{percent:+d}%'}
         parts = self._split(text)
         if not parts:
             raise TTSError("Нет текста для озвучки")
@@ -355,7 +375,7 @@ class EdgeTTS:
                     for attempt in range(3):
                         netutil.check_cancel()
                         try:
-                            await self.edge.Communicate(parts[k], voice).save(files[k])
+                            await self.edge.Communicate(parts[k], voice, **rate).save(files[k])
                             if os.path.getsize(files[k]) <= 500:
                                 raise TTSError("Edge вернул пустую или слишком короткую запись")
                             break
@@ -419,7 +439,7 @@ class FastGenTTS:
         return out
 
     def _one(self, text, voice):
-        payload = {"operation": self.OP, "prompt": source_narration.gemini_prompt(text, self.source_delivery)}
+        payload = {"operation": self.OP, "prompt": source_narration.gemini_prompt(text, self.source_delivery, getattr(self,'speech_prompt',None))}
         if voice:
             payload["voice"] = voice
         for attempt in range(12):

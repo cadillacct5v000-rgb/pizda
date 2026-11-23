@@ -2955,6 +2955,10 @@ import source_narration
 
 def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
     """Озвучить сценарий выбранным сервисом; результат кэшируется в job_dir/voiceover.mp3."""
+    if not cfg.get('_speech_chunk') and cfg.get('speech_plan_id'):
+        import speech_plan
+        plan=speech_plan.bind(cfg,data_dir(),script_text)
+        return speech_plan.render(data_dir(),plan,cfg,tts_service,voice_id,progress)
     logical_tts=tts_service
     cfg={**cfg,"_legacy_tts_voice":voice_id or ""}
     cfg=replacement.effective(cfg)
@@ -2964,7 +2968,7 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
     signature = {"text_sha256": hashlib.sha256(script_text.encode("utf-8")).hexdigest(),
                  "service": tts_service, "voice": voice_id or ""}
     if tts_service=="elysium":signature["model"]=cfg["elysium_tts_model"]
-    source_delivery = cfg.get("_source_delivery") if tts_service in ("fastgen", "elevenlabs", "elysium") else None
+    source_delivery = cfg.get("_source_delivery") if tts_service in ("fastgen", "elevenlabs", "elysium", "lumean") or cfg.get('_speech_chunk') and tts_service=='edge' else None
     import narration_rules
     explicit_language=narration_rules.language_code(cfg.get("_tts_language"))
     if explicit_language:
@@ -2972,6 +2976,10 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
         source_delivery=narration_rules.voice_direction(source_delivery,explicit_language)
     if source_delivery:
         signature["source_delivery"] = source_delivery
+    if cfg.get('_speech_prompt'):
+        signature['speech_prompt']=cfg['_speech_prompt']
+        signature['speech_locale']=cfg.get('_speech_locale')
+        signature['speech_context']=[cfg.get('_speech_previous',''),cfg.get('_speech_next','')]
     try:
         previous=read_json(out+'.json')
         legacy={"text_sha256":signature['text_sha256'],"service":logical_tts,"voice":(cfg.get('_legacy_tts_voice') or '')}
@@ -2999,6 +3007,12 @@ def make_voiceover(cfg, script_text, tts_service, voice_id, job_dir, progress):
     else:client = make_tts(tts_service, key)
     if source_delivery:
         client.source_delivery = source_delivery
+    if cfg.get('_speech_prompt'):
+        client.speech_prompt=cfg['_speech_prompt']
+        client.speech_locale=cfg.get('_speech_locale')
+        client.previous_text=cfg.get('_speech_previous','')
+        client.next_text=cfg.get('_speech_next','')
+        client.speech_notes=cfg.get('_speech_notes','')
     try:
         _synth(client, script_text, voice_id, out + ".part", lambda m: progress("tts", 0, 1, m), lang)
     except Cancelled:
@@ -3463,8 +3477,11 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
         return studio.improve_script(text,None if design else profile,cfg,os.path.join(data_dir(),'jobs','studio_scripts'),say,client,language=rw.get('language') or cfg.get('rewrite_lang'))
     extra = {"source_profile": profile, "preserve_structure": True} if profile and not design and not profile.get("content_only") else {}
     target_words = len(text.split()) if profile and not design and not profile.get("content_only") else (rw.get("words") or cfg.get("rewrite_words") or 1500)
+    language=rw.get("language") or cfg.get("rewrite_lang") or "польском"
+    locale=__import__("narration_rules").locale_for(language,cfg)
+    if locale:extra["locale"]=locale
     return rwmod.rewrite(text, engine, key, cfg.get(engine + "_model"), target_words,
-                         rw.get("language") or cfg.get("rewrite_lang") or "польском", os.path.join(data_dir(), "jobs"), say, **extra)
+                         language, os.path.join(data_dir(), "jobs"), say, **extra)
 
 
 def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite=None, source_profile=None):

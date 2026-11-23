@@ -35,7 +35,7 @@ from fastgen_api import FastGen, app_dir, data_dir
 import endpoints
 import pipeline
 
-VERSION = "2.0.26-dev"
+VERSION = "2.0.27-dev"
 # Для этой исправленной версии канал автообновления ещё не настроен.
 # Исходный канал Google Диска заменял бы программу сборкой без наших исправлений.
 UPDATE_FOLDER_ID = ""
@@ -90,7 +90,7 @@ def continue_with_elysium(saved,patch,queue_id=None):
             if len(args)>8 and args[8]:args[8]={**args[8],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[8].get('engine')}
         elif name=='run_youtube_sample':args[0]=update(args[0]);args[1]=update(args[1])
         elif name=='run_storyboard':args[2]=update(args[2])
-        elif name=='run_voice_sample':args[1]=update(args[1])
+        elif name in ('run_voice_sample','run_speech_sample'):args[1]=update(args[1])
         elif name=='run_studio':args[5]=update(args[5])
         elif name=='run_rewrite':args[0]={**args[0],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[0].get('engine')}
         elif name=='run_prepare' and len(args)>5 and args[5]:args[5]={**args[5],'_replacement_options':replacement.settings(patch),'engine':patch.get('rewrite_engine') or args[5].get('engine')}
@@ -771,6 +771,61 @@ def run_prepare(audio, provider, mode, use_refs, script=None, rewrite=None):
 
 _VOICE_SAMPLE=None
 _VOICE_SAMPLE_ACTIVE=False
+_VOICE_PLAN_RESULT=None
+
+
+def run_speech_sample(opts,cfg,service,voice):
+    global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE,_VOICE_PLAN_RESULT
+    with LOCK:_VOICE_SAMPLE_ACTIVE=True
+    import speech_plan
+    import source_narration
+    try:
+        if opts.get('plan_id'):
+            plan=speech_plan.load(data_dir(),opts['plan_id'])
+            if speech_plan.script_hash(opts['text'])!=plan['script_sha256']:
+                raise ValueError('Сценарий изменился. Сначала подготовьте новую подачу.')
+            if opts.get('locale')!=plan['locale'] or __import__('narration_rules').language_code(opts.get('language'))!=plan['language']:
+                raise ValueError('Язык или регион изменился. Подготовьте новую подачу.')
+            key=opts['plan_id']
+        else:
+            mode=opts.get('reference_mode','saved')
+            delivery=None
+            if mode=='url':
+                import youtube_source
+                cache=Path(data_dir())/'cache';cache.mkdir(parents=True,exist_ok=True)
+                audio=youtube_source.audio(opts.get('reference_url',''),str(cache),str(Path(pipeline.ffmpeg_bin()).parent),
+                    cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
+                observed=source_narration.analyse(audio,pipeline.audio_duration(audio),cfg,str(cache),lambda m:progress_cb('speech_plan',0,1,m))
+                delivery=(observed or {}).get('delivery')
+            elif mode=='saved':
+                delivery=source_narration.delivery_of(opts.get('source_profile'))
+                if not delivery:
+                    import channel_design
+                    channel=channel_design.selected(data_dir(),cfg)
+                    delivery=(channel or {}).get('delivery')
+            else:raise ValueError('Выберите подачу сохранённого референса или ссылку YouTube.')
+            if not delivery:
+                raise ValueError('Нет анализа исходной речи. Укажите ссылку на звучащий референс и ключ Elysium или Gemini в «Подключениях».')
+            plan=speech_plan.build(opts['text'],opts['language'],opts.get('locale'),delivery,opts.get('notes',''))
+            key=speech_plan.save(data_dir(),plan)
+        pipeline.check_cancel()
+        with LOCK:
+            current=load_cfg();current['speech_plan_id']=key;current['speech_plan_dirty']=False
+            locales=current.get('speech_locales',{}).copy()
+            if plan['locale']:locales[plan['language']]=plan['locale']
+            current.update(speech_locales=locales,speech_language=plan['language']);save_cfg(current)
+            _VOICE_PLAN_RESULT={'id':key,'prompt':plan['prompt'],'language':plan['language'],'locale':plan['locale'],
+                                'script_sha256':plan['script_sha256'],'capability':speech_plan.capabilities(replacement.service(cfg,service),replacement.effective(cfg).get('elysium_tts_model',''))}
+        if not opts.get('prepare_only'):
+            output=speech_plan.render(data_dir(),plan,cfg,service,voice,pipeline.Progress(progress_cb),preview=True)
+            with LOCK:_VOICE_SAMPLE=output
+        with LOCK:STATE.update(stage='speech_plan_done',message='Промпт подачи готов.' if opts.get('prepare_only') else 'Первые 30 секунд озвучки готовы. Прослушайте перед полной сборкой.',error=None)
+    except pipeline.Cancelled:
+        with LOCK:STATE.update(cancelled=True,message='Подготовка озвучки остановлена',error=None)
+    except (Exception,SystemExit) as error:
+        with LOCK:STATE.update(error=key_error(error),message='Озвучка не подготовлена; готовые фрагменты сохранены')
+    finally:
+        with LOCK:STATE['preparing']=False;_VOICE_SAMPLE_ACTIVE=False
 
 def run_voice_sample(text,cfg,service,voice):
     global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE
@@ -1522,6 +1577,7 @@ class Api:
             text=(opts.get('text') or '').strip()
             if not text or len(text)>600:raise ValueError('Для пробы введите от 1 до 600 символов.')
             cfg=load_cfg();cfg.update(replacement.settings(cfg,opts))
+            cfg.pop('speech_plan_id',None)  # Arbitrary short text is independent of a full-script plan.
             service=opts.get('tts') or cfg.get('tts_service') or 'edge'
             if service!='fastgen':cfg['elysium_replace_fastgen']=False
             replacement.effective(cfg)
@@ -1544,6 +1600,53 @@ class Api:
                 STATE.update(preparing=True,cancelled=False,error=None,stage='voice_sample',message='Готовлю короткую пробу выбранного голоса')
                 threading.Thread(target=run_voice_sample,args=(text,copy.deepcopy(cfg),service,opts.get('voice') or ''),daemon=True).start()
             return {'ok':True}
+        except (Exception,SystemExit) as error:return {'ok':False,'error':key_error(error)}
+
+    def speech_sample(self, opts):
+        """Prepare reference delivery or listen to the actual reusable first 30 s."""
+        global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE,_VOICE_PLAN_RESULT
+        try:
+            import narration_rules
+            import speech_plan
+            options=copy.deepcopy(opts)
+            if not isinstance(options.get('notes',''),str) or len(options.get('notes',''))>2500:raise ValueError('Указания к чтению: не более 2500 символов.')
+            text=options.get('text')
+            if not isinstance(text,str) or not 1<=len(text.strip())<=160000:raise ValueError('Сначала откройте готовый сценарий.')
+            code=narration_rules.language_code(options.get('language'))
+            if not code:raise ValueError('Выберите язык готового сценария.')
+            if narration_rules.wrong_script(text,code):raise ValueError('Сначала подготовьте сценарий на выбранном языке.')
+            if options.get('prepare_only') and options.get('reference_mode')=='url':
+                import youtube_source
+                youtube_source.video_id(options.get('reference_url',''))
+            cfg=load_cfg();cfg.update(replacement.settings(cfg,options))
+            service=options.get('tts') or cfg.get('tts_service') or 'edge'
+            if service!='fastgen':cfg['elysium_replace_fastgen']=False
+            effective=replacement.effective(cfg);actual=replacement.service(effective,service)
+            speech_plan.capabilities(actual,effective.get('elysium_tts_model',''))
+            options['locale']=narration_rules.locale_for(code,cfg,options.get('locale'))
+            if not options.get('prepare_only'):
+                speech_plan.check_voice(actual,effective.get('elysium_tts_voice') if actual=='elysium' else options.get('voice'),options['locale'])
+                if not options.get('plan_id'):raise ValueError('Сначала подготовьте промпт подачи.')
+                field=pipeline.SINGLE_KEY.get(actual,actual+'_api_key')
+                if actual!='edge' and not cfg.get(field):raise ValueError('Введите ключ '+actual+' в «Подключениях».')
+            with LOCK:
+                if STATE['running'] or STATE['preparing'] or STATE.get('queue_active') or STATE.get('service_switch'):
+                    raise ValueError('Дождитесь текущей задачи или остановите её.')
+                _VOICE_SAMPLE=None;_VOICE_PLAN_RESULT=None;_VOICE_SAMPLE_ACTIVE=True
+                pipeline.CANCEL.clear();pipeline.clear_wait()
+                STATE.update(preparing=True,cancelled=False,error=None,stage='speech_plan',message='Готовлю подачу озвучки по референсу')
+                threading.Thread(target=run_speech_sample,args=(options,copy.deepcopy(cfg),service,options.get('voice') or ''),daemon=True).start()
+            return {'ok':True}
+        except (Exception,SystemExit) as error:return {'ok':False,'error':key_error(error)}
+
+    def speech_plan_result(self):
+        try:
+            if _VOICE_PLAN_RESULT:return {'ok':True,**_VOICE_PLAN_RESULT}
+            import speech_plan
+            cfg=load_cfg();key=cfg.get('speech_plan_id')
+            if not key:return {'ok':False,'error':'Подача пока не подготовлена.'}
+            plan=speech_plan.load(data_dir(),key)
+            return {'ok':True,'id':key,'prompt':plan['prompt'],'language':plan['language'],'locale':plan['locale'],'script_sha256':plan['script_sha256']}
         except (Exception,SystemExit) as error:return {'ok':False,'error':key_error(error)}
 
     def cancel_voice_sample(self):
@@ -1804,6 +1907,7 @@ class Api:
             "openai_model": cfg.get("openai_model", "gpt-4.1-mini"),
             "theme": cfg.get("theme", "dark"),
             "voice_languages":{code:label for label,code in __import__("narration_rules").LANGUAGES.items()},
+            "speech_locales":cfg.get('speech_locales',{}),"speech_language":cfg.get('speech_language',''),"speech_plan_id":cfg.get('speech_plan_id',''),"speech_plan_dirty":bool(cfg.get('speech_plan_dirty')),
             "channel_voices":cfg.get("channel_voices",{}),
             "studio": studio.settings(cfg), "studio_configured": bool(cfg.get("studio_configured")), "youtube_sample_start": cfg.get("youtube_sample_start",0),
             "providers": [p for p in (cfg.get("image_providers") or []) if p in pipeline.PROVIDERS],
@@ -1962,6 +2066,22 @@ class Api:
                 pass
         if data.get("rewrite_lang"):
             cfg["rewrite_lang"] = str(data["rewrite_lang"]).strip()
+        if 'speech_locales' in data:
+            import narration_rules
+            values=data['speech_locales']
+            if not isinstance(values,dict):return {'ok':False,'error':'Выберите регионы речи.'}
+            try:
+                cfg['speech_locales']={code:narration_rules.locale_for(code,locale=value) for code,value in values.items() if code in narration_rules.DEFAULT_LOCALES}
+            except ValueError as error:return {'ok':False,'error':str(error)}
+        if 'speech_plan_id' in data and not data['speech_plan_id']:
+            cfg.pop('speech_plan_id',None)
+            cfg['speech_plan_dirty']=False
+        if 'speech_plan_dirty' in data:
+            cfg['speech_plan_dirty']=bool(data['speech_plan_dirty'])
+        if 'speech_language' in data:
+            import narration_rules
+            value=narration_rules.language_code(data['speech_language'])
+            if value:cfg['speech_language']=value
         if "use_refs" in data:
             cfg["use_refs"] = bool(data["use_refs"])
         if "subtitles" in data:
@@ -2789,6 +2909,7 @@ class Api:
                 from elysium_media import ElysiumTTS
                 cfg={**cfg,**replacement.settings(cfg)}
                 vs=ElysiumTTS(key,cfg['elysium_tts_model'],cfg.get('elysium_base_url')).voices()
+            elif service=='lumean':vs=make_tts(service,key).voices(language=cfg.get('speech_language') or __import__('narration_rules').language_code(cfg.get('rewrite_lang')))
             else:vs = make_tts(service, key).voices()
             return {"ok": True, "voices": vs[:200]}
         except Exception as e:
@@ -2995,6 +3116,13 @@ def main():
                 assert Path(RES_DIR,asset).is_file(),asset
             import style_variants
             assert callable(style_variants.prepare) and callable(style_variants.previews)
+            import speech_plan
+            observation={'speech_present':True,'instructions':'Measured conversational delivery with clear phrase endings and brief pauses.',
+                         'tempo_wpm':150,'pause_ms':400,'intonation_variation':.5,'energy':.4}
+            for code,text in [('ro','Balena înoată în ocean.'),('es','La ballena nada en el océano.'),('pt','A baleia nada no oceano.')]:
+                plan=speech_plan.build(text,code,None,observation)
+                key=speech_plan.save(root,plan)
+                assert speech_plan.load(root,key)['script']==text
             import drawing_plugins
             drawing_plugins.render(drawing_plugins.example(),{'drawing':{'style':'sketchbook'}},root/'drawing.png',320,180)
             assert drawing_plugins.metadata(root/'drawing.png')
@@ -3063,7 +3191,7 @@ def main():
 
 
 # Record only worker entry points, never API calls or public state containing secrets.
-for _worker in ('run_job','run_prepare','run_rewrite','run_storyboard','run_studio','run_youtube_sample','run_queue','run_voice_sample'):
+for _worker in ('run_job','run_prepare','run_rewrite','run_storyboard','run_studio','run_youtube_sample','run_queue','run_voice_sample','run_speech_sample'):
     globals()[_worker]=resumable_service_task(globals()[_worker])
 
 if __name__ == "__main__":

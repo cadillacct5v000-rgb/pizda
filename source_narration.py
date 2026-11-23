@@ -248,14 +248,14 @@ def delivery_of(profile):
     return validate(data['delivery']) if data.get('delivery') else None
 
 
-def gemini_prompt(text, delivery):
-    if not delivery:
+def gemini_prompt(text, delivery, speech_prompt=None):
+    if not delivery and not speech_prompt:
         return text
     # Direction is not part of the narration and must never be spoken.
     return ('Voice direction, do not read aloud: Narrate the text below in its own language. '
             'Match the source delivery described in this JSON, preserving its pace, pauses and relative intonation; '
             'retain the selected voice. Do not add narration or copy source words.\n'
-            + json.dumps(delivery, ensure_ascii=False) + '\nSpeak only the text between narration delimiters, verbatim:\n<narration>\n'
+            + (speech_prompt or json.dumps(delivery, ensure_ascii=False)) + '\nSpeak only the text between narration delimiters, verbatim:\n<narration>\n'
             + text + '\n</narration>')
 
 
@@ -276,7 +276,7 @@ def has_audio(path):
 
 
 def attach_youtube(profile, video_path, url, cfg, cache_dir, progress=None):
-    if cfg.get('tts_service') not in ('fastgen', 'elevenlabs') or not _route(cfg):
+    if cfg.get('tts_service') not in ('fastgen', 'elevenlabs', 'elysium', 'lumean') or not _route(cfg):
         return attach(profile, video_path, profile['sampling']['duration'], cfg, cache_dir, progress)
     path = video_path
     if not has_audio(path):
@@ -292,7 +292,7 @@ def attach_youtube(profile, video_path, url, cfg, cache_dir, progress=None):
 
 
 def attach(profile, path, duration, cfg, cache_dir, progress=None):
-    if cfg.get('tts_service') not in ('fastgen', 'elevenlabs'):
+    if cfg.get('tts_service') not in ('fastgen', 'elevenlabs', 'elysium', 'lumean'):
         return profile
     narration = analyse(path, duration, cfg, cache_dir, progress)
     if not narration:

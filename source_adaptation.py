@@ -160,7 +160,8 @@ def create(text, profile, cfg, directory, client, progress=None, *, language=Non
     import rewrite
     if not text.strip(): raise ValueError('Исходный текст пуст.')
     profile = profile or {}
-    identity = sb.digest([VERSION, text, profile, cfg.get('editing_pace'), language])
+    locale=narration_rules.locale_for(language,cfg)
+    identity = sb.digest([VERSION, text, profile, cfg.get('editing_pace'), language,locale,narration_rules.VERSION])
     folder = Path(directory) / identity
     folder.mkdir(parents=True, exist_ok=True)
     facts_folder=Path(directory)/'source-facts'/sb.digest([VERSION,text])
@@ -195,7 +196,7 @@ def create(text, profile, cfg, directory, client, progress=None, *, language=Non
             'reference_visual_grammar': visual, 'approved_own_design': design,
             'target_words': targets, 'maximum_sections': target_sections,
             'own_style_request': own_request}
-    prompt = (BRIEF + narration_rules.writing('plan',language) + (rewrite.lang_rule(language) if language else 'Use the source language for viewer-facing fields. ') + ' Use English only for visual_style. Design a distinct editorial blueprint for the whole video. Learn from useful source '
+    prompt = (BRIEF + narration_rules.writing('plan',language,locale) + (rewrite.lang_rule(language) if language else 'Use the source language for viewer-facing fields. ') + ' Use English only for visual_style. Design a distinct editorial blueprint for the whole video. Learn from useful source '
               'mechanisms (clear stakes, a question/payoff, explanatory visuals) while changing the structure '
               'and expression. Keep and change describe concrete editorial decisions, not vague synonyms. '
               'Use only the supplied claims; every section selects existing fact_ids. Every important claim '
@@ -233,7 +234,7 @@ def create(text, profile, cfg, directory, client, progress=None, *, language=Non
     for i, section in enumerate(blueprint['sections']):
         netutil.check_cancel()
         if progress: progress(f'самостоятельный сценарий: часть {i + 1}/{len(blueprint["sections"])}')
-        prompt = (BRIEF + narration_rules.writing('script',language) + (rewrite.lang_rule(language) if language else 'Use the source language. ') +
+        prompt = (BRIEF + narration_rules.writing('script',language,locale) + (rewrite.lang_rule(language) if language else 'Use the source language. ') +
                   'Write ONLY this section of a coherent original narration. No headings or production notes. '
                   'The first section establishes an honest hook; the last resolves the promised question. '
                   'Use original wording and explanatory reasoning, not a sentence-by-sentence paraphrase. '

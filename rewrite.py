@@ -238,15 +238,15 @@ def rewrite_key(source_text, words, language, engine):
     return hashlib.sha1(f"v2|{engine}|{language}|{words}|{source_text.strip()}".encode("utf-8")).hexdigest()[:10]
 
 
-def rewrite(source_text, engine, key, model, words, language, cache_dir, progress=None, *, source_profile=None, preserve_structure=False):
+def rewrite(source_text, engine, key, model, words, language, cache_dir, progress=None, *, source_profile=None, preserve_structure=False, locale=None):
     """Возвращает переписанный сценарий; результат кэшируется по содержимому исходника."""
     if preserve_structure:
         from faithful_rewrite import rewrite_full
-        return rewrite_full(source_text, engine, key, model, words, language, cache_dir, progress, source_profile)
+        return rewrite_full(source_text, engine, key, model, words, language, cache_dir, progress, source_profile,locale=locale)
     words = max(100, int(words or 1500))
     language = (language or "польском").strip()
     os.makedirs(cache_dir, exist_ok=True)
-    cache = os.path.join(cache_dir, f"rewrite_{rewrite_key(source_text, words, language, engine)}.txt")
+    cache = os.path.join(cache_dir, f"rewrite_{rewrite_key(source_text, words, language + (' / '+locale if locale else ''), engine)}.txt")
     source_path = os.path.join(cache_dir, "source_" + hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:16] + ".txt")
     with open(source_path + ".tmp", "w", encoding="utf-8") as source_file:
         source_file.write(source_text)
@@ -256,7 +256,7 @@ def rewrite(source_text, engine, key, model, words, language, cache_dir, progres
             progress("рерайт уже есть, беру из кэша")
         return open(cache, encoding="utf-8").read()
     import narration_rules
-    narration_guide=narration_rules.writing('script',language)
+    narration_guide=narration_rules.writing('script',language,locale)
     name = ENGINE_NAMES.get(engine, engine)
     if words <= PART_WORDS:
         if progress:

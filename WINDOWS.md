@@ -122,3 +122,8 @@ Install the full Windows package: NumPy adds native dependencies, so the earlier
 update is insufficient. Keep the existing data directory and projects. Sketchling uses
 installed Edge/Chrome; Cloveric does not require a browser. No Node or npm installation
 is required at runtime. Source scenes are bounded JSON data, not executable model output.
+
+2.0.27 adds native Romanian, regional Spanish and Portuguese narration directions,
+a reference-informed voice plan and a reusable first-30-second audio preview.
+Lumean now matches template language/settings, enables advanced voice controls
+and resumes the same order after a polling failure. See VOICE_RU.txt in the full package.

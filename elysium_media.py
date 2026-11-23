@@ -216,7 +216,8 @@ class ElysiumTTS:
             if self.model.startswith('google/'):
                 inputs={'speakers':[{'speaker_id':'narrator','voice_name':voice,'accent':'Neutral','pace':'Natural'}],
                         'dialogue_turns':[{'speaker_id':'narrator','text':part}]}
-                if self.source_delivery:inputs['scene']=str(self.source_delivery.get('instructions',''))[:2000]
+                direction=getattr(self,'speech_prompt',None) or (self.source_delivery or {}).get('instructions')
+                if direction:inputs['scene']=str(direction)
             else:
                 inputs={'text':part,'voice':voice}
                 if isinstance(language,str) and re.fullmatch('[a-z]{2}',language):inputs['language_code']=language

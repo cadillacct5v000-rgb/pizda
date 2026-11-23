@@ -123,7 +123,9 @@ def improve_script(text, profile, cfg, directory, progress=None, client=None, *,
         return create(text,profile,{**original_cfg,**cfg},directory,client,progress,language=language)[0]
     if not text.strip():raise ValueError('Сценарий пуст.')
     if client is None:raise ValueError('Не выбран текстовый сервис.')
-    identity=sb.digest([text,profile,direction(cfg),language])
+    import narration_rules
+    locale=narration_rules.locale_for(language,original_cfg)
+    identity=sb.digest([text,profile,direction(cfg),language,locale,narration_rules.VERSION])
     directory=Path(directory)/identity;directory.mkdir(parents=True,exist_ok=True)
     parts=[]
     chunks=source_chunks(text,600)
@@ -131,7 +133,7 @@ def improve_script(text, profile, cfg, directory, progress=None, client=None, *,
         netutil.check_cancel()
         if progress:progress(f'улучшение сценария: часть {index+1}/{len(chunks)}')
         import narration_rules
-        prompt=(narration_rules.writing('script',language)+'Improve this complete narration section while preserving the source facts, order of arguments, '
+        prompt=(narration_rules.writing('script',language,locale)+'Improve this complete narration section while preserving the source facts, order of arguments, '
                 'causal links, humour and recognisable delivery. Remove redundant phrases and filler, add clear '
                 'comparisons/explanations grounded in existing source information. Do not invent evidence, dates or numbers. '
                 'Only the first section should open with a concrete hook '

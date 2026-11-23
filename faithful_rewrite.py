@@ -51,11 +51,11 @@ def _write_json(path, value):
 
 
 def _rewrite_part(chunk, previous, profile, engine, key, model, language,
-                  directory, tag, label, progress, depth=0):
+                  directory, tag, label, progress, depth=0, locale=None):
     import rewrite as rw
     netutil.check_cancel()
     context = {"chunk": chunk, "previous_output": previous[-1500:],
-               "source_profile": {name: (profile or {}).get(name)
+               "locale":locale, "source_profile": {name: (profile or {}).get(name)
                                   for name in ("narrative_style", "visual_style")}}
     signature = hashlib.sha256(json.dumps(context, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     part_path = directory / (tag + ".json")
@@ -76,7 +76,7 @@ def _rewrite_part(chunk, previous, profile, engine, key, model, language,
                 progress(f"полный сценарий: часть {label}, попытка {attempt + 1}/{MAX_ATTEMPTS}")
             import narration_rules
             prompt = (
-                narration_rules.writing('script',language) + 'Preserve the requested source order in this legacy mode. ' + rw.lang_rule(language) + "\nRewrite the supplied chunk of a complete narration. "
+                narration_rules.writing('script',language,locale) + 'Preserve the requested source order in this legacy mode. ' + rw.lang_rule(language) + "\nRewrite the supplied chunk of a complete narration. "
                 f"This is part {label}. The source chunk contains {count} words. "
                 "Preserve ALL factual statements, events, examples, causal links and their order in this chunk. "
                 "Rewrite every source sentence in order, including the last sentence. "
@@ -122,7 +122,7 @@ def _rewrite_part(chunk, previous, profile, engine, key, model, language,
         for index, child in enumerate(children):
             out = _rewrite_part(child, outputs[-1] if outputs else previous, profile,
                                 engine, key, model, language, directory,
-                                f"{tag}_{index}", f"{label}.{index + 1}", progress, depth + 1)
+                                f"{tag}_{index}", f"{label}.{index + 1}", progress, depth + 1,locale)
             outputs.append(out)
         out = "\n\n".join(outputs)
         _write_json(part_path, {"signature": signature, "text": out})
@@ -139,7 +139,7 @@ def _rewrite_part(chunk, previous, profile, engine, key, model, language,
         "Готовые части сохранены. Повторите рерайт или выберите другую модель.")
 
 
-def rewrite_full(source_text, engine, key, model, words, language, cache_dir, progress=None, source_profile=None):
+def rewrite_full(source_text, engine, key, model, words, language, cache_dir, progress=None, source_profile=None, locale=None):
     import rewrite as rw
     source = source_text.strip()
     if not source:
@@ -147,7 +147,7 @@ def rewrite_full(source_text, engine, key, model, words, language, cache_dir, pr
     chunks = source_chunks(source)
     identity = {"version": 2, "source": source, "engine": engine,
                 "model": model or rw.DEFAULT_MODELS[engine], "language": language,
-                "words": words, "profile": source_profile or {}}
+                "words": words, "profile": source_profile or {},"locale":locale}
     digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:24]
     directory = Path(cache_dir) / ("full_rewrite_" + digest)
     directory.mkdir(parents=True, exist_ok=True)
@@ -156,7 +156,7 @@ def rewrite_full(source_text, engine, key, model, words, language, cache_dir, pr
     for index, chunk in enumerate(chunks):
         out = _rewrite_part(chunk, parts[-1] if parts else "", source_profile,
                             engine, key, model, language, directory, f"part_{index:04d}",
-                            f"{index + 1}/{len(chunks)}", progress)
+                            f"{index + 1}/{len(chunks)}", progress,locale=locale)
         parts.append(out)
     netutil.check_cancel()
     result = "\n\n".join(parts)

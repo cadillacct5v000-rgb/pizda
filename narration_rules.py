@@ -2,7 +2,7 @@
 
 Prompt rules are not model training, factual verification, or a platform guarantee.
 """
-VERSION = 'documentary-localisation-v1'
+VERSION = 'documentary-localisation-v2'
 # Same ordering as rewrite.LANG_INFO; include all UI languages without guessing by letters.
 LANGUAGES = {
  'английском':'en','китайском':'zh','хинди':'hi','испанском':'es','арабском':'ar',
@@ -13,6 +13,7 @@ LANGUAGES = {
  'шведском':'sv','казахском':'kk','узбекском':'uz','азербайджанском':'az','иврите':'he',
  'финском':'fi','датском':'da','норвежском':'no'}
 NATIVE = {
+ 'ro':'Use idiomatic spoken Romanian with natural clitics, articles, agreement and breath groups. Use modern Romanian diacritics ă, â, î, ș, ț (not cedilla substitutions). Avoid Russian word order, literal calques and unnecessarily formal connective phrases. Write numbers and abbreviations for clear Romanian speech without altering their values.',
  'ru':'Use idiomatic spoken Russian, natural information order, clear referents and varied short/long phrases. Avoid English calques and strings of heavy nominalisations.',
  'en':'Use natural spoken English, clear subject/action, contractions where appropriate and idiomatic transitions. Avoid Russian word order, literal idioms and an artificially solemn register.',
  'de':'Use native German clause order, keep verb-final clauses easy to follow aloud, and split deeply nested subordinate clauses. Preserve idiomatic compounds where clear.',
@@ -30,10 +31,28 @@ NATIVE = {
 def language_code(value):
     key=str(value or '').strip().casefold()
     if key in LANGUAGES:return LANGUAGES[key]
+    key=key.replace('_','-').split('-')[0]
     return key if key in set(LANGUAGES.values()) else None
 
 
-def localisation(language=None):
+LOCALES = {
+ 'ro-RO':('ro','Румынский · Румыния','Standard Romanian as spoken in Romania; native Romanian vowels and consonants, clear ș and ț, natural word stress. No French or Russian accent.'),
+ 'es-MX':('es','Испанский · Латинская Америка','Neutral Latin American Spanish, Mexican standard pronunciation and vocabulary; seseo, ustedes, no vosotros or Peninsular ceceo. Do not imitate a Russian or French accent.'),
+ 'es-ES':('es','Испанский · Испания','Standard Spanish of Spain; consistent Peninsular vocabulary, vosotros where appropriate and native distinction of s versus c/z. Do not mix Latin American delivery.'),
+ 'pt-BR':('pt','Португальский · Бразилия','Natural Brazilian Portuguese, consistent Brazilian vocabulary, pronoun use and native vowel rhythm. Avoid European vowel reduction and Russian or French accent.'),
+ 'pt-PT':('pt','Португальский · Португалия','Native European Portuguese, consistent European vocabulary, clitic placement, natural vowel reduction and phrase rhythm. Do not mix Brazilian pronunciation or syntax.')}
+DEFAULT_LOCALES={'ro':'ro-RO','es':'es-MX','pt':'pt-BR'}
+
+
+def locale_for(language, cfg=None, locale=None):
+    code=language_code(language)
+    selected=locale or (cfg or {}).get('speech_locales',{}).get(code) or DEFAULT_LOCALES.get(code)
+    if selected and (selected not in LOCALES or LOCALES[selected][0]!=code):
+        raise ValueError('Регион озвучки не соответствует выбранному языку.')
+    return selected
+
+
+def localisation(language=None, locale=None):
     code=language_code(language)
     return ('NATIVE-LANGUAGE NARRATION ADAPTATION. Preserve meaning, supported facts, dramatic purpose and the '
             'source presentation character, not its sentence syntax. Rebuild sentences, idioms, transitions and '
@@ -44,10 +63,11 @@ def localisation(language=None):
             'values. Proper names and terminology need pronunciation review. Do not insert SSML, stress marks, '
             '[pause], [music] or stage directions into the spoken script. Punctuation may indicate natural pauses. '
             'Do not assume identical words-per-minute, emotional intensity or pause lengths across languages. '
-            + NATIVE.get(code,'Use native idiomatic syntax, consistent register and the natural oral cadence of the requested language.')+' ')
+            + NATIVE.get(code,'Use native idiomatic syntax, consistent register and the natural oral cadence of the requested language.')+' '
+            + (LOCALES[locale_for(language,locale=locale)][2]+' ' if code in DEFAULT_LOCALES else ''))
 
 
-def writing(stage='script', language=None):
+def writing(stage='script', language=None, locale=None):
     common=('DOCUMENTARY WRITING RULES '+VERSION+'. Follow the useful presentation of the reference: '
             'tone, humour or seriousness, explanatory clarity, viewpoint and shifts of emotional intensity. '
             'Build curiosity from a real question and meaningful discoveries, never fake cliffhangers or unsupported sensation. '
@@ -60,7 +80,7 @@ def writing(stage='script', language=None):
             'adapt to topic, reference genre and duration. Do not force a biological/history template or 8–10 blocks '
             'into a short trial. A twist must be prepared earlier and must not be manufactured. Preserve the reference\'s '
             'broad visual medium, abstraction and way of explaining ideas while creating own designs and compositions. ')
-    return common+localisation(language)+(
+    return common+localisation(language,locale)+(
         'For the full story, begin with a concrete image/action and establish the main question early. '
         'Explain problem → mechanism → consequence through micro-scenes rather than a list of facts. '
         'Give information-dense passages breathing room through a supported example, contrast or question. '
