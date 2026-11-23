@@ -774,6 +774,25 @@ _VOICE_SAMPLE_ACTIVE=False
 _VOICE_PLAN_RESULT=None
 
 
+def automatic_native_voice(cfg,service,voice,language):
+    """Keep an explicit preset; otherwise choose from the native Lumean catalog."""
+    if replacement.service(cfg,service)!='lumean':return voice
+    import narration_rules
+    from tts_api import make_tts
+    code=narration_rules.language_code(language)
+    tag='lumean:'+str(narration_rules.locale_for(code,cfg) or code)
+    presets=cfg.get('automatic_native_voices') or {}
+    configured=(cfg.get('channel_voices') or {}).get(code) or {}
+    if voice and (voice not in presets.values() or configured.get('id')==voice):return voice
+    cached=presets.get(tag)
+    if cached:return cached
+    rows=make_tts('lumean',cfg.get('lumean_api_key','')).voices(language=code)
+    voice=next((row['id'] for row in rows if isinstance(row.get('id'),str) and row['id']),None)
+    if not voice:raise ValueError('Lumean не вернул доступный голос для выбранного языка. Проверьте доступ к каталогу голосов.')
+    cfg.setdefault('automatic_native_voices',{})[tag]=voice
+    return voice
+
+
 def run_speech_sample(opts,cfg,service,voice):
     global _VOICE_SAMPLE,_VOICE_SAMPLE_ACTIVE,_VOICE_PLAN_RESULT
     with LOCK:_VOICE_SAMPLE_ACTIVE=True
@@ -817,6 +836,12 @@ def run_speech_sample(opts,cfg,service,voice):
             _VOICE_PLAN_RESULT={'id':key,'prompt':plan['prompt'],'language':plan['language'],'locale':plan['locale'],
                                 'script_sha256':plan['script_sha256'],'capability':speech_plan.capabilities(replacement.service(cfg,service),replacement.effective(cfg).get('elysium_tts_model',''))}
         if not opts.get('prepare_only'):
+            if opts.get('automatic'):voice=automatic_native_voice(cfg,service,voice,plan['language'])
+            pipeline.check_cancel()
+            if opts.get('automatic'):
+                with LOCK:
+                    current=load_cfg();current['automatic_native_voices']=cfg.get('automatic_native_voices',current.get('automatic_native_voices',{}));current['tts_voice']=voice;save_cfg(current)
+                    _VOICE_PLAN_RESULT['voice']=voice
             output=speech_plan.render(data_dir(),plan,cfg,service,voice,pipeline.Progress(progress_cb),preview=True)
             with LOCK:_VOICE_SAMPLE=output
         with LOCK:STATE.update(stage='speech_plan_done',message='Промпт подачи готов.' if opts.get('prepare_only') else 'Первые 30 секунд озвучки готовы. Прослушайте перед полной сборкой.',error=None)
@@ -1670,17 +1695,27 @@ class Api:
         import provider_access
         cfg=load_cfg()
         try:
+            try:
+                if isinstance(index,bool) or not isinstance(index,(int,str)):raise ValueError()
+                key_index=int(index)
+                if key_index<0:raise ValueError()
+            except (TypeError,ValueError):
+                return {'ok':False,'error':'Выберите существующую строку ключа в «Подключениях».'}
             if provider in provider_access.LABELS:
                 values=provider_access.models(provider,cfg.get(provider+'_api_key',''))
                 return {'ok':True,'message':f'Ключ принят; моделей в каталоге: {len(values)}. Генерация не запускалась.'}
             if provider=='fastgen':
                 keys=pipeline.provider_keys(cfg,provider)
-                FastGen(keys[int(index)]).usage()
+                if key_index>=len(keys) or not keys[key_index].strip():
+                    return {'ok':False,'error':'Введите ключ FastGen в «Подключениях», затем нажмите «Проверить подключение».'}
+                FastGen(keys[key_index]).usage()
                 return {'ok':True,'message':'FastGen: ключ принят. Генерация не запускалась.'}
             if provider in ('voicegen','voicer','lumean','elevenlabs'):
                 return self.check_tts(provider)
             result=self.check_keys([provider]);value=result.get(provider)
-            if isinstance(value,list):value=value[int(index)]
+            if isinstance(value,list):
+                if key_index>=len(value):return {'ok':False,'error':'Введите ключ сервиса в выбранной строке «Подключений».'}
+                value=value[key_index]
             return {'ok':bool(str(value).startswith('OK')),'message':value}
         except Exception as error:return {'ok':False,'error':key_error(error)}
 
@@ -2579,6 +2614,16 @@ class Api:
         cfg = load_cfg();cfg.update(replacement.settings(cfg,opts))
         tts = opts.get("tts") or cfg.get("tts_service") or "voicegen"
         voice = (opts.get("voice") or "").strip()
+        if opts.get('automatic') and opts.get('source')=='script':
+            try:
+                voice=automatic_native_voice(cfg,tts,voice,(opts.get('rewrite') or {}).get('language') or cfg.get('speech_language') or cfg.get('rewrite_lang'))
+                pipeline.check_cancel()
+            except pipeline.Cancelled:
+                with LOCK:STATE.update(running=False,cancelled=True,error=None)
+                return {'ok':False,'error':'Запуск остановлен.'}
+            except (Exception,SystemExit) as error:
+                with LOCK:STATE['running']=False
+                return {'ok':False,'error':key_error(error)}
         cfg.update({"image_providers": provider, "mode": mode, "style": style, "custom_style": custom_style, "use_refs": use_refs, "subtitles": subtitles, "motion": motion, "hd_images": hd,
                     "qa_images": bool(opts.get("qa", cfg.get("qa_images", False))), "speed_copies": bool(opts.get("speed", cfg.get("speed_copies", False))),
                     "source": opts.get("source", cfg.get("source", "mp3")), "animation": animation, "tts_service": tts, "tts_voice": voice, "video_first": video_first, "render_fps": render_fps})
@@ -2587,6 +2632,11 @@ class Api:
             rec.insert(0, {"id": voice, "service": tts})
             cfg["tts_recent"] = rec[:12]
         save_cfg(cfg)
+        # Per-run automatic orchestration; do not leave transient flags in settings.
+        cfg['_automatic_speech']=bool(opts.get('automatic'))
+        cfg['_automatic_speech_language']=(opts.get('rewrite') or {}).get('language') or cfg.get('speech_language') or cfg.get('rewrite_lang')
+        cfg['_automatic_speech_reference']=(opts.get('rewrite') or {}).get('url','') if (opts.get('rewrite') or {}).get('source')=='youtube' else ''
+        cfg['_automatic_speech_notes']=str(opts.get('speech_notes') or '')[:2500]
         threading.Thread(target=run_job, args=(audio, provider, mode, style, use_refs, subtitles, motion, script, rw, tts, voice, video_first, hd, source_profile, board, preview_range, render_fps, channel_design, animation), kwargs={"config_snapshot":copy.deepcopy(cfg)}, daemon=True).start()
         return {"ok": True}
 

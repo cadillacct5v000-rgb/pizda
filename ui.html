@@ -1330,7 +1330,13 @@ function bindAccess() {
   on('youtube_source_url', 'input', () => { F.rwUrl = $('youtube_source_url').value; });
   on('youtube_source_url', 'change', () => { F.rwUrl = $('youtube_source_url').value.trim(); pywebview.api.save_config({rewrite_url:F.rwUrl}); });
   on('rw_words', 'change', () => { syncF(); pywebview.api.save_config({rewrite_words: F.rwWords}); });
-  on('rw_lang', 'change', async () => { syncF();const language=F.rwLang;await pywebview.api.save_config({rewrite_lang:language});if(window.workflowUseChannelVoice&&await workflowUseChannelVoice(language))renderAccess(); });
+  on('rw_lang', 'change', async event => {
+    const language=event.currentTarget.value;
+    try {
+      if(window.workflowScriptLanguageChanged)await workflowScriptLanguageChanged(language);
+      else {syncAll();F.rwLang=language;await pywebview.api.save_config({rewrite_lang:language});renderAccess();}
+    } catch(error) { if(window.workflowNotice)workflowNotice(String(error)); }
+  });
   on('tts_voice', 'change', () => { syncF(); pywebview.api.save_config({tts_voice: F.voice}); });
   on('tts_voice', 'input', showVoice);
   on('rw_text', 'input', syncF); on('script', 'input', syncF);

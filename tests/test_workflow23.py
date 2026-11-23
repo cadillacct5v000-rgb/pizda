@@ -51,6 +51,33 @@ def test_fastgen_connection_check_never_starts_paid_probe(local,monkeypatch):
     fake.usage.assert_called_once();fake.s.post.assert_not_called()
 
 
+@pytest.mark.parametrize('cfg',[{}, {'fastgen_api_key':'   '}, {'image_keys':{'fastgen':['',' ']}}])
+def test_empty_fastgen_connection_has_actionable_error_without_network(local,monkeypatch,cfg):
+    app.save_cfg(cfg)
+    constructor=Mock();monkeypatch.setattr(app,'FastGen',constructor)
+    result=app.Api().check_connection('fastgen')
+    assert not result['ok'] and 'Введите ключ FastGen' in result['error']
+    assert 'index' not in result['error'];constructor.assert_not_called()
+
+
+@pytest.mark.parametrize('index',[-1,3,None,True,'missing'])
+def test_missing_fastgen_row_never_checks_another_key(local,monkeypatch,index):
+    app.save_cfg({'fastgen_api_key':'fixture'})
+    constructor=Mock();monkeypatch.setattr(app,'FastGen',constructor)
+    result=app.Api().check_connection('fastgen',index)
+    assert not result['ok'] and 'index' not in result['error']
+    constructor.assert_not_called()
+
+
+@pytest.mark.parametrize('language',['ro','pt','es'])
+def test_voice_plan_does_not_translate_or_start_synthesis_for_russian_draft(local,monkeypatch,language):
+    worker=Mock();monkeypatch.setattr(app.threading,'Thread',worker)
+    result=app.Api().speech_sample({'text':'Этот сценарий пока написан на русском языке. '*4,
+        'language':language,'prepare_only':True,'reference_mode':'saved'})
+    assert not result['ok'] and 'на выбранном языке' in result['error']
+    worker.assert_not_called()
+
+
 def test_voice_preview_is_short_cached_and_independent_of_text_models(local,monkeypatch):
     app.save_cfg({'tts_service':'elevenlabs','elevenlabs_api_key':'fixture','elysium_replace_fastgen':True})
     calls=[]
@@ -172,3 +199,26 @@ def test_content_only_delivery_changes_audio_identity_but_visual_style_does_not(
     cfg={'tts_service':'elevenlabs','tts_voice':'fixture'}
     directories=[pipeline.resolve_source(cfg,None,'Same narration.',None,None,lambda *args:None,source_profile=p)[1] for p in (a,b,c)]
     assert directories[0]==directories[1] and directories[0]!=directories[2]
+
+@pytest.mark.parametrize('language',['ro','pt','es'])
+def test_automatic_lumean_chooses_native_catalog_only_when_preset_missing(local,monkeypatch,language):
+    import tts_api
+    client=Mock();client.voices.return_value=[{'id':'native-'+language,'lang':language}]
+    factory=Mock(return_value=client);monkeypatch.setattr(tts_api,'make_tts',factory)
+    assert app.automatic_native_voice({'lumean_api_key':'fixture'},'lumean','',language)=='native-'+language
+    client.voices.assert_called_once_with(language=language)
+    client.voices.reset_mock()
+    assert app.automatic_native_voice({},'lumean','my-saved-channel-voice',language)=='my-saved-channel-voice'
+    client.voices.assert_not_called()
+
+
+def test_automatic_voice_follows_language_and_keeps_cached_native_choice(local,monkeypatch):
+    import tts_api
+    client=Mock();client.voices.side_effect=lambda language:[{'id':'native-'+language,'lang':language}]
+    monkeypatch.setattr(tts_api,'make_tts',lambda *a:client)
+    cfg={'lumean_api_key':'fixture'}
+    first=app.automatic_native_voice(cfg,'lumean','','ro')
+    second=app.automatic_native_voice(cfg,'lumean',first,'es')
+    assert (first,second)==('native-ro','native-es')
+    assert app.automatic_native_voice(cfg,'lumean',second,'es')==second
+    assert client.voices.call_count==2

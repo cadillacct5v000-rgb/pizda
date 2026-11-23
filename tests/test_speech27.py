@@ -148,3 +148,71 @@ def test_gemini_gets_language_prompt_separate_from_verbatim_narration():
     plan=speech.build(TEXTS['es'],'es','es-ES',DELIVERY)
     prompt=source_narration.gemini_prompt(plan['script'],DELIVERY,plan['prompt'])
     assert '<narration>\n'+TEXTS['es'].strip()+'\n</narration>' in prompt and 'es-ES' in prompt
+
+@pytest.mark.parametrize('language',['ro','es','pt'])
+def test_automatic_run_prepares_native_voice_plan_without_manual_step(tmp_path,monkeypatch,language):
+    monkeypatch.setattr(pipeline,'data_dir',lambda:str(tmp_path))
+    observed=Mock(side_effect=AssertionError('Do not analyse already observed reference again'))
+    monkeypatch.setattr(source_narration,'analyse',observed)
+    captured=[]
+    def voice(cfg,text,service,voice,job,progress):
+        captured.append(cfg);return str(Path(job)/'fixture.mp3')
+    monkeypatch.setattr(pipeline,'make_voiceover',voice)
+    profile={'narration_language':language,'narration':{'delivery':DELIVERY}}
+    cfg={'tts_service':'lumean','_automatic_speech':True,'_automatic_speech_language':language}
+    text=TEXTS[language]*3
+    pipeline.resolve_source(cfg,None,text,'lumean','native-fixture',lambda *a:None,source_profile=profile)
+    plan=speech.load(tmp_path,captured[0]['speech_plan_id'])
+    assert plan['language']==language and plan['script']==text.strip()
+    assert rules.DEFAULT_LOCALES[language] in plan['prompt']
+    assert 'speech_plan_id' not in cfg
+    observed.assert_not_called()
+
+
+def test_automatic_own_script_default_never_pretends_to_observe_reference(tmp_path,monkeypatch):
+    monkeypatch.setattr(pipeline,'data_dir',lambda:str(tmp_path))
+    cfg=pipeline.automatic_narration_cfg({'_automatic_speech':True,'_automatic_speech_language':'ro'},TEXTS['ro'],None,lambda *a:None)
+    plan=speech.load(tmp_path,cfg['speech_plan_id'])
+    assert plan['reference_observed'] is False
+    assert 'NO AUDIO REFERENCE' in plan['prompt'] and 'OBSERVED FROM AUDIO' not in plan['prompt']
+    assert pipeline.automatic_narration_cfg(cfg,TEXTS['ro'],None,lambda *a:None)['speech_plan_id']==cfg['speech_plan_id']
+
+
+def test_one_automatic_pipeline_run_creates_real_video_without_manual_board(tmp_path,monkeypatch):
+    import studio
+    import drawing_plugins as drawing
+    import storyboard_cache
+    import channel_design
+    from test_drawing_plugins import design
+    audio=tmp_path/'fixture.mp3'
+    pipeline.run_ffmpeg(['-f','lavfi','-i','sine=frequency=400:duration=2','-c:a','libmp3lame',str(audio)])
+    monkeypatch.setattr(pipeline,'data_dir',lambda:str(tmp_path))
+    spoken=[]
+    class Speaker:
+        def synthesize(self,text,voice,out,progress=None,language=None):
+            spoken.append((text,language));Path(out).write_bytes(audio.read_bytes())
+    monkeypatch.setattr(pipeline,'make_tts',lambda *a:Speaker())
+    d=design();d['id']='fixture-channel';profile=channel_design.content_profile(d,2.)
+    profile.update(narration_language='ro',narration={'delivery':DELIVERY})
+    def rewrite(cfg,options,progress,callback=None):
+        if callback:callback(profile)
+        return 'Balena înoată.'
+    monkeypatch.setattr(pipeline,'rewrite_script',rewrite)
+    monkeypatch.setattr(pipeline,'transcribe',lambda *a,**k:{'text':'Balena înoată.','words':[
+        {'text':'Balena','start':0,'end':.8},{'text':'înoată.','start':.8,'end':2.}]})
+    unused=Mock();unused.model='fixture';unused.chat_json.side_effect=AssertionError('No extra prompt or identity call')
+    monkeypatch.setattr(pipeline,'make_text_engine',lambda cfg:('assemblyai',None,'anthropic',unused))
+    geometry=Mock();geometry.chat_json.return_value=drawing.example()
+    monkeypatch.setattr(studio,'text_client',lambda *a,**k:geometry)
+    monkeypatch.setattr(pipeline,'FastGen',Mock(side_effect=AssertionError('No paid image API')))
+    monkeypatch.setattr(pipeline,'W',320);monkeypatch.setattr(pipeline,'H',180)
+    cfg={'_automatic_speech':True,'_automatic_speech_language':'ro','stt_engine':'assemblyai','assemblyai_api_key':'fixture',
+         'llm_engine':'anthropic','anthropic_api_key':'fixture','image_providers':['fastgen'],'qa_images':False}
+    options=dict(audio_path=None,out_dir=str(tmp_path/'output'),provider=['fastgen'],channel_design=d,
+        rewrite={'on':True,'source':'youtube','url':'https://youtu.be/Cs9lG-Meo1s','language':'румынском'},
+        tts_service='edge',tts_voice='',animation={'strategy':'local','limit':0},render_fps=25,config_snapshot=cfg)
+    first=pipeline.make_video(**options)
+    assert storyboard_cache.valid(Path(first),'video') and pipeline.audio_duration(first)>1.9
+    assert spoken==[('Balena înoată.','ro')]
+    assert pipeline.make_video(**options)==first and len(spoken)==1
+    assert geometry.chat_json.call_count==1

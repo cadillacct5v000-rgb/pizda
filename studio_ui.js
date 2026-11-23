@@ -505,6 +505,7 @@ function workflowOrganizeAccess(){
   const styleHelp=document.createElement('div');styleHelp.className='wf-help';styleHelp.innerHTML='<strong>Дизайн канала</strong><p>Сохранённый профиль позволяет использовать новые ссылки только как источник содержания. Повторное изучение чужого стиля не требуется. После самостоятельной постановки здесь можно сохранить её оформление для следующих роликов.</p><button class="ghost" onclick="openChannelDesign()">Выбрать или сохранить дизайн канала</button>';
   sections.style.querySelector('.wf-heading').after(styleHelp);
   const sourceMode=document.createElement('div');sourceMode.className='wf-help';sourceMode.innerHTML='<label>Содержание ролика <select id="wf_source_kind"><option value="youtube">Видео YouTube</option><option value="text">Мой текст</option><option value="audio">Готовая озвучка</option></select></label><p>Ссылка или текст — содержание. Стиль и голос выбираются отдельно на следующих шагах.</p>';sections.source.querySelector('.wf-heading').after(sourceMode);
+  const automatic=document.createElement('div');automatic.className='wf-help';automatic.innerHTML='<label>Язык итогового ролика <select id="wf_auto_language">'+['румынском','португальском','испанском',...LANGS.filter(v=>!["румынском","португальском","испанском"].includes(v))].map(v=>'<option value="'+v+'">'+esc(langName(v))+'</option>').join('')+'</select></label><button class="primary" id="wf_auto_start" onclick="workflowAutoStart()">Создать ролик автоматически</button><p>Ссылка → сценарий → подача и озвучка → кадры → сборка. Готовые этапы используются повторно. Запуск оплачивается выбранными сервисами.</p><div id="wf_auto_status" role="status"></div>';sections.source.append(automatic);$('wf_auto_language').value=F.rwLang;$('wf_auto_language').onchange=event=>workflowScriptLanguageChanged(event.target.value).catch(e=>workflowNotice(e.message||String(e)));
   sourceMode.querySelector('select').value=source!=='script'?'audio':rwOn()&&rwSrc==='youtube'?'youtube':'text';
   sourceMode.querySelector('select').onchange=async event=>{syncAll();const value=event.target.value;if(F.script)workflowOwnScriptDraft=F.script;resetStoryboard();reviewProfileId=null;reviewSourceProfile=null;if(value==='audio'||value==='youtube')F.script='';else F.script=F.script||workflowOwnScriptDraft;source=value==='audio'?'mp3':'script';rwSrc=value==='youtube'?'youtube':'text';$('use_rw').checked=value==='youtube';$('use_tts').checked=value!=='audio';await pywebview.api.save_config({source,rewrite:$('use_rw').checked,rewrite_source:rwSrc});renderAccess();};
   const sonnet=document.createElement('div');sonnet.className='wf-help';sonnet.innerHTML=`<strong>Быстрый выбор текстовой модели</strong><p>Выбирает доступный Sonnet из каталога и применяет к сценарию, раскадровке и промптам. Генерация не запускается.</p><button class="ghost" id="replace_sonnet" onclick="useSonnetText(llm==='anthropic'?'anthropic':'elysium')">Выбрать Claude Sonnet · по каталогу</button>`;sections.text.querySelector('.wf-heading').after(sonnet);
@@ -652,7 +653,7 @@ async function workflowWatch(){
 }
 async function workflowStopTask(){try{await pywebview.api.cancel();workflowStopping=true;}catch(error){workflowNotice(String(error));}}
 async function workflowStopVoice(){
-  const result=await pywebview.api.cancel_voice_sample();if($('wf_voice_status'))$('wf_voice_status').textContent=result.message||result.error;
+  workflowSpeechCancelled=true;const result=speechBusy?(workflowSpeechOwnTask?await pywebview.api.cancel():{message:'Подготовка остановлена.'}):await pywebview.api.cancel_voice_sample();const message=result.message||result.error||'Останавливаю подготовку озвучки…';if($('wf_voice_status'))$('wf_voice_status').textContent=message;if($('wf_speech_status'))$('wf_speech_status').textContent=message;
 }
 
 function workflowLanguageCode(language){if(Object.hasOwn(workflowVoiceLanguages,language))return language;return Object.keys(workflowVoiceLanguages).find(code=>workflowVoiceLanguages[code]===language)||null;}
@@ -843,7 +844,7 @@ function speechRegionControl(language, callback){
  label.append(select);return label;
 }
 function workflowSpeechPanel(sections,help,quick){
- help.innerHTML='<strong>Озвучка по референсу</strong><p>1. Подготовьте сценарий на нужном языке. 2. Выберите подачу референса и подготовьте промпт. 3. Прослушайте первые 30 секунд. Эти же аудиофрагменты используются при полной сборке.</p>';
+ help.innerHTML='<strong>Озвучка по референсу</strong><p>Нажмите «Прослушать первые 30 секунд»: сценарий на выбранном языке и подача подготовятся автоматически. Готовое начало используется и при полной сборке.</p>';
  const advanced=document.createElement('details');advanced.className='wf-help';advanced.innerHTML='<summary>Дополнительно · проба произвольного текста до 600 символов</summary>';quick.before(advanced);advanced.append(quick);
  const language=$('wf_voice_language');language.parentElement.remove();
  const panel=document.createElement('div');panel.className='wf-help';panel.id='wf_speech_panel';
@@ -852,40 +853,109 @@ function workflowSpeechPanel(sections,help,quick){
  const preferred=['ro','es','pt'];const entries=[...preferred.map(k=>[k,workflowVoiceLanguages[k]]),...Object.entries(workflowVoiceLanguages).filter(([k])=>!preferred.includes(k))];
  language.innerHTML=entries.map(([code,name])=>'<option value="'+code+'">'+esc(name||code)+'</option>').join('');
  workflowVoiceLanguage=workflowVoiceLanguage||workflowLanguageCode(F.rwLang)||'ro';language.value=workflowVoiceLanguage;
- language.onchange=async e=>{workflowVoiceLanguage=e.target.value;workflowSpeechDirty();await pywebview.api.save_config({speech_language:workflowVoiceLanguage});await workflowUseChannelVoice(workflowVoiceLanguage,true);renderAccess();};
+ language.onchange=e=>workflowScriptLanguageChanged(workflowVoiceLanguages[e.target.value]||e.target.value).catch(error=>workflowNotice(error.message||String(error)));
  panel.append(speechRegionControl(workflowVoiceLanguage,()=>renderAccess()));
  const choice=document.createElement('label');choice.textContent='Откуда взять подачу ';choice.innerHTML+='<select id="wf_speech_reference"><option value="saved">Из готового анализа или дизайна канала</option><option value="url">Из звука ролика YouTube</option></select>';panel.append(choice);
  const input=document.createElement('input');input.id='wf_speech_url';input.type='url';input.placeholder='https://www.youtube.com/watch?v=...';input.value=speechReferenceUrl||F.rwUrl||'';input.oninput=e=>{speechReferenceUrl=e.target.value;workflowSpeechDirty();};panel.append(input);
  const reference=choice.querySelector('select');reference.value=speechReferenceMode||((reviewSourceProfile?.narration?.delivery||channelDesignDelivery)?'saved':'url');
  const toggle=()=>{input.hidden=reference.value!=='url';};reference.onchange=()=>{speechReferenceMode=reference.value;toggle();workflowSpeechDirty();};toggle();
  const notes=document.createElement('textarea');notes.id='wf_speech_notes';notes.rows=3;notes.maxLength=2500;notes.placeholder='Указания к чтению: какие слова выделить, как произнести имена, где нужна пауза. Текст сценария не меняется.';notes.value=speechNotes;notes.oninput=e=>{speechNotes=e.target.value;workflowSpeechDirty();};panel.append(notes);
- const actions=document.createElement('div');actions.innerHTML='<button class="primary" id="wf_speech_prepare" onclick="workflowSpeech(true)">2 · Подготовить промпт подачи</button><button class="primary" id="wf_speech_preview" onclick="workflowSpeech(false)">3 · Прослушать первые 30 секунд</button><button class="ghost" onclick="workflowStopVoice()">Остановить</button><button class="ghost" onclick="workflowSpeechDisable()">Отключить план подачи</button>';panel.append(actions);
- const status=document.createElement('div');status.id='wf_speech_status';status.setAttribute('role','status');status.textContent='Промпт составляется без нового текстового запроса. Анализ звука и синтез оплачиваются выбранными сервисами. Для Lumean выберите голос нужного языка и региона.';panel.append(status);
+ const actions=document.createElement('div');actions.innerHTML='<button class="ghost" id="wf_speech_script" onclick="workflowOpen(\'text\')">Сценарий и настройки</button><button class="primary" id="wf_speech_prepare" onclick="workflowSpeech(true)">Подготовить подачу автоматически</button><button class="primary" id="wf_speech_preview" onclick="workflowSpeech(false)">Прослушать первые 30 секунд</button><button class="ghost" onclick="workflowStopVoice()">Остановить</button><button class="ghost" onclick="workflowSpeechDisable()">Отключить план подачи</button>';panel.append(actions);
+ const status=document.createElement('div');status.id='wf_speech_status';status.setAttribute('role','status');status.textContent='Недостающий сценарий и подача готовятся автоматически на выбранном языке. Готовые этапы переиспользуются; сам промпт подачи составляется без нового текстового запроса. Анализ звука и синтез оплачиваются выбранными сервисами. Для Lumean выберите голос нужного языка и региона.';panel.append(status);
  const prompt=document.createElement('details');prompt.innerHTML='<summary>Посмотреть конкретный промпт подачи</summary><pre id="wf_speech_prompt" style="white-space:pre-wrap;max-height:240px;overflow:auto"></pre>';panel.append(prompt);
  const player=document.createElement('div');player.id='wf_speech_player';panel.append(player);
  advanced.before(panel);$('wf_speech_prompt').textContent=speechPrompt||'Сначала подготовьте подачу по референсу.';
  if(speechPlanId&&!speechPrompt)pywebview.api.speech_plan_result().then(p=>{if(p.ok&&$('wf_speech_prompt')){speechPrompt=p.prompt;$('wf_speech_prompt').textContent=p.prompt;}}).catch(e=>{status.textContent=String(e);});
- const scriptLanguage=$('rw_lang');if(scriptLanguage){const region=speechRegionControl(F.rwLang,()=>renderAccess());region.id='wf_script_region';scriptLanguage.closest('.lrow')?.after(region);scriptLanguage.addEventListener('change',()=>{workflowVoiceLanguage=workflowLanguageCode(scriptLanguage.value)||workflowVoiceLanguage;speechPlanId='';speechPrompt='';renderAccess();});}
+ const scriptLanguage=$('rw_lang');if(scriptLanguage){const region=speechRegionControl(F.rwLang,()=>renderAccess());region.id='wf_script_region';scriptLanguage.closest('.lrow')?.after(region);}
+}
+let workflowScriptLanguageSequence=0,workflowScriptLanguageSave=Promise.resolve();
+function workflowScriptLanguageChanged(language){
+ // One owner for this change. Preserve the selected value and other drafts
+ // before rebuilding the form; serialize saves so the last choice stays last.
+ syncAll();F.rwLang=language;
+ const code=workflowLanguageCode(language),hadPlan=!!speechPlanId,sequence=++workflowScriptLanguageSequence;
+ workflowVoiceLanguage=code||'';speechPlanId='';speechPrompt='';
+ const patch={rewrite_lang:language,speech_language:code,...(hadPlan?{speech_plan_dirty:true}:{})};
+ workflowScriptLanguageSave=workflowScriptLanguageSave.catch(()=>{}).then(async()=>{
+  const saved=await pywebview.api.save_config(patch);if(!saved.ok)throw new Error(saved.error);
+  if(sequence!==workflowScriptLanguageSequence)return;
+  await workflowUseChannelVoice(code,true);
+  if(sequence===workflowScriptLanguageSequence)renderAccess();
+ });
+ return workflowScriptLanguageSave;
 }
 function workflowSpeechText(){syncAll();return (F.script||boardState?.script||F.rwText||'').trim();}
 async function workflowSpeech(prepareOnly){
- if(speechBusy)return;speechBusy=true;
+ if(speechBusy)return;speechBusy=true;workflowSpeechCancelled=false;workflowSpeechOwnTask=false;
  try{
-  const text=workflowSpeechText();if(!text)throw new Error('Сначала подготовьте сценарий в пункте 3.');
-  const options={...replacementFields(),text,tts,voice:F.voice,language:workflowVoiceLanguage,locale:speechLocales[workflowVoiceLanguage]||speechRegions[workflowVoiceLanguage]?.[0][0]||null,reference_mode:$('wf_speech_reference').value,reference_url:$('wf_speech_url').value,notes:speechNotes,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||boardState?.profile||null)),prepare_only:prepareOnly,plan_id:prepareOnly?'':speechPlanId};
-  if(!prepareOnly&&!options.plan_id)throw new Error('Сначала нажмите «Подготовить промпт подачи».');
+  const text=await workflowEnsureSpeechScript();if(workflowSpeechCancelled)return;
+  const options={...replacementFields(),automatic:true,text,tts,voice:F.voice,language:workflowVoiceLanguage,locale:speechLocales[workflowVoiceLanguage]||speechRegions[workflowVoiceLanguage]?.[0][0]||null,reference_mode:!speechReferenceMode&&reviewSourceProfile?.narration?.delivery?'saved':$('wf_speech_reference').value,reference_url:$('wf_speech_url').value,notes:speechNotes,source_profile:JSON.parse(JSON.stringify(reviewSourceProfile||boardState?.profile||null)),prepare_only:prepareOnly,plan_id:prepareOnly?'':speechPlanId};
+  if(!prepareOnly&&!options.plan_id){const prepared=await workflowRunSpeech({...options,prepare_only:true,plan_id:''});if(prepared.cancelled)return;const p=await pywebview.api.speech_plan_result();if(!p.ok)throw new Error(p.error);speechPlanId=p.id;speechPrompt=p.prompt;options.plan_id=p.id;}
   await saveKeys();
   if($('wf_speech_status'))$('wf_speech_status').textContent=prepareOnly?'Анализирую подачу…':'Озвучиваю начало готового сценария…';
-  const result=await pywebview.api.speech_sample(options);if(!result.ok)throw new Error(result.error);
-  let state;do{await new Promise(r=>setTimeout(r,700));state=await pywebview.api.get_state();if($('wf_speech_status'))$('wf_speech_status').textContent=state.message||'Готовлю озвучку…';}while(state.preparing);
-  if(state.error)throw new Error(state.error);if(state.cancelled)return;
+  const state=await workflowRunSpeech(options);if(state.cancelled)return;
   const plan=await pywebview.api.speech_plan_result();if(!plan.ok)throw new Error(plan.error);
-  speechPlanId=plan.id;speechPrompt=plan.prompt;if($('wf_speech_prompt'))$('wf_speech_prompt').textContent=plan.prompt;
+  speechPlanId=plan.id;speechPrompt=plan.prompt;if(plan.voice){F.voice=plan.voice;if($('tts_voice'))$('tts_voice').value=plan.voice;}if($('wf_speech_prompt'))$('wf_speech_prompt').textContent=plan.prompt;
   if($('wf_speech_status'))$('wf_speech_status').textContent=(prepareOnly?'Подача подготовлена. Теперь прослушайте начало. ':'Проверьте произношение, акценты, паузы и подачу. ')+(plan.capability||'');
   if(!prepareOnly){const audio=await pywebview.api.voice_sample_result();if(!audio.ok)throw new Error(audio.error);const player=document.createElement('audio');player.controls=true;player.src=audio.audio;if($('wf_speech_player'))$('wf_speech_player').replaceChildren(player);}
- }catch(e){if($('wf_speech_status'))$('wf_speech_status').textContent=String(e);}
- finally{speechBusy=false;}
+ }catch(e){if($('wf_speech_status'))$('wf_speech_status').textContent=e?.message||String(e);}
+ finally{speechBusy=false;workflowSpeechOwnTask=false;}
 }
 async function workflowSpeechDisable(){const r=await pywebview.api.save_config({speech_plan_id:''});if(r.ok){speechPlanId='';speechPrompt='';if($('wf_speech_status'))$('wf_speech_status').textContent='План отключён. Сохранённые пробы остаются в кэше.';}else if($('wf_speech_status'))$('wf_speech_status').textContent=r.error;}
 
 function workflowSpeechDirty(){const had=!!speechPlanId;speechPlanId='';speechPrompt='';if(had)pywebview.api.save_config({speech_plan_dirty:true}).catch(e=>workflowNotice(String(e)));if($('wf_speech_prompt'))$('wf_speech_prompt').textContent='Настройки изменены. Подготовьте промпт подачи заново.';}
+
+let workflowAutomaticBusy=false,workflowSpeechCancelled=false,workflowSpeechOwnTask=false,workflowPreparedSource='';
+function workflowSourceIdentity(){return JSON.stringify([rwSrc,rwSrc==='youtube'?(F.rwUrl||'').trim():(F.rwText||F.script||'').trim(),workflowLanguageCode(F.rwLang)]);}
+function workflowReadyNarration(){
+ const language=workflowLanguageCode(F.rwLang),profile=boardState?.profile||reviewSourceProfile;
+ const text=(boardState?.script||F.script||'').trim();
+ return text&&profile?.narration_language===language&&workflowPreparedSource===workflowSourceIdentity()?text:'';
+}
+async function workflowEnsureSpeechScript(){
+ await workflowScriptLanguageSave;syncAll();const ready=workflowReadyNarration();if(ready)return ready;
+ const current=workflowSpeechText(),language=workflowVoiceLanguage||workflowLanguageCode(F.rwLang);
+ // A ready own script can be voiced directly; reference-derived drafts carry
+ // their actual target language so a changed dropdown never relabels old text.
+ if(current&&!rwOn()&&!reviewSourceProfile&&!boardState&&!( ['ro','es','pt'].includes(language)&&/[А-Яа-яЁё]/.test(current)))return current;
+ const options=opts();options.storyboard_id=null;options.source_profile_id=null;
+ const input=(F.rwText||F.script||'').trim(),url=rwSrc==='youtube'?(F.rwUrl||'').trim():'';
+ if(!url&&!input)throw new Error('Вставьте ссылку или исходный текст в пункте 1. Дальше подготовка выполняется автоматически.');
+ if(!url&&!F.rwText)F.rwText=input;
+ const requestIdentity=workflowSourceIdentity();
+ options.source='script';options.rewrite={...options.rewrite,on:true,source:url?'youtube':'text',url,text:input,language:workflowVoiceLanguages[language]||F.rwLang};
+ if($('wf_speech_status'))$('wf_speech_status').textContent='Автоматически готовлю сценарий на выбранном языке…';
+ await saveKeys();if(workflowSpeechCancelled)throw new Error('Подготовка остановлена.');const response=await pywebview.api.rewrite(options);if(!response.ok)throw new Error(response.error);workflowSpeechOwnTask=true;if(workflowSpeechCancelled)await pywebview.api.cancel();
+ let state;do{await new Promise(r=>setTimeout(r,700));state=await pywebview.api.get_state();if($('wf_speech_status'))$('wf_speech_status').textContent=state.message||'Готовлю сценарий…';}while(state.preparing);
+ if(state.cancelled)throw new Error('Подготовка остановлена.');if(state.error)throw new Error(state.error);
+ if(!state.script)throw new Error('Сервис не вернул готовый сценарий.');
+ F.script=state.script;workflowPreparedSource=requestIdentity;reviewSourceProfile=state.source_profile||{narration_language:language};reviewSourceProfile.narration_language=language;reviewProfileId=state.source_profile_id||null;
+ if(boardState)resetStoryboard();if($('script'))$('script').value=F.script;
+ workflowSpeechOwnTask=false;return F.script;
+}
+async function workflowRunSpeech(options){
+ if(workflowSpeechCancelled)throw new Error('Подготовка остановлена.');
+ const response=await pywebview.api.speech_sample(options);if(!response.ok)throw new Error(response.error);workflowSpeechOwnTask=true;if(workflowSpeechCancelled)await pywebview.api.cancel();
+ let state;do{await new Promise(r=>setTimeout(r,700));state=await pywebview.api.get_state();if($('wf_speech_status'))$('wf_speech_status').textContent=state.message||'Готовлю озвучку…';}while(state.preparing);
+ workflowSpeechOwnTask=false;if(state.error)throw new Error(state.error);return state;
+}
+async function workflowAutoStart(){
+ if(workflowAutomaticBusy)return;workflowAutomaticBusy=true;
+ try{
+  syncAll();await workflowScriptLanguageSave;await saveKeys();const options=opts();options.automatic=true;options.speech_notes=speechNotes;
+  const ready=workflowReadyNarration();
+  if(ready){if(boardState&&boardDirty&&!await saveStoryboard())throw new Error('Не удалось сохранить готовую раскадровку.');options.source='script';options.script=ready;options.rewrite.on=false;}
+  else if(source==='script'){
+   options.storyboard_id=null;options.source_profile_id=null;
+   const input=(F.rwText||F.script||'').trim(),url=rwSrc==='youtube'?(F.rwUrl||'').trim():'';
+   if(!url&&!input)throw new Error('Вставьте ссылку или исходный текст.');
+   options.rewrite={...options.rewrite,on:true,source:url?'youtube':'text',url,text:input,language:F.rwLang};
+  }
+  if(!options.providers?.length)throw new Error('Выберите сервис картинок в пункте 6 один раз; настройка сохранится.');
+  if($('wf_auto_status'))$('wf_auto_status').textContent='Запускаю автоматическое создание ролика…';
+  const result=await pywebview.api.start(options);if(!result.ok)throw new Error(result.error);
+  queueMode=false;$('result').classList.remove('show');$('error').textContent='';$('btn_again').disabled=true;$('btn_cancel').disabled=false;
+  shownPct=0;buildStages(mode());buildFrames(0);$('g_title').textContent='Автоматическое создание ролика';go(6);poll();
+ }catch(e){if($('wf_auto_status'))$('wf_auto_status').textContent=e.message||String(e);else workflowNotice(e.message||String(e));}
+ finally{workflowAutomaticBusy=false;}
+}

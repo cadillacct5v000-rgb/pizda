@@ -3484,6 +3484,45 @@ def rewrite_script(cfg, rw, progress, profile_callback=None):
                          language, os.path.join(data_dir(), "jobs"), say, **extra)
 
 
+def automatic_narration_cfg(cfg, text, profile, progress):
+    """Prepare native delivery inside a full run, without a manual voice checkpoint."""
+    if not cfg.get('_automatic_speech'):return cfg
+    import speech_plan
+    import narration_rules
+    current={**cfg}
+    language=narration_rules.language_code(cfg.get('_automatic_speech_language') or (profile or {}).get('narration_language'))
+    if cfg.get('speech_plan_id'):
+        try:
+            saved=speech_plan.bind(cfg,data_dir(),text)
+            if saved['language']==language:return current
+        except ValueError:pass  # Explicit automatic run rebuilds a stale plan.
+    if not language:raise ValueError('Выберите язык итогового ролика перед автоматическим запуском.')
+    delivery=source_narration.delivery_of(profile)
+    if not delivery:
+        channel=channel_designs.selected(data_dir(),cfg)
+        delivery=(channel or {}).get('delivery')
+    url=cfg.get('_automatic_speech_reference','')
+    if not delivery and url:
+        import youtube_source
+        cache=os.path.join(data_dir(),'cache');os.makedirs(cache,exist_ok=True)
+        progress('tts',0,1,'автоматически анализирую подачу исходной речи')
+        audio=youtube_source.audio(url,cache,str(Path(ffmpeg_bin()).parent),cookie_file=cfg.get('youtube_cookie_file'),browser=cfg.get('youtube_browser'))
+        observed=source_narration.analyse(audio,audio_duration(audio),cfg,cache,lambda m:progress('tts',0,1,m))
+        delivery=(observed or {}).get('delivery')
+        if not delivery:raise ValueError('Для анализа звучащего референса нужен ключ Elysium или Gemini в «Подключениях».')
+    observed=bool(delivery)
+    if not delivery:
+        delivery={'speech_present':True,'instructions':'Default native conversational narration: clear pronunciation, natural breath groups and restrained emphasis.',
+                  'tempo_wpm':150,'pause_ms':400,'intonation_variation':.5,'energy':.4}
+    progress('tts',0,1,'автоматически готовлю подачу и языковые указания')
+    plan=speech_plan.build(text,language,narration_rules.locale_for(language,cfg),delivery,cfg.get('_automatic_speech_notes',''))
+    if not observed:
+        plan['reference_observed']=False
+        plan['prompt']=plan['prompt'].replace('REFERENCE DELIVERY OBSERVED FROM AUDIO:','DEFAULT DELIVERY (NO AUDIO REFERENCE):')
+    current.update(speech_plan_id=speech_plan.save(data_dir(),plan),speech_plan_dirty=False,_tts_language=language)
+    return current
+
+
 def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progress, rewrite=None, source_profile=None):
     """Либо готовый mp3, либо сценарий (свой или после рерайта), который надо озвучить. Возвращает (audio_path, job_dir, base)."""
     global LAST_JOB_DIR
@@ -3511,6 +3550,7 @@ def resolve_source(cfg, audio_path, script_text, tts_service, tts_voice, progres
             write_json(os.path.join(job_dir, "source_profile.json"), source_profile)
         LAST_JOB_DIR = job_dir
         voice_cfg = {**cfg, "_source_delivery": source_narration.delivery_of(source_profile),"_tts_language":(source_profile or {}).get("narration_language")}
+        voice_cfg=automatic_narration_cfg(voice_cfg,script_text.strip(),source_profile,progress)
         audio_path = make_voiceover(voice_cfg, script_text.strip(), tts_service or cfg.get("tts_service") or "voicegen",
                                     tts_voice if tts_voice is not None else cfg.get("tts_voice", ""), job_dir, progress)
         return audio_path, job_dir, base

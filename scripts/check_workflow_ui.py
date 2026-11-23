@@ -80,6 +80,30 @@ with sync_playwright() as p:
  section('source');section('style')
  assert page.locator('#analysis_model').input_value()=='anthropic/claude-opus-5.5'
  assert page.evaluate('models.elysium_model')==writer_model
+ # Script language must survive the change event, repaint, navigation and reload.
+ # The former early repaint reset every choice to the previous language.
+ before_language=len(calls)
+ for language,code in [('румынском','ro'),('португальском','pt'),('испанском','es')]:
+  section('text');page.select_option('#rw_lang',language)
+  page.wait_for_function('async value=>F.rwLang===value[0] && document.getElementById("rw_lang").value===value[0] && (await pywebview.api.get_state()).config.rewrite_lang===value[0] && (await pywebview.api.get_state()).config.speech_language===value[1]',arg=[language,code])
+  assert page.evaluate('opts().rewrite.language')==language
+  section('voice');assert page.input_value('#wf_voice_language')==code
+  section('source');section('text');assert page.input_value('#rw_lang')==language
+  page.reload();page.evaluate("window.dispatchEvent(new Event('pywebviewready'))")
+  page.wait_for_function('value=>F.rwLang===value[0] && workflowVoiceLanguage===value[1] && !!document.getElementById("wf_source_kind")',arg=[language,code])
+  page.evaluate("workflowOpen('text')");page.wait_for_selector('#rw_lang:visible')
+  section('text');assert page.input_value('#rw_lang')==language
+  assert page.evaluate('workflowVoiceLanguage')==code
+ # Rapid changes keep the last language rather than the last completed save.
+ page.evaluate('''()=>{const s=document.getElementById('rw_lang');for(const v of ['румынском','испанском','португальском']){s.value=v;s.dispatchEvent(new Event('change',{bubbles:true}));}}''')
+ page.wait_for_function('async()=>F.rwLang==="португальском" && (await pywebview.api.get_state()).config.rewrite_lang==="португальском" && document.getElementById("rw_lang").value==="португальском"')
+ assert not set(calls[before_language:])&{'start','rewrite','storyboard_prepare','voice_sample','youtube_sample','speech_sample'}
+ page.select_option('#rw_lang','русском');page.wait_for_function('document.getElementById("rw_lang").value==="русском" && workflowVoiceLanguage==="ru"')
+ # The first-step quick language menu uses the same persisted choice.
+ for language in ['румынском','португальском','испанском','русском']:
+  section('source');page.select_option('#wf_auto_language',language)
+  page.wait_for_function('async value=>F.rwLang===value && document.getElementById("wf_auto_language").value===value && (await pywebview.api.get_state()).config.rewrite_lang===value',arg=language)
+  section('text');assert page.input_value('#rw_lang')==language
  # Show the effective video provider even when the saved legacy selection was 'providers'.
  section('video')
  assert page.locator('#video_engine').input_value()=='elysium'
@@ -141,6 +165,13 @@ with sync_playwright() as p:
   assert page.locator('[data-workflow=connections]').is_visible()
  page.set_viewport_size({'width':1366,'height':768});section('source')
  page.screenshot(path=str(root/'workflow-source.png'),full_page=True)
+ # Empty FastGen card must explain the missing key without touching the network.
+ section('connections');page.select_option('#replace_mode','off')
+ page.wait_for_selector('[data-key-provider=fastgen] input.key')
+ field=page.locator('[data-key-provider=fastgen] input.key').first;field.fill('');field.blur()
+ app.FastGen=lambda *a,**k:(_ for _ in ()).throw(AssertionError('No FastGen network for an empty key'))
+ page.locator('[data-key-provider=fastgen]').first.get_by_role('button',name='Проверить подключение',exact=True).click()
+ page.wait_for_function('document.getElementById("wf_key_status_fastgen_0").textContent.includes("Введите ключ FastGen")')
  assert not errors,errors
  # Choosing reference-led creation is independent of provider selection and never generates.
  section('source');page.select_option('#wf_source_kind','youtube')
