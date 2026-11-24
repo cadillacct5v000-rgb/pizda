@@ -89,14 +89,13 @@ def test_incomplete_refused_and_empty_replies_are_not_repaired(monkeypatch,tmp_p
     monkeypatch.setattr(analysis,'_http',post)
     with pytest.raises(analysis.SourceAnalysisError):
         invoke(tmp_path,validate=analysis._narrative)
-    assert post.call_count==1
+    assert post.call_count==(2 if reason=='length' else 1)
 
 
 def test_bad_schema_is_not_committed_or_replayed_forever(monkeypatch,tmp_path):
     post=Mock(side_effect=[reply('{"unrelated":1}'),reply('{"narrative_style":"A"}')])
     monkeypatch.setattr(analysis,'_http',post)
-    with pytest.raises(analysis.SourceAnalysisError):
-        invoke(tmp_path,validate=analysis._narrative)
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'A'}
     assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'A'}
     assert post.call_count==2
 
@@ -158,14 +157,20 @@ def test_bad_first_format_repair_recovers_automatically_without_resending_image(
     assert post.call_count==3
 
 
-def test_completed_bad_repairs_are_bounded_across_restarts(monkeypatch,tmp_path):
-    post=Mock(side_effect=[reply(BAD_QUOTING),reply(BAD_QUOTING),reply(BAD_QUOTING)])
+def test_bad_answers_have_one_bounded_source_regeneration_and_no_poisoned_cache(monkeypatch,tmp_path):
+    post=Mock(return_value=reply(BAD_QUOTING))
     monkeypatch.setattr(analysis,'_http',post)
-    for _ in range(2):
-        with pytest.raises(analysis.SourceAnalysisError,match='двух текстовых'):
-            invoke(tmp_path,validate=analysis._narrative)
-    assert post.call_count==3
-    assert len(list((tmp_path/'responses').glob('*.reply.json')))==3
+    with pytest.raises(analysis.SourceAnalysisError,match='повторно вернула'):
+        invoke(tmp_path,validate=analysis._narrative)
+    assert post.call_count==6  # source + 2 format repairs, then one regeneration + 2 repairs
+    assert not list((tmp_path/'responses').glob('*.reply.json'))
+    assert len(list((tmp_path/'responses'/'rejected').glob('*.json')))==3
+    # A deliberate next launch can progress; it does not replay the stale JSON.
+    post.return_value=reply('{"narrative_style":"Fresh source observation."}')
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'Fresh source observation.'}
+    assert post.call_count==7
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'Fresh source observation.'}
+    assert post.call_count==7
 
 
 def test_missing_colon_in_format_repair_is_accepted_locally_then_cached(monkeypatch,tmp_path):
@@ -175,3 +180,62 @@ def test_missing_colon_in_format_repair_is_accepted_locally_then_cached(monkeypa
     assert invoke(tmp_path,validate=analysis._narrative)==expected
     assert invoke(tmp_path,validate=analysis._narrative)==expected
     assert post.call_count==2
+
+
+def test_existing_exhausted_truncated_receipts_regenerate_only_failed_batch(monkeypatch,tmp_path):
+    """Migrate the cache state in the user's log; no manual cache removal."""
+    image=tmp_path/'source.jpg';Image.new('RGB',(20,20)).save(image)
+    post=Mock(side_effect=[reply('{"narrative_style":"Already completed batch"}'),reply('{"narrative_style":"Seed target"}')])
+    monkeypatch.setattr(analysis,'_http',post)
+    def other():
+        return analysis.cached_query(tmp_path,'elysium','not-a-real-key','gpt-5.4','other source batch',image,validate=analysis._narrative)
+    assert other()['narrative_style']=='Already completed batch'
+    invoke(tmp_path,image,analysis._narrative)
+    final=next(p for p in (tmp_path/'responses').glob('*.json')
+               if not p.name.endswith('.reply.json') and json.loads(p.read_text()).get('result',{}).get('narrative_style')=='Seed target')
+    identity=json.loads(final.read_text())['identity'];digest=final.stem;final.unlink()
+    for suffix in ('.reply.json','.repair.reply.json','.repair2.reply.json'):
+        (final.parent/(digest+suffix)).write_text(json.dumps({'identity':identity,'text':'{"narrative_style":"Unterminated source observation',
+                                                          'finish_reason':'stop','complete':True}))
+    post=Mock(return_value=reply('{"narrative_style":"Fresh complete source observation"}'))
+    monkeypatch.setattr(analysis,'_http',post);messages=[]
+    assert invoke(tmp_path,image,analysis._narrative,messages.append)['narrative_style']=='Fresh complete source observation'
+    assert other()['narrative_style']=='Already completed batch'
+    assert invoke(tmp_path,image,analysis._narrative)['narrative_style']=='Fresh complete source observation'
+    assert post.call_count==1
+    content=post.call_args.kwargs['json']['messages'][1]['content']
+    assert len(content)==2 and 'FORMAT RECOVERY FOR THIS BATCH ONLY' in content[0]['text']
+    assert len(list((tmp_path/'responses'/'rejected').glob('*.json')))==3
+    assert any('заново анализирую только' in message for message in messages)
+
+
+def test_unterminated_string_is_reanalysed_not_completed_by_formatter(monkeypatch,tmp_path):
+    post=Mock(side_effect=[reply('{"narrative_style":"Unterminated'),reply('{"narrative_style":"New observation"}')])
+    monkeypatch.setattr(analysis,'_http',post)
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'New observation'}
+    assert post.call_count==2
+    assert all('Repair only the syntax' not in c.kwargs['json']['messages'][1]['content'][0]['text'] for c in post.call_args_list)
+
+
+def test_bad_syntax_after_two_repairs_has_one_automatic_source_regeneration(monkeypatch,tmp_path):
+    image=tmp_path/'source.jpg';Image.new('RGB',(20,20)).save(image)
+    post=Mock(side_effect=[reply(BAD_QUOTING),reply(BAD_QUOTING),reply(BAD_QUOTING),reply('{"narrative_style":"Fresh"}')])
+    monkeypatch.setattr(analysis,'_http',post)
+    assert invoke(tmp_path,image,analysis._narrative)=={'narrative_style':'Fresh'}
+    assert [len(c.kwargs['json']['messages'][1]['content']) for c in post.call_args_list]==[2,1,1,2]
+
+
+def test_unknown_result_of_regeneration_is_not_automatically_replayed(monkeypatch,tmp_path):
+    post=Mock(side_effect=[reply(BAD_QUOTING),reply(BAD_QUOTING),reply(BAD_QUOTING),analysis.SourceAnalysisError('ReadTimeout; result unknown')])
+    monkeypatch.setattr(analysis,'_http',post)
+    with pytest.raises(analysis.SourceAnalysisError,match='ReadTimeout'):
+        invoke(tmp_path,validate=analysis._narrative)
+    assert post.call_count==4
+
+
+def test_explicitly_clipped_reply_regenerates_the_batch_without_text_repairs(monkeypatch,tmp_path):
+    post=Mock(side_effect=[reply('{"narrative_style":"Cut off"}',reason='length'),reply('{"narrative_style":"Complete"}')])
+    monkeypatch.setattr(analysis,'_http',post)
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'Complete'}
+    assert post.call_count==2
+    assert 'FORMAT RECOVERY' in post.call_args.kwargs['json']['messages'][1]['content'][0]['text']

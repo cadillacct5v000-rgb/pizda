@@ -68,6 +68,10 @@ class InvalidAnalysisJSON(SourceAnalysisError):
     pass
 
 
+class IncompleteAnalysisReply(SourceAnalysisError):
+    """A received, explicitly clipped answer can be replaced, never guessed."""
+
+
 _REQUEST_PROGRESS = ContextVar('source_analysis_progress', default=None)
 _RESPONSE_CAPTURE = ContextVar('source_analysis_response_capture', default=None)
 
@@ -301,7 +305,9 @@ def _json(text):
     try:
         result = recover_object(text)
     except (TypeError, ValueError, AttributeError) as exc:
-        raise InvalidAnalysisJSON("Модель анализа вернула некорректный JSON.") from exc
+        error = InvalidAnalysisJSON("Модель анализа вернула некорректный JSON.")
+        error.incomplete = str(getattr(exc, 'msg', '')).startswith(('Обрезан', 'Unterminated'))
+        raise error from exc
     if not isinstance(result, dict):
         raise SourceAnalysisError("Модель анализа должна вернуть объект JSON.")
     return result
@@ -373,7 +379,7 @@ def _query(engine, key, model, prompt, image_path=None):
     if rejected:
         raise SourceAnalysisError('Модель отклонила анализ; отказ не будет исправляться как JSON.')
     if incomplete:
-        raise SourceAnalysisError('Модель обрезала анализ по лимиту ответа. Неполные данные сохранены для диагностики и не приняты; повторится только незавершённая часть.')
+        raise IncompleteAnalysisReply('Модель обрезала анализ по лимиту ответа. Неполные данные сохранены для диагностики и не приняты; повторится только незавершённая часть.')
     if not text.strip():
         raise SourceAnalysisError('Модель вернула пустой ответ. Проверьте доступную модель и её лимит ответа.')
     return _json(text)
@@ -444,17 +450,17 @@ def cached_query(directory, engine, key, model, prompt, image_path=None, *, vali
         except (OSError, ValueError, AttributeError):
             pass
         return None
-    capture_token = _RESPONSE_CAPTURE.set(capture_to(raw_path))
-    try:
+    def received_result(query_prompt):
+        _RESPONSE_CAPTURE.set(capture_to(raw_path))
         raw = saved_reply(raw_path)
         try:
-            result = _json(raw) if raw is not None else _query(engine, key, model, prompt, image_path)
-        except InvalidAnalysisJSON:
+            result = _json(raw) if raw is not None else _query(engine, key, model, query_prompt, image_path)
+        except InvalidAnalysisJSON as parse_error:
             raw = saved_reply(raw_path)
             if not raw or len(raw) > 100000:
                 raise
-            # At most two completed text-only repairs, persisted across restarts.
-            # Never resend source frames or silently pay to reformat forever.
+            # Reuse up to two completed text-only repair receipts before replacing
+            # a definitively malformed answer from this source batch.
             result = None
             for repair_index, target in enumerate(repair_paths):
                 repaired = saved_reply(target)
@@ -464,6 +470,10 @@ def cached_query(directory, engine, key, model, prompt, image_path=None, *, vali
                         break
                     except InvalidAnalysisJSON:
                         continue
+                if getattr(parse_error, 'incomplete', False):
+                    # Existing complete repairs may still be usable. Otherwise
+                    # do not pay a formatter to guess the end of a clipped string.
+                    continue
                 if progress:
                     progress(f'исправляю формат ответа {repair_index+1}/2 (текстовый запрос, без повторной отправки кадров)')
                 _RESPONSE_CAPTURE.set(capture_to(target))
@@ -480,22 +490,56 @@ def cached_query(directory, engine, key, model, prompt, image_path=None, *, vali
                 except InvalidAnalysisJSON:
                     continue
             if result is None:
-                raise InvalidAnalysisJSON('Не удалось восстановить JSON анализа после двух текстовых исправлений. '
-                                          'Ответы сохранены; бесконечного повтора платных запросов не будет.')
-        if validate:
+                raise InvalidAnalysisJSON('Не удалось восстановить JSON анализа после двух текстовых исправлений.')
+        return result
+
+    def retire_bad_receipts():
+        """Keep diagnostic evidence without letting it poison the next attempt."""
+        for target in (raw_path, *repair_paths):
             try:
-                validate(result)
-            except SourceAnalysisError:
-                # Syntactically valid but incomplete/wrong-schema analysis must not
-                # trap the next preparation attempt on the same unusable reply.
-                for target in (raw_path, *repair_paths):
+                raw = target.read_bytes()
+            except FileNotFoundError:
+                continue
+            rejected = directory / 'rejected'
+            rejected.mkdir(exist_ok=True)
+            archived = rejected / (target.stem + '.' + hashlib.sha256(raw).hexdigest()[:16] + '.json')
+            try:
+                os.replace(target, archived)
+            except OSError:
+                # If moving is unavailable, invalidation must succeed before a
+                # new paid request. Never silently reuse the same broken reply.
+                value = json.loads(raw)
+                value['complete'] = False
+                _atomic_json(target, value)
+
+    capture_token = _RESPONSE_CAPTURE.set(capture_to(raw_path))
+    try:
+        for generation in range(2):
+            query_prompt = prompt
+            if generation:
+                query_prompt += ('\nFORMAT RECOVERY FOR THIS BATCH ONLY: the previous answer could not be decoded. '
+                                 'Analyse the supplied source batch again. Return the complete requested JSON schema '
+                                 'with concise descriptions. Keep every requested entry, identifier and timing. '
+                                 'Do not repeat the reference data in the answer. Close every string and container.')
+            try:
+                result = received_result(query_prompt)
+                if validate:
                     try:
-                        value = json.loads(target.read_text(encoding='utf-8'))
-                        value['complete'] = False
-                        _atomic_json(target, value)
-                    except (OSError, ValueError, AttributeError):
-                        pass
-                raise
+                        validate(result)
+                    except SourceAnalysisError as error:
+                        # This is validation of an already received answer, not
+                        # a network failure with an unknown submission result.
+                        raise InvalidAnalysisJSON(str(error)) from error
+                break
+            except (InvalidAnalysisJSON, IncompleteAnalysisReply) as error:
+                retire_bad_receipts()
+                if generation:
+                    raise SourceAnalysisError('Модель повторно вернула непригодный ответ для одной части анализа. '
+                                              'Битые ответы убраны из рабочего кэша и сохранены для диагностики. '
+                                              'При следующем запуске будет запрошена только эта неудавшаяся часть.') from error
+                netutil.check_cancel()
+                if progress:
+                    progress('Ответ этой части восстановить нельзя; заново анализирую только её (один новый запрос). Готовые части сохраняются.')
         _atomic_json(path, {'identity': identity, 'result': result})
         netutil.check_cancel()
         return result

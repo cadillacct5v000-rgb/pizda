@@ -106,9 +106,10 @@ def test_invalid_response_not_cached_and_changed_image_invalidates(monkeypatch, 
     monkeypatch.setattr(analysis, '_query', query)
     image = tmp_path / 'image.jpg'
     image.write_bytes(b'first-image')
-    with pytest.raises(analysis.SourceAnalysisError):
-        analysis.cached_query(tmp_path, 'gemini', 'key', 'model', 'prompt', image, validate=analysis._style)
-    assert not list((tmp_path / 'responses').glob('*.json'))
+    assert analysis.cached_query(tmp_path, 'gemini', 'key', 'model', 'prompt', image, validate=analysis._style)==STYLE
+    assert query.call_count == 2
+    checkpoints = [json.loads(p.read_text()) for p in (tmp_path / 'responses').glob('*.json') if not p.name.endswith('.reply.json')]
+    assert checkpoints and all(item['result']==STYLE for item in checkpoints)
     analysis.cached_query(tmp_path, 'gemini', 'key', 'model', 'prompt', image, validate=analysis._style)
     analysis.cached_query(tmp_path, 'gemini', 'key', 'model', 'prompt', image, validate=analysis._style)
     assert query.call_count == 2
