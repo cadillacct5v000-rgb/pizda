@@ -535,6 +535,7 @@ def cached_query(directory, engine, key, model, prompt, image_path=None, *, vali
                 retire_bad_receipts()
                 if generation:
                     raise SourceAnalysisError('Модель повторно вернула непригодный ответ для одной части анализа. '
+                                              f'Причина: {error}. '
                                               'Битые ответы убраны из рабочего кэша и сохранены для диагностики. '
                                               'При следующем запуске будет запрошена только эта неудавшаяся часть.') from error
                 netutil.check_cancel()
