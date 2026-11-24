@@ -49,6 +49,13 @@ STYLE_SCHEMA = (
     '{"visual_style":{"description":"...","palette":["..."],'
     '"composition":"...","shot_types":["..."]},"narrative_style":"..."}'
 )
+JSON_FORMAT_RULES = (
+    '\nOutput format: return exactly one complete, compact JSON object. '
+    'Use ASCII double quotes for every field name and string delimiter. '
+    'Escape every double quote and backslash inside string values according to JSON rules. '
+    'Separate every key from its value with a colon, and every field or item with a comma. '
+    'Do not use markdown fences or comments. Keep descriptions concise so the complete object fits the response limit.'
+)
 
 
 class SourceAnalysisError(RuntimeError):
@@ -302,6 +309,9 @@ def _json(text):
 
 def _query(engine, key, model, prompt, image_path=None):
     image = base64.b64encode(Path(image_path).read_bytes()).decode("ascii") if image_path else None
+    # Formatting guidance does not invalidate compatible, already validated
+    # source observations or their local receipts from earlier builds.
+    system = SYSTEM + JSON_FORMAT_RULES
     reason, incomplete, rejected = None, False, False
     if engine in ("fastgen", "openai", "elysium"):
         base = "https://api.fast-gen.ai/v1" if engine == "fastgen" else endpoints.base(engine)
@@ -309,7 +319,7 @@ def _query(engine, key, model, prompt, image_path=None):
         content = [{"type": "text", "text": prompt}]
         if image:
             content.append({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + image}})
-        payload = {"model": model, "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]}
+        payload = {"model": model, "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
         if engine in ("elysium", "openai"):
             payload["stream"] = True
         if engine == "elysium":
@@ -334,7 +344,7 @@ def _query(engine, key, model, prompt, image_path=None):
             content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image}})
         response = _http("POST", endpoints.base("anthropic") + "/messages",
                          headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                         json={"model": model, "max_tokens": 6000, "system": SYSTEM,
+                         json={"model": model, "max_tokens": 6000, "system": system,
                                "messages": [{"role": "user", "content": content}]})
         reason = response.get("stop_reason")
         incomplete, rejected = reason == "max_tokens", reason == "refusal"
@@ -344,7 +354,7 @@ def _query(engine, key, model, prompt, image_path=None):
         if image:
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image}})
         response = _http("POST", endpoints.base("gemini") + f"/models/{model}:generateContent",
-                         params={"key": key}, json={"system_instruction": {"parts": [{"text": SYSTEM}]},
+                         params={"key": key}, json={"system_instruction": {"parts": [{"text": system}]},
                          "contents": [{"role": "user", "parts": parts}],
                          "generationConfig": {"maxOutputTokens": 6000, "responseMimeType": "application/json"}})
         candidate = (response.get("candidates") or [{}])[0]

@@ -151,9 +151,12 @@ def recover_object(content):
                     if pos >= len(text) or text[pos] not in ('"', "'"):
                         fail('Ожидался ключ объекта')
                     key = string();whitespace()
-                    if key in result or pos >= len(text) or text[pos] != ':':
-                        fail('Повторный ключ или отсутствует двоеточие')
-                    pos += 1
+                    if key in result or pos >= len(text):
+                        fail('Повторный ключ или отсутствует значение')
+                    if text[pos] == ':':
+                        pos += 1
+                    elif text[pos] not in '{["\'-0123456789tfn':
+                        fail('Отсутствует однозначное значение после ключа')
                     result[key] = value(depth+1)
                 else:
                     result.append(value(depth+1))

@@ -109,6 +109,7 @@ def test_content_blocks_normalized_before_capture(monkeypatch,tmp_path):
 
 
 @pytest.mark.parametrize('text,expected',[
+    ('{"note" "A", "items" [1, {"name" "whale"}]}',{'note':'A','items':[1,{'name':'whale'}]}),
     ('{"note":"A" "items":[1 2 {"x":true "y":null}]}',{'note':'A','items':[1,2,{'x':True,'y':None}]}),
     ("{'note':'Русский кит', 'items':['ro' 'es' 'pt']}",{'note':'Русский кит','items':['ro','es','pt']}),
     (r'{"note":"literal \_ and \( stay"}',{'note':r'literal \_ and \( stay'}),
@@ -119,6 +120,7 @@ def test_local_recovery_preserves_all_values(text,expected):
 
 
 @pytest.mark.parametrize('text',[
+    '{"a" "b":1}', '{"a"}',
     '{"note":"unfinished', '{"items":[1 2}', '{"one":{"a":1}',
     '{"note":}', '{"a":NaN "b":1}', '{"a":1 "a":2}',
     BAD_QUOTING, '{"a":1} {"b":2}', '[{"a":1}]',
@@ -133,6 +135,16 @@ def test_local_analysis_repair_uses_no_extra_paid_request(monkeypatch,tmp_path):
     monkeypatch.setattr(analysis,'_http',post)
     assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'A','extra':[1,2]}
     assert invoke(tmp_path,validate=analysis._narrative)['narrative_style']=='A'
+    assert post.call_count==1
+
+
+def test_missing_colon_is_recovered_without_new_analysis_or_paid_formatting(monkeypatch,tmp_path):
+    post=Mock(return_value=reply('{"narrative_style" "Original note", "extra" ["a" "b"]}'))
+    monkeypatch.setattr(analysis,'_http',post)
+    assert invoke(tmp_path,validate=analysis._narrative)=={'narrative_style':'Original note','extra':['a','b']}
+    system=post.call_args.kwargs['json']['messages'][0]['content']
+    assert system.startswith(analysis.SYSTEM) and 'colon' in system and 'backslash' in system
+    assert invoke(tmp_path,validate=analysis._narrative)['narrative_style']=='Original note'
     assert post.call_count==1
 
 
@@ -154,3 +166,12 @@ def test_completed_bad_repairs_are_bounded_across_restarts(monkeypatch,tmp_path)
             invoke(tmp_path,validate=analysis._narrative)
     assert post.call_count==3
     assert len(list((tmp_path/'responses').glob('*.reply.json')))==3
+
+
+def test_missing_colon_in_format_repair_is_accepted_locally_then_cached(monkeypatch,tmp_path):
+    post=Mock(side_effect=[reply(BAD_QUOTING),reply('{"narrative_style" "A \\"quoted\\" sentence"}')])
+    monkeypatch.setattr(analysis,'_http',post)
+    expected={'narrative_style':'A "quoted" sentence'}
+    assert invoke(tmp_path,validate=analysis._narrative)==expected
+    assert invoke(tmp_path,validate=analysis._narrative)==expected
+    assert post.call_count==2
