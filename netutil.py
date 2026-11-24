@@ -5,11 +5,62 @@ patient(fn)  — терпеливый опрос: секундный обрыв 
 """
 import os
 import tempfile
+import threading
 import time
 
 import requests
 
 CANCEL_CHECK = None   # pipeline ставит сюда check_cancel
+MODEL_CONNECT_TIMEOUT = 300
+MODEL_READ_TIMEOUT = 300
+
+
+def response_once(request, progress=None, *, interval=15):
+    """Wait for ONE HTTP submission without blocking cancellation/progress.
+
+    requests uses its connect budget for HTTPS proxy CONNECT/TLS as well.
+    Cancellation abandons the wait, never resubmits the request, and closes a
+    late response. It cannot revoke a task already accepted by the provider.
+    The underlying request MUST supply finite transport timeouts.
+    """
+    check_cancel()
+    ready, lock = threading.Event(), threading.Lock()
+    state = {'abandoned': False}
+
+    def send():
+        response, error = None, None
+        try:
+            response = request()
+        except BaseException as exc:
+            error = exc
+        with lock:
+            abandoned = state['abandoned']
+            if not abandoned:
+                state.update(response=response, error=error)
+        if abandoned and response is not None:
+            response.close()
+        ready.set()
+
+    started = reported = time.monotonic()
+    threading.Thread(target=send, name='model-http-once', daemon=True).start()
+    try:
+        while not ready.wait(.1):
+            check_cancel()
+            now = time.monotonic()
+            if progress and now - reported >= interval:
+                progress(f'ожидаю заголовки ответа: {int(now-started)} с; один запрос, повторной отправки нет. Можно нажать «Стоп».')
+                reported = now
+        check_cancel()
+        if state.get('error') is not None:
+            raise state['error']
+        return state['response']
+    except BaseException:
+        with lock:
+            state['abandoned'] = True
+            response = state.pop('response', None)
+        if response is not None:
+            response.close()
+        raise
 
 
 def check_cancel():

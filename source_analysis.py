@@ -182,7 +182,12 @@ def _http(method, url, **kwargs):
         if streaming and _REQUEST_PROGRESS.get():
             _REQUEST_PROGRESS.get()('соединяюсь с API анализа; ожидаю поток ответа модели')
         try:
-            response = requests.request(method, url, timeout=(15, 300 if streaming else 180), **({'stream': True} if streaming else {}), **kwargs)
+            if streaming:
+                response = netutil.response_once(
+                    lambda: requests.request(method, url, timeout=(netutil.MODEL_CONNECT_TIMEOUT, netutil.MODEL_READ_TIMEOUT),
+                                             stream=True, **kwargs), _REQUEST_PROGRESS.get())
+            else:
+                response = requests.request(method, url, timeout=(15, 180), **kwargs)
             try:
                 if response.status_code == 429 or response.status_code >= 500:
                     quota = None

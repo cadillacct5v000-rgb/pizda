@@ -57,7 +57,7 @@ def test_storyboard_stream_request_is_not_retried_after_read_timeout(monkeypatch
     assert client.s.post.call_count==1
     assert 'fixture-private' not in str(caught.value)
     assert client.s.post.call_args.kwargs['stream'] is True
-    assert client.s.post.call_args.kwargs['timeout']==(60,300)
+    assert client.s.post.call_args.kwargs['timeout']==(300,300)
     assert 'до получения заголовков' in str(caught.value)
 
 
@@ -155,3 +155,79 @@ def test_interrupted_script_stream_keeps_receipt_and_reuses_ready_sections(tmp_p
     assert transport.s.post.call_count==2
     assert studio._query(client,'section two',b)=={'script':'Ready second section.'}
     assert transport.s.post.call_count==3
+
+
+def test_wait_reports_progress_before_headers_without_resubmitting(monkeypatch):
+    import threading
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    release=threading.Event();response=Mock();calls=[];messages=[]
+    def request():
+        calls.append('POST')
+        assert release.wait(3),'No progress while server was silent'
+        return response
+    def progress(message):
+        messages.append(message);release.set()
+    assert netutil.response_once(request,progress,interval=.01) is response
+    assert calls==['POST'] and 'заголовки' in messages[0]
+    response.close.assert_not_called()
+
+
+def test_stop_during_header_wait_closes_late_response_and_never_replays(monkeypatch):
+    import threading
+    entered,release,closed=threading.Event(),threading.Event(),threading.Event()
+    response=Mock();response.close.side_effect=closed.set;calls=[]
+    class Cancelled(Exception):pass
+    def check():
+        if entered.is_set():raise Cancelled('local stop')
+    def request():
+        calls.append('POST');entered.set()
+        assert release.wait(3)
+        return response
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',check)
+    try:
+        with pytest.raises(Cancelled):netutil.response_once(request)
+    finally:release.set()
+    assert closed.wait(3)
+    assert calls==['POST'] and response.close.call_count==1
+
+
+def test_real_delayed_headers_complete_once_with_longer_budget(monkeypatch):
+    """Real local HTTP request, scaled timeouts; no provider traffic or billing."""
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+    calls=[]
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            calls.append(self.path)
+            self.rfile.read(int(self.headers.get('Content-Length',0)))
+            time.sleep(.2)
+            try:
+                self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+                self.wfile.write(b'data: {"choices":[{"delta":{"content":"{\\"ok\\":true}"},"finish_reason":"stop"}]}\n\n')
+                self.wfile.flush()
+            except (OSError,ConnectionError):pass
+        def log_message(self,*args):pass
+    server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+    worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    monkeypatch.setattr('endpoints.base',lambda provider:f'http://127.0.0.1:{server.server_port}/v1')
+    client=OpenAIClient('local-fixture',provider='elysium',stream=True);client.s.trust_env=False
+    client.STREAM_CONNECT_TIMEOUT=client.STREAM_READ_TIMEOUT=2
+    try:
+        assert client.chat_json('JSON','fixture',model='anthropic/claude-opus-4.6')=={'ok':True}
+        assert calls==['/v1/chat/completions']
+    finally:
+        client.s.close();server.shutdown();server.server_close();worker.join(timeout=2)
+
+
+def test_analysis_stream_has_same_tunnel_budget_and_no_timeout_replay(monkeypatch):
+    import source_analysis as analysis
+    monkeypatch.setattr(netutil,'CANCEL_CHECK',None)
+    request=Mock(side_effect=requests.ReadTimeout('fixture-private'))
+    monkeypatch.setattr(analysis.requests,'request',request)
+    with pytest.raises(analysis.SourceAnalysisError):
+        analysis._http('POST','https://model.example.invalid/v1/chat/completions',
+                       headers={'Authorization':'Bearer fixture-private'},json={'stream':True})
+    assert request.call_count==1
+    assert request.call_args.kwargs['timeout']==(300,300)

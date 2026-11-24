@@ -43,8 +43,8 @@ class OpenAIClient:
     # urllib3 also uses the connect limit while waiting for an HTTPS proxy's
     # CONNECT response. A slow tunnel therefore reports ReadTimeout(connect),
     # even when the separate model read limit is much longer.
-    STREAM_CONNECT_TIMEOUT = 60
-    STREAM_READ_TIMEOUT = 300
+    STREAM_CONNECT_TIMEOUT = netutil.MODEL_CONNECT_TIMEOUT
+    STREAM_READ_TIMEOUT = netutil.MODEL_READ_TIMEOUT
 
     def __init__(self, api_key: str, timeout: int = 120, provider="openai", stream=False, progress=None):
         self.stream, self.progress = stream, progress
@@ -147,8 +147,9 @@ class OpenAIClient:
         try:
             if self.progress:
                 self.progress('ожидаю подключение к модели; один запрос текущей пачки')
-            response = self.s.post(endpoints.base(self.provider) + '/chat/completions', json=payload, stream=True,
-                                   timeout=(self.STREAM_CONNECT_TIMEOUT,self.STREAM_READ_TIMEOUT))
+            response = netutil.response_once(
+                lambda: self.s.post(endpoints.base(self.provider) + '/chat/completions', json=payload, stream=True,
+                                    timeout=(self.STREAM_CONNECT_TIMEOUT,self.STREAM_READ_TIMEOUT)), self.progress)
             if response.status_code >= 400:
                 raise OpenAIError(provider_access.failure(self.provider, response, self.key, model))
             content_type = str((getattr(response, 'headers', None) or {}).get('Content-Type', '')).lower()
@@ -162,7 +163,7 @@ class OpenAIClient:
             detail = clean(str(error),(self.key,),220)
             phase = 'до получения заголовков ответа' if response is None else 'при чтении потока ответа'
             raise OpenAIError(f'{self.provider} · {model} · {type(error).__name__} · {elapsed} с. {detail}. '
-                              f'Сбой {phase}. Лимиты клиента: подключение {self.STREAM_CONNECT_TIMEOUT} с, '
+                              f'Сбой {phase}. Лимиты клиента: соединение, HTTPS-прокси и TLS {self.STREAM_CONNECT_TIMEOUT} с, '
                               f'ожидание данных {self.STREAM_READ_TIMEOUT} с. '
                               'Запрос текущей пачки автоматически не повторён; результат и списание неизвестны. Готовые пачки сохранены.') from error
         finally:
