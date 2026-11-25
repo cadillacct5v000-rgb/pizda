@@ -22,6 +22,9 @@ jobs:
           if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
           if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
+          $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
+          $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutFile)
+          if (!$Shortcut.Arguments.Contains($PackageRoot) -or $Shortcut.TargetPath -notmatch 'powershell.exe$') { throw 'Unicode shortcut not created correctly' }
           try {
             $HealthReply = Invoke-RestMethod 'http://127.0.0.1:8787/api/health'
             if (!$HealthReply.frontend.ready -or $HealthReply.version -ne '0.6.2') { throw 'Wrong frontend' }
