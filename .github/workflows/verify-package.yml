@@ -5,7 +5,29 @@ on:
 permissions:
   contents: read
 jobs:
+  shortcut:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native shortcut with Unicode install path
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Root = Join-Path $env:RUNNER_TEMP ('Video Flow ' + [char]0x442 + [char]0x435 + [char]0x441 + [char]0x442)
+          Expand-Archive -LiteralPath 'VideoFlow-0.6.2-Windows-x64.zip' -DestinationPath $Root
+          $App = Join-Path $Root 'app'
+          $Tokens = $null; $ParseErrors = $null
+          $Ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $App 'windows\Manage.ps1'),[ref]$Tokens,[ref]$ParseErrors)
+          if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
+          $InstallFunction = $Ast.Find({param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Install-App'},$true)
+          Invoke-Expression $InstallFunction.Body.EndBlock.Statements[-1].Extent.Text
+          $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
+          $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutFile)
+          @{root=$Root;target=$Shortcut.TargetPath;arguments=$Shortcut.Arguments;workingDirectory=$Shortcut.WorkingDirectory} | ConvertTo-Json
+          if (!$Shortcut.Arguments.Contains($Root) -or $Shortcut.TargetPath -notmatch 'powershell.exe$') { throw 'Unicode shortcut mismatch' }
   fresh:
+    needs: shortcut
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -52,6 +74,7 @@ jobs:
           path: ${{ runner.temp }}/Video Flow */logs/
           if-no-files-found: ignore
   upgrade-rollback:
+    needs: shortcut
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
