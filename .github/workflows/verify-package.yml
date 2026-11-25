@@ -89,7 +89,7 @@ jobs:
             Expand-Archive -LiteralPath $CandidateArchive -DestinationPath $BrokenRoot
             $PackageFile = Join-Path $BrokenRoot 'app\package.json'
             $PackageJson = Get-Content -Raw $PackageFile | ConvertFrom-Json
-            $PackageJson.scripts.'verify:installed' = 'node -e "process.exit(23)"'
+            $PackageJson.scripts.'verify:installed' = 'node -e "require(''node:fs'').writeFileSync(''../forced-update-failure.txt'',''reached'');process.exit(23)"'
             $Utf8 = New-Object System.Text.UTF8Encoding($false)
             [IO.File]::WriteAllText($PackageFile,($PackageJson | ConvertTo-Json -Depth 30),$Utf8)
             $ManifestFile = Join-Path $BrokenRoot 'package-manifest.json'
@@ -100,6 +100,7 @@ jobs:
             Compress-Archive -Path (Join-Path $BrokenRoot '*') -DestinationPath $BrokenArchive
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Update -Archive $BrokenArchive -NoBrowser
             if ($LASTEXITCODE -eq 0) { throw 'Broken update unexpectedly succeeded' }
+            if (!(Test-Path (Join-Path $PackageRoot 'forced-update-failure.txt'))) { throw 'Failure did not reach swapped application: rollback was not exercised' }
             Assert-Preserved
           } finally { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop -NoBrowser }
       - uses: actions/upload-artifact@v4
