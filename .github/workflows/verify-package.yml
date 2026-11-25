@@ -1,0 +1,41 @@
+name: Verify Video Flow Windows package
+on:
+  push:
+    branches: ['downloads/video-flow-0.6.1']
+permissions:
+  contents: read
+jobs:
+  windows-install:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install, check frontend and restart in Windows PowerShell
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Target = Join-Path $env:RUNNER_TEMP 'Video Flow package test'
+          Expand-Archive -LiteralPath 'VideoFlow-0.6.1-Windows-x64.zip' -DestinationPath $Target
+          $Script = Join-Path $Target 'app\windows\Manage.ps1'
+          $Tokens = $null; $ParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($Script, [ref]$Tokens, [ref]$ParseErrors) | Out-Null
+          if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
+          if ($LASTEXITCODE -ne 0) { throw 'Installation failed' }
+          try {
+            $Health = Invoke-RestMethod 'http://127.0.0.1:8787/api/health'
+            if (!$Health.frontend.ready -or $Health.version -ne '0.6.1') { throw 'Frontend not ready' }
+            $Home = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8787/'
+            if ($Home.StatusCode -ne 200 -or $Home.Content -notmatch '<div id="root"') { throw 'Homepage not served' }
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Second Start failed' }
+          } finally {
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop -NoBrowser
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Stop failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-package-logs
+          path: ${{ runner.temp }}/Video Flow package test/logs/
+          if-no-files-found: ignore
