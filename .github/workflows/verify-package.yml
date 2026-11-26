@@ -23,9 +23,16 @@ jobs:
           $InstallFunction = $Ast.Find({param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Install-App'},$true)
           Invoke-Expression $InstallFunction.Body.EndBlock.Statements[-1].Extent.Text
           $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
-          $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutFile)
-          @{root=$Root;target=$Shortcut.TargetPath;arguments=$Shortcut.Arguments;workingDirectory=$Shortcut.WorkingDirectory} | ConvertTo-Json
-          if (!$Shortcut.Arguments.Contains($Root) -or $Shortcut.TargetPath -notmatch 'powershell.exe$') { throw 'Unicode shortcut mismatch' }
+          $ShortcutValues = [VideoFlow.NativeShortcut]::Read($ShortcutFile)
+          $DecodedCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($ShortcutValues[1] -split ' ')[-1]))
+          if (!$DecodedCommand.Contains($Root) -or $ShortcutValues[0] -notmatch 'powershell.exe$' -or $ShortcutValues[2] -ne $Root) { throw 'Unicode shortcut mismatch' }
+          $ProbeLink = Join-Path $Root (([string][char]0x44f) + '.lnk')
+          $ProofFile = Join-Path $Root 'shortcut-proof.txt'
+          $ProofCommand = "Set-Content -LiteralPath '" + $ProofFile.Replace("'", "''") + "' -Value 'ok'"
+          $ProofEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ProofCommand))
+          [VideoFlow.NativeShortcut]::Create($ProbeLink,(Join-Path $PSHOME 'powershell.exe'),('-NoProfile -EncodedCommand ' + $ProofEncoded),$Root)
+          Start-Process -FilePath $ProbeLink -Wait
+          if (!(Test-Path -LiteralPath $ProofFile) -or (Get-Content -Raw -LiteralPath $ProofFile).Trim() -ne 'ok') { throw 'Unicode shortcut did not launch' }
   fresh:
     needs: shortcut
     runs-on: windows-latest
@@ -45,8 +52,10 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
           if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
           $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
-          $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutFile)
-          if (!$Shortcut.Arguments.Contains($PackageRoot) -or $Shortcut.TargetPath -notmatch 'powershell.exe$') { throw 'Unicode shortcut not created correctly' }
+          Add-Type -Path (Join-Path $PackageRoot 'app\windows\Shortcut.cs')
+          $ShortcutValues = [VideoFlow.NativeShortcut]::Read($ShortcutFile)
+          $DecodedCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($ShortcutValues[1] -split ' ')[-1]))
+          if (!$DecodedCommand.Contains($PackageRoot) -or $ShortcutValues[2] -ne $PackageRoot) { throw 'Unicode shortcut not created correctly' }
           try {
             $HealthReply = Invoke-RestMethod 'http://127.0.0.1:8787/api/health'
             if (!$HealthReply.frontend.ready -or $HealthReply.version -ne '0.6.2') { throw 'Wrong frontend' }
