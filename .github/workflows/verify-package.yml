@@ -1,0 +1,150 @@
+name: Verify Video Flow Windows package
+on:
+  push:
+    branches: ['downloads/video-flow-0.6.3']
+permissions:
+  contents: read
+jobs:
+  shortcut:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native shortcut with Unicode install path
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Root = Join-Path $env:RUNNER_TEMP ('Video Flow ' + [char]0x442 + [char]0x435 + [char]0x441 + [char]0x442)
+          Expand-Archive -LiteralPath 'VideoFlow-0.6.3-Windows-x64.zip' -DestinationPath $Root
+          $App = Join-Path $Root 'app'
+          $Tokens = $null; $ParseErrors = $null
+          $Ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $App 'windows\Manage.ps1'),[ref]$Tokens,[ref]$ParseErrors)
+          if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
+          $InstallFunction = $Ast.Find({param($Node) $Node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -eq 'Install-App'},$true)
+          Invoke-Expression $InstallFunction.Body.EndBlock.Statements[-1].Extent.Text
+          $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
+          $ShortcutValues = [VideoFlow.NativeShortcut]::Read($ShortcutFile)
+          $DecodedCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($ShortcutValues[1] -split ' ')[-1]))
+          if (!$DecodedCommand.Contains($Root) -or $ShortcutValues[0] -notmatch 'powershell.exe$' -or $ShortcutValues[2] -ne $Root) { throw 'Unicode shortcut mismatch' }
+          $ProbeLink = Join-Path $Root (([string][char]0x44f) + '.lnk')
+          $ProofFile = Join-Path $Root 'shortcut-proof.txt'
+          $ProofCommand = "Set-Content -LiteralPath '" + $ProofFile.Replace("'", "''") + "' -Value 'ok'"
+          $ProofEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ProofCommand))
+          [VideoFlow.NativeShortcut]::Create($ProbeLink,(Join-Path $PSHOME 'powershell.exe'),('-NoProfile -EncodedCommand ' + $ProofEncoded),$Root)
+          Start-Process -FilePath $ProbeLink -Wait
+          if (!(Test-Path -LiteralPath $ProofFile) -or (Get-Content -Raw -LiteralPath $ProofFile).Trim() -ne 'ok') { throw 'Unicode shortcut did not launch' }
+  fresh:
+    needs: shortcut
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install and test actual Windows package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PackageRoot = Join-Path $env:RUNNER_TEMP ('Video Flow ' + [char]0x442 + [char]0x435 + [char]0x441 + [char]0x442)
+          Expand-Archive -LiteralPath 'VideoFlow-0.6.3-Windows-x64.zip' -DestinationPath $PackageRoot
+          $Script = Join-Path $PackageRoot 'app\windows\Manage.ps1'
+          $Tokens = $null; $ParseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($Script,[ref]$Tokens,[ref]$ParseErrors) | Out-Null
+          if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
+          if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
+          $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
+          Add-Type -Path (Join-Path $PackageRoot 'app\windows\Shortcut.cs')
+          $ShortcutValues = [VideoFlow.NativeShortcut]::Read($ShortcutFile)
+          $DecodedCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($ShortcutValues[1] -split ' ')[-1]))
+          if (!$DecodedCommand.Contains($PackageRoot) -or $ShortcutValues[2] -ne $PackageRoot) { throw 'Unicode shortcut not created correctly' }
+          try {
+            $HealthReply = Invoke-RestMethod 'http://127.0.0.1:8787/api/health'
+            if (!$HealthReply.frontend.ready -or $HealthReply.version -ne '0.6.3') { throw 'Wrong frontend' }
+            $PackagePage = Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:8787/'
+            if ($PackagePage.StatusCode -ne 200 -or $PackagePage.Content -notmatch '<div id="root"') { throw 'No homepage' }
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Start -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Repeat Start failed' }
+            $NodeExe = (Get-ChildItem (Join-Path $PackageRoot 'runtime') -Recurse -Filter node.exe | Select-Object -First 1).FullName
+            $BrowserReceipt = Get-Content -Raw (Join-Path $PackageRoot 'config\browser.json') | ConvertFrom-Json
+            $BrowserExe = $BrowserReceipt.path
+            if ($BrowserReceipt.source -ne 'installed' -or !(Test-Path -LiteralPath $BrowserExe) -or $BrowserExe -notmatch 'Microsoft\\Edge|Google\\Chrome') { throw 'System Chrome/Edge was not selected' }
+            $env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = $BrowserExe
+            $env:REMOTION_BROWSER_EXECUTABLE = $BrowserExe
+            Push-Location (Join-Path $PackageRoot 'app')
+            try {
+              & $NodeExe scripts/check-ui.mjs
+              if ($LASTEXITCODE -ne 0) { throw 'Browser smoke failed' }
+              & $NodeExe scripts/e2e.mjs
+              if ($LASTEXITCODE -ne 0) { throw 'MP4 E2E failed' }
+            } finally { Pop-Location }
+          } finally { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop -NoBrowser }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fresh-install-logs
+          path: ${{ runner.temp }}/Video Flow */logs/
+          if-no-files-found: ignore
+  upgrade-rollback:
+    needs: shortcut
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upgrade preserves data and failed update rolls back
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $CandidateArchive = Join-Path $env:GITHUB_WORKSPACE 'VideoFlow-0.6.3-Windows-x64.zip'
+          $BaselineArchive = Join-Path $env:RUNNER_TEMP 'baseline.zip'
+          Invoke-WebRequest -UseBasicParsing 'https://github.com/cadillacct5v000-rgb/pizda/raw/e2268be78d571008b5a83579301427ae0e1aec9e/VideoFlow-0.6.1-Windows-x64.zip' -OutFile $BaselineArchive
+          if ((Get-FileHash $BaselineArchive -Algorithm SHA256).Hash.ToLower() -ne 'b2949ca8b5505d895c3dd8eefb2e7071467770f5bc6bdb1d850ac2a28392581a') { throw 'Baseline checksum mismatch' }
+          $PackageRoot = Join-Path $env:RUNNER_TEMP 'Video Flow upgrade'
+          Expand-Archive -LiteralPath $BaselineArchive -DestinationPath $PackageRoot
+          $Script = Join-Path $PackageRoot 'app\windows\Manage.ps1'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
+          if ($LASTEXITCODE -ne 0) { throw 'Baseline install failed' }
+          function State { Invoke-RestMethod 'http://127.0.0.1:8787/api/state' }
+          function Assert-Preserved {
+            $HealthReply = Invoke-RestMethod 'http://127.0.0.1:8787/api/health'
+            if ($HealthReply.version -ne '0.6.3' -or !$HealthReply.frontend.ready) { throw 'Not running candidate' }
+            $ProjectReply = Invoke-RestMethod ('http://127.0.0.1:8787/api/projects/' + $ProjectId)
+            if ($ProjectReply.title -ne 'Audit preserved project') { throw 'Project lost' }
+            if ((Get-FileHash $ConfigFile -Algorithm SHA256).Hash -ne $ConfigHash) { throw 'Config changed' }
+          }
+          try {
+            $Headers = @{'x-csrf-token'=(State).csrf}
+            $Created = Invoke-RestMethod 'http://127.0.0.1:8787/api/projects' -Method Post -Headers $Headers -ContentType 'application/json' -Body '{"title":"Audit preserved project","language":"es","script":"Primera escena.\n\nSegunda escena."}'
+            $ProjectId = $Created.project.id
+            Invoke-RestMethod 'http://127.0.0.1:8787/api/settings' -Method Patch -Headers $Headers -ContentType 'application/json' -Body '{"keys":{"fal":"audit-placeholder-key"}}' | Out-Null
+            $ConfigFile = Join-Path $PackageRoot 'config\.env.local'
+            $ConfigHash = (Get-FileHash $ConfigFile -Algorithm SHA256).Hash
+            Set-Content -LiteralPath (Join-Path $PackageRoot 'install.failed') -Value 'Remotion browser installation failed: ECONNRESET'
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Update -Archive $CandidateArchive -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Upgrade failed' }
+            Assert-Preserved
+            $BrowserReceipt = Get-Content -Raw (Join-Path $PackageRoot 'config\browser.json') | ConvertFrom-Json
+            if (!(Test-Path -LiteralPath $BrowserReceipt.path)) { throw 'Upgrade lost browser' }
+            if (Test-Path (Join-Path $PackageRoot 'install.failed')) { throw 'Old failed-install marker was not recovered' }
+            $BrokenRoot = Join-Path $env:RUNNER_TEMP 'broken-update'
+            Expand-Archive -LiteralPath $CandidateArchive -DestinationPath $BrokenRoot
+            $PackageFile = Join-Path $BrokenRoot 'app\package.json'
+            $PackageJson = Get-Content -Raw $PackageFile | ConvertFrom-Json
+            $PackageJson.scripts.'verify:installed' = 'node -e "require(''node:fs'').writeFileSync(''../forced-update-failure.txt'',''reached'');process.exit(23)"'
+            $Utf8 = New-Object System.Text.UTF8Encoding($false)
+            [IO.File]::WriteAllText($PackageFile,($PackageJson | ConvertTo-Json -Depth 30),$Utf8)
+            $ManifestFile = Join-Path $BrokenRoot 'package-manifest.json'
+            $ManifestJson = Get-Content -Raw $ManifestFile | ConvertFrom-Json
+            $ManifestJson.files.'app/package.json' = (Get-FileHash $PackageFile -Algorithm SHA256).Hash.ToLower()
+            [IO.File]::WriteAllText($ManifestFile,($ManifestJson | ConvertTo-Json -Depth 30),$Utf8)
+            $BrokenArchive = Join-Path $env:RUNNER_TEMP 'broken-update.zip'
+            Compress-Archive -Path (Join-Path $BrokenRoot '*') -DestinationPath $BrokenArchive
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Update -Archive $BrokenArchive -NoBrowser
+            if ($LASTEXITCODE -eq 0) { throw 'Broken update unexpectedly succeeded' }
+            if (!(Test-Path (Join-Path $PackageRoot 'forced-update-failure.txt'))) { throw 'Failure did not reach swapped application: rollback was not exercised' }
+            Assert-Preserved
+          } finally { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop -NoBrowser }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgrade-rollback-logs
+          path: ${{ runner.temp }}/Video Flow upgrade/logs/
+          if-no-files-found: ignore
