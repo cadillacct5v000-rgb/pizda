@@ -117,6 +117,8 @@ jobs:
             Invoke-RestMethod 'http://127.0.0.1:8787/api/settings' -Method Patch -Headers $Headers -ContentType 'application/json' -Body '{"keys":{"fal":"audit-placeholder-key"}}' | Out-Null
             $ConfigFile = Join-Path $PackageRoot 'config\.env.local'
             $ConfigHash = (Get-FileHash $ConfigFile -Algorithm SHA256).Hash
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Stop -NoBrowser
+            if ($LASTEXITCODE -ne 0) { throw 'Stopping baseline failed' }
             Set-Content -LiteralPath (Join-Path $PackageRoot 'install.failed') -Value 'Remotion browser installation failed: ECONNRESET'
             & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Update -Archive $CandidateArchive -NoBrowser
             if ($LASTEXITCODE -ne 0) { throw 'Upgrade failed' }
