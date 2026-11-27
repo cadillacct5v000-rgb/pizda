@@ -49,6 +49,9 @@ jobs:
           $Tokens = $null; $ParseErrors = $null
           [System.Management.Automation.Language.Parser]::ParseFile($Script,[ref]$Tokens,[ref]$ParseErrors) | Out-Null
           if ($ParseErrors.Count) { throw ($ParseErrors | Out-String) }
+          $EdgeExe = @($env:ProgramFiles,${env:ProgramFiles(x86)}) | ForEach-Object { Join-Path $_ 'Microsoft\Edge\Application\msedge.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (!$EdgeExe) { throw 'The Windows runner must have Edge installed for this regression' }
+          $env:REMOTION_BROWSER_EXECUTABLE = $EdgeExe
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -Action Install -NoBrowser
           if ($LASTEXITCODE -ne 0) { throw 'Install failed' }
           $ShortcutFile = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Video Flow.lnk'
@@ -68,7 +71,9 @@ jobs:
             $BrowserExe = $BrowserReceipt.path
             if ($BrowserReceipt.source -ne 'installed' -or !(Test-Path -LiteralPath $BrowserExe) -or $BrowserExe -notmatch 'Microsoft\\Edge|Google\\Chrome') { throw 'System Chrome/Edge was not selected' }
             $env:PLAYWRIGHT_CHROMIUM_EXECUTABLE = $BrowserExe
-            $env:REMOTION_BROWSER_EXECUTABLE = $BrowserExe
+            if ($BrowserExe -ne $EdgeExe) { throw 'Installer did not verify system Edge' }
+            Remove-Item Env:REMOTION_BROWSER_EXECUTABLE
+            $env:VIDEO_FLOW_CONFIG_DIR = Join-Path $PackageRoot 'config'
             Push-Location (Join-Path $PackageRoot 'app')
             try {
               & $NodeExe scripts/check-ui.mjs
