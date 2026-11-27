@@ -4,6 +4,6 @@ Fixes installation failing when the Remotion browser download is interrupted wit
 
 For an existing installation (including a failed 0.6.1 install with Node already present), run its Apply Update.bat and choose this ZIP. Successful verification recovers the old install.failed marker without editing API keys. For a new installation extract the entire ZIP and run Install Video AI Auto.bat.
 
-82 automated tests, browser smoke and actual local MP4 E2E use mock paid providers. Windows workflow verifies the installed browser, fresh install, Unicode shortcut, MP4, upgrade from 0.6.1 with a failed-install marker, and rollback preserving a project and config. Its actual run result determines Windows acceptance; the presence of a workflow alone is not evidence. No live paid voice/image/video quality was evaluated.
+83 automated tests, browser smoke and actual local MP4 E2E use mock paid providers. Windows workflow verifies the installed browser, fresh install, Unicode shortcut, MP4, upgrade from 0.6.1 with a failed-install marker, and rollback preserving a project and config. Its actual run result determines Windows acceptance; the presence of a workflow alone is not evidence. No live paid voice/image/video quality was evaluated.
 
 The package includes ready frontend, source, lockfile and verified Node archive. No user data, uploaded logs, keys or node_modules are included.
